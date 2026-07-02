@@ -1,0 +1,506 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  font-family: sans-serif;
+  font-size: 13px;
+  background: #000;
+}
+
+#map {
+  position: absolute;
+  top: 0;
+  left: 280px;
+  right: 64px;
+  bottom: 0;
+  background: #000;
+}
+
+.leaflet-container {
+  background: #000;
+}
+
+#sidebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 280px;
+  bottom: 0;
+  overflow-y: auto;
+  background: #1c1c1c;
+  color: #ddd;
+  box-sizing: border-box;
+  padding: 8px;
+}
+
+#sidebarHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+#sidebar h1 {
+  font-size: 15px;
+  margin: 0;
+}
+
+#changeModeBtn {
+  font-size: 10px;
+  padding: 2px 7px;
+  background: none;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  color: #666;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+}
+
+#changeModeBtn:hover {
+  color: #aaa;
+  border-color: #666;
+}
+
+#loadPanel {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #444;
+}
+
+#loadPanel select, #loadPanel button {
+  width: 100%;
+  margin-top: 4px;
+  box-sizing: border-box;
+}
+
+#loadStatus {
+  margin-top: 6px;
+  color: #999;
+  min-height: 1.2em;
+}
+
+#totalObjectCount {
+  margin-top: 2px;
+  color: #777;
+  font-size: 11px;
+  min-height: 1.2em;
+}
+
+#loadProgressBar {
+  display: none;
+  margin-top: 4px;
+  height: 8px;
+  background: #333;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+#loadProgressFill {
+  height: 100%;
+  width: 0%;
+  background: #3498db;
+  transition: width 0.2s ease-out;
+}
+
+/* SFTP sync panel -- shown only when sftp_config.json is present on the
+   server side. Sits above the game-settings panel in the sidebar. */
+#sftpPanel {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #444;
+  font-size: 12px;
+}
+
+.sftpHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 3px;
+}
+
+.sftpTitle {
+  font-weight: bold;
+  color: #ddd;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sftpSyncBtn {
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  background: #2a3545;
+  color: #8ab4f8;
+  border: 1px solid #3a5070;
+  border-radius: 3px;
+}
+
+.sftpSyncBtn:hover:not(:disabled) {
+  background: #33435a;
+}
+
+.sftpSyncBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sftpStatus {
+  color: #888;
+}
+
+.sftpStatusError {
+  color: #e07070;
+}
+
+/* Game-mode settings (Power Cost Multiplier / Node Purity / Node
+   Randomization) -- see data.js's showGameSettings(). Hidden via inline
+   display:none until a save with at least one of these set is loaded. */
+#gameSettingsPanel {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #444;
+  font-size: 12px;
+}
+
+.gameSettingRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 1px 0;
+}
+
+.gameSettingLabel {
+  color: #999;
+}
+
+.gameSettingValue {
+  color: #ddd;
+  font-weight: 500;
+}
+
+/* Vertical altitude filter, docked to the right edge of the screen --
+   vertical gives much more usable travel/precision than a narrow
+   horizontal slider would in the same sidebar width. */
+#altitudePanel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 64px;
+  background: #1c1c1c;
+  color: #ddd;
+  box-sizing: border-box;
+  padding: 4px;
+  border-left: 1px solid #3a3a3a;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  overflow: hidden;
+}
+
+.altitudeTitle {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #888;
+  flex: none;
+}
+
+.altitudeValue {
+  font-size: 11px;
+  color: #bbb;
+  margin: 2px 0;
+  flex: none;
+}
+
+.altitudeSliders {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  width: 100%;
+  min-height: 0;
+}
+
+/* writing-mode is the standards-track way to get a vertical range input --
+   unlike -webkit-appearance:slider-vertical, width/height keep their normal
+   meaning (no axis swap from rotation), so flex:1 + height:100% reliably
+   fills all available vertical space. direction:rtl flips the default
+   min-at-top orientation so the top of the track is the maximum, matching
+   the usual "up = higher altitude" expectation.
+   -webkit-appearance:slider-vertical is deliberately NOT also applied here:
+   the two mechanisms compute the control's intrinsic box differently, and
+   combining them caused the panel to overflow past the viewport bottom. */
+.altitudeSliders input[type="range"] {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 22px;
+  height: 100%;
+  max-height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+}
+
+#altitudeResetButton {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 11px;
+  padding: 3px 0;
+  flex: none;
+}
+
+.filterGroup {
+  margin-bottom: 4px;
+}
+
+.filterGroup > .groupTitle {
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 0;
+  user-select: none;
+}
+
+/* Top-level sections (Resource Nodes, Production, Logistics, ...) are direct
+   children of #filterPanel; nested groups (subcategories, resource types,
+   individual building lists) are not, since they live inside a parent's
+   .filterChildren. This selector reaches only the former, so they read as
+   section headers without needing a separate element/class from JS. */
+#filterPanel > .filterGroup > .groupTitle {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #ddd;
+  background: #262a31;
+  border-radius: 4px;
+  padding: 5px 6px;
+  margin-top: 10px;
+}
+
+#filterPanel > .filterGroup:first-child > .groupTitle {
+  margin-top: 0;
+}
+
+.expandToggle {
+  display: inline-block;
+  width: 10px;
+  color: #888;
+  cursor: pointer;
+  flex: none;
+}
+
+.groupLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  flex: none;
+}
+
+.icon-circle {
+  border-radius: 50%;
+}
+
+.icon-rect {
+  border-radius: 2px;
+}
+
+.icon-line {
+  height: 0;
+  width: 14px;
+  margin-top: 5px;
+}
+
+.filterChildren {
+  margin-left: 19px;
+}
+
+.filterRow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 0;
+}
+
+.filterRow label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.filterRow .count {
+  color: #888;
+  margin-left: auto;
+  padding-left: 4px;
+  flex: none;
+}
+
+/* Hover tooltip -- a plain fixed-position div that follows the cursor (see
+   tooltip.js); not a Leaflet popup, since popups are anchored/click-oriented. */
+#tt-tooltip {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  background: #20232a;
+  color: #ddd;
+  border: 1px solid #3a3f4a;
+  border-radius: 8px;
+  padding: 12px 14px;
+  pointer-events: none;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+  min-width: 260px;
+  max-width: 380px;
+  font-family: sans-serif;
+}
+
+.tt-popup {
+  font-size: 13px;
+  line-height: 1.5;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.tt-title {
+  font-weight: bold;
+  font-size: 15px;
+  color: #fff;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #3a3f4a;
+}
+
+.tt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.tt-row-label {
+  color: #9aa0ab;
+}
+
+.tt-row-value {
+  text-align: right;
+  overflow-wrap: anywhere;
+  color: #eee;
+  font-weight: 500;
+}
+
+/* Wraps a row's label alongside a copy icon (see tooltip.js's
+   coordinatesRow) -- only the Coordinates row uses this instead of plain
+   .tt-row-label. Keeping the icon on the label side (not the value side)
+   is what keeps the value column aligned with the Altitude row above it. */
+.tt-row-label-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #9aa0ab;
+}
+
+.tt-copy-icon-btn {
+  display: inline-flex;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: #8ab4f8;
+  cursor: pointer;
+  line-height: 0;
+  /* Tooltips are pointer-events:none until pinned (see #tt-tooltip) -- this
+     button is only ever actually clickable once that's true, same as
+     "All properties" below, so it doesn't need its own pointer-events rule. */
+}
+
+.tt-copy-icon-btn:hover {
+  color: #aecbfa;
+}
+
+.tt-copy-icon-btn-done {
+  color: #6fcf97;
+}
+
+.tt-section {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #2c2f37;
+}
+
+.tt-section-title {
+  color: #8ab4f8;
+  font-weight: bold;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.tt-loading, .tt-error {
+  color: #999;
+  font-style: italic;
+}
+
+.tt-error {
+  color: #e07070;
+}
+
+.tt-raw {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #2c2f37;
+}
+
+.tt-raw summary {
+  cursor: pointer;
+  color: #8ab4f8;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.tt-raw summary:hover {
+  color: #aecbfa;
+}
+
+.tt-raw-list {
+  margin-top: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.tt-raw-row {
+  padding: 5px 0;
+  border-bottom: 1px solid #2c2f37;
+}
+
+.tt-raw-row:last-child {
+  border-bottom: none;
+}
+
+.tt-raw-row-label {
+  color: #8ab4f8;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.tt-raw-row-value {
+  color: #ccc;
+  font-family: "Consolas", "SF Mono", monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

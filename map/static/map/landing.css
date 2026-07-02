@@ -1,0 +1,183 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: #111316;
+  font-family: sans-serif;
+  font-size: 13px;
+  color: #ddd;
+}
+
+.wrap {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 52px 20px 40px;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: bold;
+  color: #fff;
+  margin: 0 0 32px 0;
+  text-align: center;
+  letter-spacing: 0.01em;
+}
+
+/* ── Three cards ── */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+}
+
+@media (max-width: 680px) {
+  .grid { grid-template-columns: 1fr; }
+}
+
+.card {
+  background: #1c1f26;
+  border: 1px solid #2c3040;
+  border-radius: 10px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ── Card header ── */
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.card-icon {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  color: #6b8cba;
+}
+
+.card-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #eee;
+}
+
+.card-desc {
+  font-size: 11px;
+  color: #666;
+  margin-top: 2px;
+}
+
+/* ── Fields ── */
+.card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-lbl {
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #666;
+  margin-bottom: 3px;
+}
+
+.field {
+  width: 100%;
+  background: #0f1115;
+  border: 1px solid #2e3340;
+  border-radius: 5px;
+  color: #ddd;
+  padding: 6px 8px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.12s;
+}
+
+.field:focus {
+  border-color: #4a6fa0;
+}
+
+.row2 {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.field-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.field-wrap.grow { flex: 1; }
+
+.hint {
+  font-size: 10px;
+  color: #555;
+  margin-top: 2px;
+}
+
+/* ── File drop zone ── */
+.file-drop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f1115;
+  border: 1px dashed #2e3340;
+  border-radius: 6px;
+  padding: 20px 12px;
+  cursor: pointer;
+  color: #666;
+  font-size: 12px;
+  text-align: center;
+  transition: border-color 0.12s, color 0.12s;
+  min-height: 64px;
+}
+
+.file-drop:hover, .file-drop.drag-over {
+  border-color: #4a6fa0;
+  color: #999;
+}
+
+.file-drop.has-file {
+  border-color: #3a6040;
+  color: #6fcf97;
+}
+
+.file-drop input[type="file"] { display: none; }
+
+/* ── Open Map button ── */
+.btn {
+  width: 100%;
+  padding: 9px;
+  background: #1e2d42;
+  color: #8ab4f8;
+  border: 1px solid #2e4a6a;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.12s;
+}
+
+.btn:hover:not(:disabled) { background: #253550; }
+
+.btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ── Error banner ── */
+#error {
+  margin-top: 20px;
+  text-align: center;
+  color: #e07070;
+  font-size: 12px;
+  min-height: 1.4em;
+}

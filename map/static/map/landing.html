@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Satisfactory Save Map</title>
+<link rel="stylesheet" href="landing.css">
+</head>
+<body>
+<div class="wrap">
+  <h1 class="title">Satisfactory Save Map</h1>
+  <div class="grid">
+
+    <!-- ── Upload ── -->
+    <div class="card" id="card-upload">
+      <div class="card-head">
+        <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <div>
+          <div class="card-title">Upload Save</div>
+          <div class="card-desc">Load a .sav file from your computer</div>
+        </div>
+      </div>
+      <div class="card-body">
+        <label class="file-drop" id="fileDrop">
+          <input type="file" id="fileInput" accept=".sav">
+          <span id="fileText">Choose .sav file or drag &amp; drop</span>
+        </label>
+      </div>
+      <button class="btn" id="uploadBtn" disabled>Open Map</button>
+    </div>
+
+    <!-- ── Local folder ── -->
+    <div class="card" id="card-local">
+      <div class="card-head">
+        <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg>
+        <div>
+          <div class="card-title">Local Folder</div>
+          <div class="card-desc">Watch a folder on this machine for new saves</div>
+        </div>
+      </div>
+      <div class="card-body">
+        <label class="field-lbl">Save folder path</label>
+        <input type="text" class="field" id="localPath" placeholder="/path/to/saves" spellcheck="false">
+        <div class="hint">Auto-reloads when a new save appears</div>
+      </div>
+      <button class="btn" id="localBtn">Open Map</button>
+    </div>
+
+    <!-- ── SFTP ── -->
+    <div class="card" id="card-sftp">
+      <div class="card-head">
+        <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+          <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+          <line x1="6" y1="6" x2="6.01" y2="6"/>
+          <line x1="6" y1="18" x2="6.01" y2="18"/>
+        </svg>
+        <div>
+          <div class="card-title">SFTP Server</div>
+          <div class="card-desc">Sync saves from a remote game server</div>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="row2">
+          <div class="field-wrap grow">
+            <label class="field-lbl">Host</label>
+            <input type="text" class="field" id="sftpHost" placeholder="192.168.1.1" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="field-wrap" style="width:72px">
+            <label class="field-lbl">Port</label>
+            <input type="number" class="field" id="sftpPort" value="22" min="1" max="65535">
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field-wrap grow">
+            <label class="field-lbl">Username</label>
+            <input type="text" class="field" id="sftpUser" spellcheck="false" autocomplete="username">
+          </div>
+          <div class="field-wrap grow">
+            <label class="field-lbl">Password</label>
+            <input type="password" class="field" id="sftpPass" autocomplete="current-password">
+          </div>
+        </div>
+        <label class="field-lbl">Remote save path</label>
+        <input type="text" class="field" id="sftpPath" value="/home/.config/Epic/FactoryGame/Saved/SaveGames/server" spellcheck="false">
+        <div class="row2" style="margin-top:4px">
+          <div class="field-wrap" style="width:110px">
+            <label class="field-lbl">Sync every (s)</label>
+            <input type="number" class="field" id="sftpInterval" value="60" min="10">
+          </div>
+        </div>
+      </div>
+      <button class="btn" id="sftpBtn">Connect &amp; Open Map</button>
+    </div>
+
+  </div><!-- /grid -->
+  <div id="error"></div>
+</div>
+<script src="landing.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+# Credentials / runtime state
+sftp_config.json
+sftp_config.json.example
+server_config.json
+
+# Downloaded saves and uploads (runtime directories)
+sftp_saves/
+map/uploads/
+
+# Large local-only assets (not versioned)
+map_highres.png
+blank_map20.png
+
+# Parser output
+map_output/
+
+# Satisfactory save files
+*.sav
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
