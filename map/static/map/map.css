@@ -10,7 +10,7 @@ html, body {
 #map {
   position: absolute;
   top: 0;
-  left: 280px;
+  left: 300px;
   right: 64px;
   bottom: 0;
   background: #000;
@@ -20,17 +20,37 @@ html, body {
   background: #000;
 }
 
+/* Split into a fixed top section (load/SFTP/game-settings controls, which
+   you always want visible) and a separately-scrolling filter list below it
+   -- previously the whole sidebar was one scroll region, so scrolling down
+   through a long filter list pushed the save-file controls out of view too,
+   and getting back to them meant scrolling all the way back up. */
 #sidebar {
   position: absolute;
   top: 0;
   left: 0;
-  width: 280px;
+  width: 300px;
   bottom: 0;
-  overflow-y: auto;
   background: #1c1c1c;
   color: #ddd;
   box-sizing: border-box;
-  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#sidebarTop {
+  flex: none;
+  padding: 10px 10px 0 10px;
+  box-sizing: border-box;
+}
+
+#sidebarScroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 10px 10px 10px;
+  box-sizing: border-box;
 }
 
 #sidebarHeader {
@@ -180,6 +200,104 @@ html, body {
   font-weight: 500;
 }
 
+/* "Find Item" search -- see finditem.js. Hidden via inline display:none
+   until a save with a non-empty item catalog is loaded (always, in
+   practice, but matches gameSettingsPanel/sftpPanel's own guard). */
+#findItemPanel {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #444;
+  font-size: 12px;
+}
+
+.findItemTitle {
+  font-weight: bold;
+  color: #ddd;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.findItemRow {
+  display: flex;
+  gap: 4px;
+}
+
+#findItemInput {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#findItemButton {
+  flex: none;
+}
+
+#findItemResult {
+  margin-top: 6px;
+}
+
+#findItemSummary {
+  color: #bbb;
+  margin-bottom: 4px;
+}
+
+#findItemHighlightToggle {
+  width: 100%;
+}
+
+/* Shared by the Find Item results list and the Dimensional Depot contents
+   list (see finditem.js's renderLocationList) -- a scrollable, bordered
+   list of label/count rows, capped in height so a result spanning dozens of
+   buildings (or the depot's full item roster) doesn't push the rest of the
+   sidebar's fixed controls off-screen. */
+.itemLocationList {
+  max-height: 160px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+}
+
+.itemLocationRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 6px;
+  border-bottom: 1px solid #2c2f37;
+}
+
+.itemLocationRow:last-child {
+  border-bottom: none;
+}
+
+.itemLocationLabel {
+  color: #ddd;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.itemLocationCount {
+  color: #8ab4f8;
+  font-weight: 500;
+  flex: none;
+}
+
+/* "Dimensional Depot" contents -- see finditem.js. Hidden via inline
+   display:none until a save whose FGCentralStorageSubsystem actually holds
+   items is loaded. */
+#dimensionalDepotPanel {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #444;
+  font-size: 12px;
+}
+
+#dimensionalDepotButton {
+  width: 100%;
+}
+
 /* Vertical altitude filter, docked to the right edge of the screen --
    vertical gives much more usable travel/precision than a narrow
    horizontal slider would in the same sidebar width. */
@@ -216,33 +334,109 @@ html, body {
   flex: none;
 }
 
-.altitudeSliders {
+/* A single visual track (.altitudeTrackBg + .altitudeTrackFill) with two
+   real <input type="range"> elements stacked exactly on top of it -- rather
+   than two side-by-side sliders -- so it reads as one ruler with two handles
+   instead of two independent controls that happen to be neighbors. */
+.altitudeTrackWrap {
+  position: relative;
   flex: 1 1 auto;
-  display: flex;
-  gap: 8px;
-  justify-content: center;
   width: 100%;
   min-height: 0;
 }
 
+.altitudeTrackBg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  background: #3a3a3a;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* top/height are set inline by altitude.js to span exactly the currently
+   selected min..max range. Draggable (see altitude.js's pointerdown handler
+   on this element) to shift the whole [min, max] window at once, keeping
+   its span fixed, instead of only being able to move one handle at a time.
+   The actual colored bar stays a slim 4px (background-clip: content-box
+   confines the fill color to the width box), but the invisible padding on
+   either side widens the *hit target* to something actually grabbable --
+   a bare 4px-wide strip would be nearly impossible to grab precisely. */
+.altitudeTrackFill {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  padding: 0 8px;
+  background-color: #3498db;
+  background-clip: content-box;
+  border-radius: 2px;
+  pointer-events: auto;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
 /* writing-mode is the standards-track way to get a vertical range input --
    unlike -webkit-appearance:slider-vertical, width/height keep their normal
-   meaning (no axis swap from rotation), so flex:1 + height:100% reliably
-   fills all available vertical space. direction:rtl flips the default
-   min-at-top orientation so the top of the track is the maximum, matching
-   the usual "up = higher altitude" expectation.
-   -webkit-appearance:slider-vertical is deliberately NOT also applied here:
-   the two mechanisms compute the control's intrinsic box differently, and
-   combining them caused the panel to overflow past the viewport bottom. */
-.altitudeSliders input[type="range"] {
+   meaning (no axis swap from rotation), so height:100% reliably fills all
+   available vertical space. direction:rtl flips the default min-at-top
+   orientation so the top of the track is the maximum, matching the usual
+   "up = higher altitude" expectation.
+   Both inputs are stacked exactly on top of each other (position:absolute,
+   inset 0) rather than placed side by side, with their own native track
+   hidden (transparent) since .altitudeTrackBg/.altitudeTrackFill draw the
+   one shared visual track underneath. pointer-events:none on the control
+   itself -- re-enabled only on the thumb pseudo-elements below -- is what
+   lets a click reach whichever handle is actually under the cursor instead
+   of the topmost of the two stacked <input>s swallowing every click across
+   its entire (invisible) track. */
+.altitudeRangeInput {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
   writing-mode: vertical-lr;
   direction: rtl;
-  width: 22px;
-  height: 100%;
-  max-height: 100%;
-  flex: 1 1 auto;
-  min-height: 0;
-  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  pointer-events: none;
+}
+
+.altitudeRangeInput::-webkit-slider-runnable-track {
+  background: transparent;
+}
+
+.altitudeRangeInput::-moz-range-track {
+  background: transparent;
+  border: none;
+}
+
+.altitudeRangeInput::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  pointer-events: auto;
+  width: 20px;
+  height: 11px;
+  border-radius: 3px;
+  background: #ddd;
+  border: 1px solid #555;
+  cursor: ns-resize;
+}
+
+.altitudeRangeInput::-moz-range-thumb {
+  pointer-events: auto;
+  width: 20px;
+  height: 11px;
+  border-radius: 3px;
+  background: #ddd;
+  border: 1px solid #555;
+  cursor: ns-resize;
+  box-sizing: border-box;
 }
 
 #altitudeResetButton {
@@ -253,10 +447,28 @@ html, body {
   flex: none;
 }
 
+/* Sticky so "Uncheck all" and the section label stay reachable without
+   scrolling back to the top of a long, mostly-expanded filter list. */
 #filterPanelHeader {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
-  justify-content: flex-end;
-  margin-bottom: 4px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #1c1c1c;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid #333;
+}
+
+#filterPanelTitle {
+  font-size: 11px;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
 }
 
 #uncheckAllButton {
@@ -268,6 +480,7 @@ html, body {
   color: #666;
   cursor: pointer;
   white-space: nowrap;
+  flex: none;
 }
 
 #uncheckAllButton:hover {
@@ -275,8 +488,39 @@ html, body {
   border-color: #666;
 }
 
+/* Top-level sections (Resource Nodes, Production, Logistics, ...) are direct
+   children of #filterPanel -- each rendered as a self-contained card (own
+   background/rounding) so a long, mostly-collapsed list of them reads as
+   distinct rows to scan rather than a continuous wall of nested text. Nested
+   groups (subcategories, resource types, individual building lists) are not
+   direct children (they live inside a parent's .filterChildren), so this
+   card treatment doesn't apply to them -- see the plain .filterGroup rule
+   further down for those.  Collapsed by default (see filters.js's
+   startCollapsed) precisely so this compact card list -- not a fully
+   expanded tree -- is what you see first. */
+#filterPanel > .filterGroup {
+  background: #23262c;
+  border-radius: 6px;
+  margin-bottom: 5px;
+  overflow: hidden;
+}
+
+#filterPanel > .filterGroup > .groupTitle {
+  font-size: 12.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #ddd;
+  padding: 7px 8px;
+}
+
+#filterPanel > .filterGroup > .filterChildren {
+  margin-left: 0;
+  padding: 2px 8px 6px 8px;
+  border-left: none;
+}
+
 .filterGroup {
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 .filterGroup > .groupTitle {
@@ -285,28 +529,63 @@ html, body {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 0;
+  padding: 4px 3px;
+  border-radius: 4px;
   user-select: none;
 }
 
-/* Top-level sections (Resource Nodes, Production, Logistics, ...) are direct
-   children of #filterPanel; nested groups (subcategories, resource types,
-   individual building lists) are not, since they live inside a parent's
-   .filterChildren. This selector reaches only the former, so they read as
-   section headers without needing a separate element/class from JS. */
-#filterPanel > .filterGroup > .groupTitle {
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: #ddd;
-  background: #262a31;
-  border-radius: 4px;
-  padding: 5px 6px;
-  margin-top: 10px;
+/* Animated on/off switch standing in for a native checkbox (see filters.js's
+   makeToggle) -- the real <input type=checkbox> is visually hidden but still
+   drives all the existing .checked/"change" logic, so this is pure styling. */
+.toggleSwitch {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 26px;
+  height: 15px;
+  cursor: pointer;
 }
 
-#filterPanel > .filterGroup:first-child > .groupTitle {
-  margin-top: 0;
+.toggleSwitch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+
+.toggleSlider {
+  position: absolute;
+  inset: 0;
+  background: #4a4d54;
+  border-radius: 999px;
+  transition: background-color 0.15s ease;
+}
+
+.toggleSlider::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #ddd;
+  transition: transform 0.15s ease;
+}
+
+.toggleSwitch input:checked + .toggleSlider {
+  background: #3498db;
+}
+
+.toggleSwitch input:checked + .toggleSlider::before {
+  transform: translateX(11px);
+  background: #fff;
+}
+
+.toggleSwitch input:focus-visible + .toggleSlider {
+  box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.6);
 }
 
 .expandToggle {
@@ -344,15 +623,25 @@ html, body {
   margin-top: 5px;
 }
 
+/* Thin left guide line marks nesting depth at a glance (resource type ->
+   mined/unmined -> purity, subcategory -> merged building rows, etc.)
+   without costing extra horizontal indent on top of the existing margin. */
 .filterChildren {
-  margin-left: 19px;
+  margin-left: 14px;
+  padding-left: 7px;
+  border-left: 1px solid #35383e;
 }
 
 .filterRow {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 1px 0;
+  padding: 3px;
+  border-radius: 4px;
+}
+
+.filterRow:hover, .filterGroup > .groupTitle:hover {
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .filterRow label {

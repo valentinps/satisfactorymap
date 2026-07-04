@@ -41,6 +41,7 @@ import sav_data.slug
 import sav_data.somersloop
 import sav_data.mercerSphere
 import sav_data.crashSites
+import sav_data.readableNames
 
 # Pipeline segment types that carry a "mSplineData" property (see Build_Pipeline_C /
 # Build_PipelineMK2_C below). Junctions/pumps/supports are plain point buildings.
@@ -64,6 +65,20 @@ HYPERTUBE_SEGMENTS = (
    "/Game/FactoryGame/Buildable/Factory/PipeHyperStart/Build_PipeHyperStart.Build_PipeHyperStart_C",
 )
 
+# Self-driving vehicle path segments -- placed like any other buildable
+# connector (Explorer/FactoryCart/Tractor/Truck/Universal are per-vehicle-type
+# recipes of the same building), carrying a "mSplinePoints" property in the
+# exact same Location/ArriveTangent/LeaveTangent shape belts/pipes/rails/
+# hypertubes use for "mSplineData" (see collectSplinePaths). This replaced an
+# older mSavedPaths/FGDrivingTargetList linked-list system (still referenced
+# by parser/sav_cli.py's --export-vehicle-path) that current saves no longer
+# populate. Build_VehiclePathNode_*_C (the junction points these segments
+# connect) stay plain point buildings, same as pipeline junctions/supports.
+VEHICLE_PATH_SEGMENTS = tuple(
+   f"/Game/FactoryGame/Buildable/Vehicle/VehiclePath/Build_VehiclePath_{tier}.Build_VehiclePath_{tier}_C"
+   for tier in ("Explorer", "FactoryCart", "Tractor", "Truck", "Universal")
+)
+
 CATEGORY_RULES = (
    # (category, tuple-of-substrings-any-of-which-match)
    # Train/truck/drone infrastructure (stations, platforms, signals) lives
@@ -71,7 +86,7 @@ CATEGORY_RULES = (
    # related ends up consolidated under Vehicles instead of split with
    # Logistics -- see VEHICLE_SUBCATEGORY_RULES below.
    ("Vehicles",     ("/Buildable/Vehicle/", "Train", "Railroad", "Drone", "Truck", "TruckStation")),
-   ("Power",        ("PowerLine", "Generator", "PowerPole", "PowerTower", "PowerStorage", "PowerSwitch", "XmassLightsLine")),
+   ("Power",        ("PowerLine", "Generator", "PowerPole", "PowerTower", "PowerStorage", "PowerSwitch", "XmassLightsLine", "AlienPowerBuilding")),
    ("Logistics",    ("Conveyor", "Pipeline", "PipelineJunction", "PipelinePump", "PipelineSupport",
                       "Valve", "PipeHyper", "Splitter", "Merger", "StorageTeleporter")),
    ("Extraction",   ("MinerMk", "OilPump", "WaterPump", "FrackingSmasher", "FrackingExtractor")),
@@ -226,6 +241,7 @@ def projectVectorXY(worldVector) -> list:
 FALLBACK_FOOTPRINTS_METERS = (
    ("ConveyorLift", (1.0, 1.0)), # See CONVEYOR_LIFT_TYPE_PATHS -- not a real collision box, just a visible/clickable marker.
    ("Converter", (16.0, 16.0)),
+   ("AlienPowerBuilding", (28.0, 28.0)), # Alien Power Augmenter -- not in the SCIM dataset; 28x28m per the wiki.
    ("MinerMk2", (6.0, 14.0)),
    ("MinerMk3", (6.0, 14.0)),
    ("StorageContainerMk2", (5.0, 10.0)), # Industrial Storage Container
@@ -336,7 +352,8 @@ CONVEYOR_BELT_ONLY_TYPE_PATHS = tuple(typePath for typePath in sav_data.data.CON
 # typePaths that get their own dedicated line-bucket (collectSplinePaths) instead
 # of being plotted as point buildings -- avoids drawing both a dot and a line
 # for every belt/pipeline segment.
-LINE_RENDERED_TYPE_PATHS = set(CONVEYOR_BELT_ONLY_TYPE_PATHS) | set(PIPELINE_SEGMENTS) | set(RAILROAD_SEGMENTS) | set(HYPERTUBE_SEGMENTS)
+LINE_RENDERED_TYPE_PATHS = (set(CONVEYOR_BELT_ONLY_TYPE_PATHS) | set(PIPELINE_SEGMENTS) | set(RAILROAD_SEGMENTS)
+   | set(HYPERTUBE_SEGMENTS) | set(VEHICLE_PATH_SEGMENTS))
 
 # Always-present engine singletons that match the "/Buildable/" filter but
 # aren't actually placed by the player -- BP_ProjectAssembly_C in particular
@@ -445,14 +462,16 @@ def collectBuildings(levels) -> dict:
       buildingCategories.append({"category": category, "types": types})
    return buildingCategories
 
-def collectSplinePaths(levels, typePaths) -> dict:
+def collectSplinePaths(levels, typePaths, splinePropertyName="mSplineData") -> dict:
    # Belts/pipelines/railroads/hypertubes store their path as a "mSplineData"
-   # property: an array of structs, each with "Location" (actor-local space,
-   # first point always [0,0,0]) plus "ArriveTangent"/"LeaveTangent" vectors
-   # (also actor-local) -- the same Location+tangent representation Unreal's
-   # own spline component uses, which lets the frontend render a real curve
-   # through each segment (cubic Hermite, converted to a canvas bezier -- see
-   # map.js's _drawLineBucket) instead of a jagged straight-line approximation.
+   # property (vehicle path segments -- see VEHICLE_PATH_SEGMENTS -- use the
+   # same shape under the name "mSplinePoints", hence the parameter): an array
+   # of structs, each with "Location" (actor-local space, first point always
+   # [0,0,0]) plus "ArriveTangent"/"LeaveTangent" vectors (also actor-local)
+   # -- the same Location+tangent representation Unreal's own spline
+   # component uses, which lets the frontend render a real curve through each
+   # segment (cubic Hermite, converted to a canvas bezier -- see map.js's
+   # _drawLineBucket) instead of a jagged straight-line approximation.
    # Conveyor lifts have no curve, so instead they carry a single
    # "mTopTransform" struct with a "Translation" offset from the actor's base
    # to its top (no tangent data -- zero vectors there degenerate to a curve
@@ -484,7 +503,7 @@ def collectSplinePaths(levels, typePaths) -> dict:
          (position, rotation) = transform
          localPoints = [] # (location, arriveTangent, leaveTangent) triples, actor-local.
 
-         splineData = sav_parse.getPropertyValue(object.properties, "mSplineData")
+         splineData = sav_parse.getPropertyValue(object.properties, splinePropertyName)
          if splineData is not None:
             for splinePoint in splineData:
                location = sav_parse.getPropertyValue(splinePoint[0], "Location")
@@ -551,8 +570,13 @@ def _purityName(purity) -> str:
 # Maps the engine's own per-node purity override enum value (mPurityOverride's
 # second element, e.g. "RP_Pure") onto the same Purity enum the static
 # sav_data.resourcePurity.RESOURCE_PURITY table uses, so both sources feed
-# the same downstream purity-bucketing/coloring code.
+# the same downstream purity-bucketing/coloring code. The engine's own enum
+# misspells impure as "RP_Inpure" (confirmed against a real "All Impure"
+# save -- every single override used that spelling, never "RP_Impure"), so
+# that's the one that actually needs to match; "RP_Impure" is kept too in
+# case a different game version ever uses the corrected spelling.
 _PURITY_OVERRIDE_NAME_TO_ENUM = {
+   "RP_Inpure": sav_data.resourcePurity.Purity.IMPURE,
    "RP_Impure": sav_data.resourcePurity.Purity.IMPURE,
    "RP_Normal": sav_data.resourcePurity.Purity.NORMAL,
    "RP_Pure": sav_data.resourcePurity.Purity.PURE,
@@ -677,12 +701,23 @@ def _positionFromDetailedEntry(entry):
    return entry[2] # SOMERSLOOPS/MERCER_SPHERES store (id, rotationQuat, position, detailsDict)
 
 def _splitCollectableKind(levels, staticDict, positionExtractor) -> dict:
+   # Both lists need checking, not just collectables1 -- confirmed against a
+   # real save where collectables1 alone missed most already-collected
+   # Somersloops/Mercer Spheres (e.g. one save: collectables1 found 84/106
+   # collected Somersloops -- 22 "remaining" -- while the true count, cross-
+   # checked in-game, was 3 remaining; collectables1 UNION collectables2
+   # correctly found 103/106). sav_to_html.py's own comment ("collectables2
+   # can be a subset of collectables1") doesn't hold here -- for every
+   # collectable kind tested, collectables2 alone found *more* matches than
+   # collectables1 alone, so this takes the union of both rather than
+   # trusting either list to be complete on its own.
    collectedInstanceNames = set()
    for level in levels:
-      if level.collectables1 is not None:
-         for collectable in level.collectables1:
-            if collectable.pathName in staticDict:
-               collectedInstanceNames.add(collectable.pathName)
+      for collectableList in (level.collectables1, level.collectables2):
+         if collectableList is not None:
+            for collectable in collectableList:
+               if collectable.pathName in staticDict:
+                  collectedInstanceNames.add(collectable.pathName)
 
    remaining = {"points": [], "ids": [], "worldPositions": []}
    collected = {"points": [], "ids": [], "worldPositions": []}
@@ -717,6 +752,37 @@ def collectCollectables(levels) -> dict:
 
 PLAYER_TYPE_PATH = "/Game/FactoryGame/Character/Player/Char_Player.Char_Player_C"
 
+# Of all the wildlife/enemy creatures the save tracks, only the Lizard Doggo
+# is shown on the map -- per the user, the others (Hogs, Spitters, Stingers,
+# Crab Hatchers, ...) are noise for this purpose.
+LIZARD_DOGGO_TYPE_PATH = "/Game/FactoryGame/Character/Creature/Wildlife/SpaceRabbit/Char_SpaceRabbit.Char_SpaceRabbit_C"
+
+def collectCreatures(levels) -> list:
+   # Returns the same typePath/label/points/ids shape as collectBuildings's
+   # per-category "types" list (currently always zero-or-one entry, but kept
+   # list-shaped in case more species are added later). Uses tooltipKind
+   # "server" (see filters.js), same as buildings/players -- describeInstance
+   # resolves position/rawProperties/petName from a live lookup, so no
+   # worldPositions array is needed here the way static-tooltip buckets
+   # (resource nodes/collectables) require.
+   typeBuckets: dict[str, dict] = {}
+   for level in levels:
+      for header in level.actorAndComponentObjectHeaders:
+         if isinstance(header, sav_parse.ActorHeader) and header.typePath == LIZARD_DOGGO_TYPE_PATH:
+            bucket = typeBuckets.get(header.typePath)
+            if bucket is None:
+               bucket = {"label": readableLabel(header.typePath), "points": [], "ids": []}
+               typeBuckets[header.typePath] = bucket
+            (px, py) = projectXY(header.position)
+            bucket["points"].append(px)
+            bucket["points"].append(py)
+            bucket["points"].append(worldZToMeters(header.position[2]))
+            bucket["ids"].append(header.instanceName)
+   return [
+      {"typePath": typePath, "label": bucket["label"], "points": bucket["points"], "ids": bucket["ids"]}
+      for (typePath, bucket) in typeBuckets.items()
+   ]
+
 def collectPlayers(levels) -> dict:
    points = []
    ids = []
@@ -742,6 +808,43 @@ def collectHub(levels) -> dict:
             points.append(worldZToMeters(header.position[2]))
             ids.append(header.instanceName)
    return {"points": points, "ids": ids}
+
+CENTRAL_STORAGE_SUBSYSTEM_TYPE_PATH = "/Script/FactoryGame.FGCentralStorageSubsystem"
+
+def collectDimensionalDepotContents(levels) -> list:
+   # The Dimensional Depot (Build_CentralStorage_C uploaders scattered
+   # around the map, one shared pool between all of them) isn't a normal
+   # per-building inventory -- the global FGCentralStorageSubsystem holds
+   # its contents directly as a flat "mStoredItems" list of
+   # {ItemClass, Amount} pairs, already aggregated across every uploader,
+   # unlike a building's per-slot mInventoryStacks. Zero-amount entries
+   # (items once stored, now fully withdrawn) are dropped. Returns
+   # [{"itemPath":, "label":, "count":}, ...] sorted by count descending.
+   subsystemInstanceName = None
+   for level in levels:
+      for header in level.actorAndComponentObjectHeaders:
+         if isinstance(header, sav_parse.ActorHeader) and header.typePath == CENTRAL_STORAGE_SUBSYSTEM_TYPE_PATH:
+            subsystemInstanceName = header.instanceName
+   if subsystemInstanceName is None:
+      return []
+   subsystemObject = None
+   for level in levels:
+      for object in level.objects:
+         if object.instanceName == subsystemInstanceName:
+            subsystemObject = object
+   if subsystemObject is None:
+      return []
+   storedItems = sav_parse.getPropertyValue(subsystemObject.properties, "mStoredItems") or []
+   items = []
+   for entry in storedItems:
+      itemClass = sav_parse.getPropertyValue(entry[0], "ItemClass")
+      amount = sav_parse.getPropertyValue(entry[0], "Amount")
+      if itemClass is None or not getattr(itemClass, "pathName", None) or not amount:
+         continue
+      shortName = itemClass.pathName.rsplit(".", 1)[-1]
+      items.append({"itemPath": shortName, "label": readableLabel(shortName), "count": amount})
+   items.sort(key=lambda entry: entry["count"], reverse=True)
+   return items
 
 def collectHardDrives(levels) -> dict:
    (_, notOpened, openWithDrive, openAndEmpty, dismantled) = sav_to_html.getCrashSiteState(levels)
@@ -795,6 +898,60 @@ def collectHardDrives(levels) -> dict:
       "empty": emptyPoints, "emptyIds": emptyIds, "emptyWorldPositions": emptyWorldPositions, "emptyRequirements": emptyRequirements,
       "dismantled": dismantledPoints, "dismantledIds": dismantledIds, "dismantledWorldPositions": dismantledWorldPositions, "dismantledRequirements": dismantledRequirements,
    }
+
+# Which real game item each collectable kind actually is once picked up --
+# used only to fold "still left to collect" pickups into the item-search
+# index below (collectCollectables/the map itself key these by "kind", e.g.
+# "slugsBlue", not by item shortName).
+COLLECTABLE_ITEM_SHORT_NAMES = {
+   "slugsBlue": "Desc_Crystal_C",
+   "slugsYellow": "Desc_Crystal_mk2_C",
+   "slugsPurple": "Desc_Crystal_mk3_C",
+   "somersloops": "Desc_WAT1_C",
+   "mercerSpheres": "Desc_WAT2_C",
+}
+HARD_DRIVE_ITEM_SHORT_NAME = "Desc_HardDrive_C"
+
+def _collectStaticItemLocations(levels) -> dict:
+   # Power Slugs/Somersloops/Mercer Spheres/Hard Drives are static world
+   # pickups, not held in any building's inventory -- and unlike a normal
+   # building, they don't have a real ActorHeader to resolve a position from
+   # either (their position data comes from sav_data.slug/somersloop/
+   # mercerSphere/crashSites' hardcoded catalogs, the same source
+   # collectCollectables/collectHardDrives already use to plot them on the
+   # map), so they need their own position carried alongside the item-search
+   # index here rather than resolving through saveIndex["headers"] the way
+   # findItemLocations does for ordinary buildings. Only still-uncollected
+   # pickups / still-present hard drives count -- a collected pickup or an
+   # emptied/dismantled crash site no longer actually holds the item.
+   # Returns itemShortName -> [{"instanceName":, "typePath":, "label":,
+   # "count": 1, "position":, "worldPosition":}, ...].
+   index: dict[str, list] = {}
+
+   def addEntries(itemShortName, label, ids, points, worldPositions):
+      for i in range(len(ids)):
+         index.setdefault(itemShortName, []).append({
+            "instanceName": ids[i],
+            "typePath": None,
+            "label": label,
+            "count": 1,
+            "position": [points[i * 3], points[i * 3 + 1], points[i * 3 + 2]],
+            "worldPosition": [worldPositions[i * 2], worldPositions[i * 2 + 1]],
+         })
+
+   collectables = collectCollectables(levels)
+   collectableLabels = {
+      "slugsBlue": "Blue Power Slug", "slugsYellow": "Yellow Power Slug", "slugsPurple": "Purple Power Slug",
+      "somersloops": "Somersloop", "mercerSpheres": "Mercer Sphere",
+   }
+   for (kind, itemShortName) in COLLECTABLE_ITEM_SHORT_NAMES.items():
+      data = collectables[kind]
+      addEntries(itemShortName, collectableLabels[kind], data["remainingIds"], data["remaining"], data["remainingWorldPositions"])
+
+   hardDrives = collectHardDrives(levels)
+   addEntries(HARD_DRIVE_ITEM_SHORT_NAME, "Hard Drive", hardDrives["hasDriveIds"], hardDrives["hasDrive"], hardDrives["hasDriveWorldPositions"])
+
+   return index
 
 def _textPropertyValue(value):
    # Mirrors sav_parse.parseTextProperty()'s output shapes: [flags, historyType,
@@ -888,6 +1045,11 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
       "stationNameByStationInstance": stationNameByStationInstance,
       "pipeNetworkIdToFluid": pipeNetworkIdToFluid,
       "lightweightInstancesById": lightweightInstancesById,
+      "itemLocationIndex": _collectItemLocationIndex(objectsByInstanceName),
+      "dimensionalDepotByItem": {
+         entry["itemPath"]: entry["count"] for entry in collectDimensionalDepotContents(parsedSave.levels)
+      },
+      "staticItemLocations": _collectStaticItemLocations(parsedSave.levels),
    }
 
 def _resolveComponentObject(saveIndex, properties, propertyName):
@@ -1012,6 +1174,138 @@ def _inventoryContents(componentObject) -> list:
          contents.append({"item": label, "count": countByItem[label]})
    return contents
 
+# Every property name describeInstance resolves via _resolveComponentObject
+# to reach an inventory's "mInventoryStacks" -- used generically here (unlike
+# describeInstance, which checks each by name individually to label its
+# per-field breakdown) since a global item search only cares about total
+# quantity, not which specific inventory slot on a building holds it.
+INVENTORY_PROPERTY_NAMES = (
+   "mInventory", "mInputInventory", "mFuelInventory", "mOutputInventory",
+   "mStorageInventory", "mBufferInventory", "mCouponInventory", "mShopInventory",
+   "mInventoryPotential",
+)
+
+def _collectItemLocationIndex(objectsByInstanceName: dict) -> dict:
+   # One O(n) pass across every object in the save (not just known storage
+   # buildings -- confirmed against a 762k-object save that checking all 9
+   # INVENTORY_PROPERTY_NAMES on literally every object, then walking
+   # matching inventories' stacks, takes ~2.6 seconds total), building a full
+   # itemShortName -> [(instanceName, count), ...] index up front so a "find
+   # item" search (see findItemLocations) becomes an O(1) dict lookup instead
+   # of rescanning the whole save on every query.
+   index: dict[str, list] = {}
+   for (instanceName, object) in objectsByInstanceName.items():
+      countByItem: dict[str, float] = {}
+      for propertyName in INVENTORY_PROPERTY_NAMES:
+         reference = sav_parse.getPropertyValue(object.properties, propertyName)
+         if reference is None or not hasattr(reference, "pathName"):
+            continue
+         componentObject = objectsByInstanceName.get(reference.pathName)
+         if componentObject is None:
+            continue
+         stacks = sav_parse.getPropertyValue(componentObject.properties, "mInventoryStacks")
+         if stacks is None:
+            continue
+         for stack in stacks:
+            item = sav_parse.getPropertyValue(stack[0], "Item")
+            numItems = sav_parse.getPropertyValue(stack[0], "NumItems")
+            if not item or not numItems:
+               continue
+            itemPath = item[0] if isinstance(item, (list, tuple)) else item
+            if itemPath:
+               shortName = itemPath.rsplit(".", 1)[-1]
+               countByItem[shortName] = countByItem.get(shortName, 0) + numItems
+      for (shortName, count) in countByItem.items():
+         index.setdefault(shortName, []).append((instanceName, count))
+   return index
+
+def findItemLocations(saveIndex: dict, itemShortName: str) -> dict:
+   entries = saveIndex.get("itemLocationIndex", {}).get(itemShortName, [])
+   isFluid = _isFluidItemPath(itemShortName)
+   scale = 1000.0 if isFluid else 1.0
+   headers = saveIndex["headers"]
+
+   locations = []
+   totalCount = 0.0
+   for (instanceName, count) in entries:
+      totalCount += count
+      header = headers.get(instanceName)
+      if header is None:
+         continue # Shouldn't happen (index is built from the same objects), but don't let one bad entry break the whole result.
+      (px, py) = projectXY(header.position)
+      typePath = getattr(header, "typePath", None)
+      label = readableLabel(typePath) if typePath else instanceName
+      if typePath == PLAYER_TYPE_PATH:
+         # readableLabel's generic fallback renders this as the nonsensical
+         # "Char, Player" (Char_Player_C isn't in the curated name table) --
+         # same mCachedPlayerName lookup describeInstance uses for a player's
+         # tooltip title.
+         playerObject = saveIndex["objects"].get(instanceName)
+         playerName = sav_parse.getPropertyValue(playerObject.properties, "mCachedPlayerName") if playerObject else None
+         label = "Player: " + playerName if playerName else "Player"
+      locations.append({
+         "instanceName": instanceName,
+         "typePath": typePath,
+         "label": label,
+         "count": round(count / scale, 1) if isFluid else count,
+         # "position" is already map-pixel space (for plotting the point);
+         # "worldPosition" is the raw, un-projected [x, y] (for the tooltip's
+         # Coordinates row/copy button) -- same split as collectResourceNodes/
+         # collectCollectables, since the two aren't interchangeable.
+         "position": [px, py, worldZToMeters(header.position[2])],
+         "worldPosition": [header.position[0], header.position[1]],
+      })
+
+   # The Dimensional Depot's contents aren't tied to any one building's
+   # position (see collectDimensionalDepotContents) -- included as a
+   # pseudo-location with no position/worldPosition, so the frontend lists
+   # it in the sorted results alongside real buildings but skips it when
+   # plotting map pins (there's nowhere on the map for it to point at).
+   depotCount = saveIndex.get("dimensionalDepotByItem", {}).get(itemShortName)
+   if depotCount:
+      totalCount += depotCount
+      locations.append({
+         "instanceName": "dimensional-depot",
+         "typePath": None,
+         "label": "Dimensional Depot",
+         "count": round(depotCount / scale, 1) if isFluid else depotCount,
+         "position": None,
+         "worldPosition": None,
+      })
+
+   # Power Slugs/Somersloops/Mercer Spheres still waiting to be picked up,
+   # and Hard Drives still sitting in their crash site -- see
+   # _collectStaticItemLocations. These already carry a real position (each
+   # pickup is its own map location), unlike the Dimensional Depot above.
+   for staticEntry in saveIndex.get("staticItemLocations", {}).get(itemShortName, []):
+      totalCount += staticEntry["count"]
+      locations.append(dict(staticEntry, count=round(staticEntry["count"] / scale, 1) if isFluid else staticEntry["count"]))
+
+   locations.sort(key=lambda entry: entry["count"], reverse=True)
+
+   return {
+      "itemPath": itemShortName,
+      "label": readableLabel(itemShortName),
+      "isFluid": isFluid,
+      "totalCount": round(totalCount / scale, 1) if isFluid else totalCount,
+      "locations": locations,
+   }
+
+def listSearchableItems() -> list:
+   # Every "Desc_*_C" entry in the game's own readable-name table is a real
+   # inventory item (that prefix is Satisfactory's own convention for an
+   # item descriptor class, as opposed to Build_/Char_/Recipe_/BP_...), so
+   # this needs no separate curated list -- it's independent of any loaded
+   # save (same catalog every time), used to populate the item search's
+   # autocomplete list.
+   items = [
+      {"itemPath": shortName, "label": label}
+      for (shortName, label) in sav_data.readableNames.READABLE_PATH_NAME_CORRECTIONS.items()
+      if shortName.startswith("Desc_")
+   ]
+   items.sort(key=lambda entry: entry["label"])
+   return items
+
 def describeInstance(saveIndex: dict, instanceName: str) -> dict:
    # Lightweight buildables (foundations/walls/ramps/beams/decorative pieces)
    # have no real ActorHeader/Object of their own -- see
@@ -1048,6 +1342,16 @@ def describeInstance(saveIndex: dict, instanceName: str) -> dict:
    if object is None:
       return result
    properties = object.properties
+
+   # mDisplayName is a TextProperty, exposed as [historyType, flags,
+   # isCultureInvariant, actualString] -- the tamed Lizard Doggo's pet name,
+   # if the player renamed it (untamed ones apparently aren't persisted in
+   # the save at all, so this is only ever missing/empty in practice).
+   if typePath == LIZARD_DOGGO_TYPE_PATH:
+      displayName = sav_parse.getPropertyValue(properties, "mDisplayName")
+      petName = displayName[-1] if isinstance(displayName, list) and displayName else None
+      if petName:
+         result["petName"] = petName
 
    # Players are a different kind of actor entirely -- recipes/power/inventory
    # component names below are all production-building concepts that don't
@@ -1285,13 +1589,17 @@ def buildMapPayload(parsedSave: sav_parse.ParsedSave) -> dict:
       "collectables": collectCollectables(parsedSave.levels),
       "hardDrives": collectHardDrives(parsedSave.levels),
       "players": collectPlayers(parsedSave.levels),
+      "creatures": collectCreatures(parsedSave.levels),
       "hub": collectHub(parsedSave.levels),
       "gameSettings": collectGameSettings(parsedSave.levels),
+      "itemCatalog": listSearchableItems(),
+      "dimensionalDepot": collectDimensionalDepotContents(parsedSave.levels),
       "lines": {
          "powerLines": collectPowerLines(parsedSave.levels),
          "belts": collectSplinePaths(parsedSave.levels, CONVEYOR_BELT_ONLY_TYPE_PATHS),
          "pipelines": collectSplinePaths(parsedSave.levels, PIPELINE_SEGMENTS),
          "railroads": collectSplinePaths(parsedSave.levels, RAILROAD_SEGMENTS),
          "hypertubes": collectSplinePaths(parsedSave.levels, HYPERTUBE_SEGMENTS),
+         "vehiclePaths": collectSplinePaths(parsedSave.levels, VEHICLE_PATH_SEGMENTS, splinePropertyName="mSplinePoints"),
       },
    }

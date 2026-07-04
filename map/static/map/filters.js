@@ -104,6 +104,21 @@ var Filters = {};
     '</svg>'
   );
 
+  // Same reasoning as the player icon above -- a simple inline paw-print
+  // silhouette stands in for every wildlife/enemy species (Lizard Doggo,
+  // Hogs, Spitters, Stingers, Crab Hatchers, ...) rather than sourcing a
+  // unique icon per creature; the tooltip/row label still says exactly
+  // which species it is.
+  var CREATURE_COLOR = "#c9a35c";
+  var CREATURE_ICON_URL = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">' +
+    '<circle cx="16" cy="21" r="7" fill="' + CREATURE_COLOR + '"/>' +
+    '<circle cx="7" cy="12" r="4" fill="' + CREATURE_COLOR + '"/>' +
+    '<circle cx="16" cy="7" r="4" fill="' + CREATURE_COLOR + '"/>' +
+    '<circle cx="25" cy="12" r="4" fill="' + CREATURE_COLOR + '"/>' +
+    '</svg>'
+  );
+
   // Simple "home" pentagon silhouette (square body + peaked roof) -- like
   // the player icon above, an inline SVG data: URL avoids adding a binary
   // asset just for this one landmark marker.
@@ -132,6 +147,7 @@ var Filters = {};
     pipelines: "#2ecc71",
     railroads: "#cccccc",
     hypertubes: "#00bcd4",
+    vehiclePaths: "#f39c12",
   };
 
   var LINE_LABELS = {
@@ -140,6 +156,7 @@ var Filters = {};
     pipelines: "Pipeline",
     railroads: "Railroad",
     hypertubes: "Hypertube",
+    vehiclePaths: "Vehicle Path",
   };
 
   // Top-level section order (per the user's explicit choice).
@@ -244,6 +261,21 @@ var Filters = {};
     return e;
   }
 
+  // A checkbox wrapped in a <label> with a slider span, styled in map.css as
+  // an animated on/off switch instead of a native checkbox. The <label>
+  // wrapping means clicking anywhere on the switch (handle or track) toggles
+  // the underlying real <input type=checkbox> exactly like a native
+  // checkbox would -- so all existing .checked/"change"-event logic below
+  // needs no changes, only what gets appended to the DOM.
+  function makeToggle() {
+    var wrapper = el("label", "toggleSwitch");
+    var checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    wrapper.appendChild(checkbox);
+    wrapper.appendChild(el("span", "toggleSlider"));
+    return { wrapper: wrapper, checkbox: checkbox };
+  }
+
   function makeIcon(renderType, color, url) {
     var icon = el("span", "icon icon-" + renderType);
     if (renderType === "icon" && url) {
@@ -297,10 +329,10 @@ var Filters = {};
     var expandToggle = el("span", "expandToggle", options.startCollapsed ? "▸" : "▾");
     titleRow.appendChild(expandToggle);
 
-    var parentCheckbox = document.createElement("input");
-    parentCheckbox.type = "checkbox";
+    var parentToggle = makeToggle();
+    var parentCheckbox = parentToggle.checkbox;
     parentCheckbox.checked = true;
-    titleRow.appendChild(parentCheckbox);
+    titleRow.appendChild(parentToggle.wrapper);
 
     titleRow.appendChild(makeIcon(renderType, swatchColor, options.iconUrl));
     titleRow.appendChild(el("span", "groupLabel", title));
@@ -321,8 +353,8 @@ var Filters = {};
     } else {
       content.forEach(function(row) {
         var rowDiv = el("div", "filterRow");
-        var checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
+        var rowToggle = makeToggle();
+        var checkbox = rowToggle.checkbox;
         // A row's checkbox can control several buckets at once (e.g.
         // Construction merges same-shape/different-material buckets into one
         // row -- see buildConstructionSection), so restoring falls back to
@@ -340,7 +372,7 @@ var Filters = {};
           });
           MapApp.layer.requestRedraw();
         });
-        rowDiv.appendChild(checkbox);
+        rowDiv.appendChild(rowToggle.wrapper);
         rowDiv.appendChild(makeIcon(row.renderType || renderType, row.color || swatchColor, row.iconUrl));
         rowDiv.appendChild(el("label", null, row.label));
         rowDiv.appendChild(el("span", "count", String(row.count)));
@@ -361,10 +393,16 @@ var Filters = {};
       childrenDiv.style.display = collapsed ? "none" : "";
       expandToggle.textContent = collapsed ? "▸" : "▾";
     }
-    expandToggle.addEventListener("click", function() {
-      setCollapsed(childrenDiv.style.display !== "none");
-    });
-    titleRow.querySelector(".groupLabel").addEventListener("click", function() {
+    // The whole title row is clickable (icon swatch, label text, arrow,
+    // and any padding/whitespace between them) rather than just the arrow
+    // glyph or label text -- those were the only two elements with a click
+    // listener before, so clicking anywhere else in the row (a few pixels
+    // either side) silently did nothing. The toggle switch is excluded so
+    // clicking it flips visibility only, without also collapsing the group.
+    titleRow.addEventListener("click", function(e) {
+      if (e.target.closest(".toggleSwitch")) {
+        return;
+      }
       setCollapsed(childrenDiv.style.display !== "none");
     });
 
@@ -457,11 +495,26 @@ var Filters = {};
     }, { startCollapsed: true, iconUrl: url });
   }
 
+  // Every top-level section shows its total count in the header (matching
+  // the building-category sections below) so it's informative even
+  // collapsed -- see buildResourceEntrySection/buildCollectablesSection/
+  // buildHardDrivesSection, all now startCollapsed:true by default.
+  function resourceEntriesTotal(resourceEntries) {
+    var total = 0;
+    resourceEntries.forEach(function(resourceEntry) {
+      ["unmined", "mined"].forEach(function(state) {
+        Object.values(resourceEntry[state].byPurity).forEach(function(p) { total += pointCount(p.points, 3); });
+      });
+    });
+    return total;
+  }
+
   function buildResourceEntrySection(container, title, resourceEntries) {
     if (resourceEntries.length === 0) {
       return;
     }
-    renderGroup(container, title, "circle", NEUTRAL_COLOR, function(childrenDiv) {
+    var total = resourceEntriesTotal(resourceEntries);
+    renderGroup(container, title + " (" + total + ")", "circle", NEUTRAL_COLOR, function(childrenDiv) {
       var checkboxes = [];
       var allBuckets = [];
       resourceEntries.forEach(function(resourceEntry) {
@@ -470,7 +523,7 @@ var Filters = {};
         allBuckets = allBuckets.concat(result.buckets);
       });
       return { buckets: allBuckets, checkboxes: checkboxes };
-    }, { startCollapsed: false });
+    }, { startCollapsed: true });
   }
 
   function buildResourceNodeSection(container, payload) {
@@ -490,7 +543,11 @@ var Filters = {};
       { key: "somersloops", label: "Somersloop", color: SOMERSLOOP_COLOR },
       { key: "mercerSpheres", label: "Mercer Sphere", color: MERCER_SPHERE_COLOR },
     ];
-    renderGroup(container, "Collectables", "circle", NEUTRAL_COLOR, function(childrenDiv) {
+    var total = kinds.reduce(function(sum, kind) {
+      var data = collectables[kind.key];
+      return sum + pointCount(data.remaining, 3) + pointCount(data.collected, 3);
+    }, 0);
+    renderGroup(container, "Collectables (" + total + ")", "circle", NEUTRAL_COLOR, function(childrenDiv) {
       var checkboxes = [];
       var allBuckets = [];
       kinds.forEach(function(kind) {
@@ -515,16 +572,22 @@ var Filters = {};
         var collectedBucket = makeIconBucket(
           "collectable:" + kind.key + ":collected", kind.label, COLLECTED_COLOR, data.collected,
           data.collectedIds, "static", collectedInfo, url, COLLECTED_ICON_OPACITY);
+        var remainingCount = pointCount(data.remaining, 3);
+        var collectedCount = pointCount(data.collected, 3);
         var rows = [
-          { label: "Remaining", count: pointCount(data.remaining, 3), color: kind.color, buckets: [remainingBucket], iconUrl: url },
-          { label: "Collected", count: pointCount(data.collected, 3), color: COLLECTED_COLOR, buckets: [collectedBucket], iconUrl: url },
+          { label: "Remaining", count: remainingCount, color: kind.color, buckets: [remainingBucket], iconUrl: url },
+          { label: "Collected", count: collectedCount, color: COLLECTED_COLOR, buckets: [collectedBucket], iconUrl: url },
         ];
-        var result = renderGroup(childrenDiv, kind.label + "s", "icon", kind.color, rows, { startCollapsed: true, iconUrl: url });
+        // "(collected/total)" instead of just a bare total -- unlike a plain
+        // building count, collection progress (how much of this kind is
+        // already found) is the number worth seeing at a glance here.
+        var kindTitle = kind.label + "s (" + collectedCount + "/" + (remainingCount + collectedCount) + ")";
+        var result = renderGroup(childrenDiv, kindTitle, "icon", kind.color, rows, { startCollapsed: true, iconUrl: url });
         checkboxes.push(result.checkbox);
         allBuckets = allBuckets.concat(result.buckets);
       });
       return { buckets: allBuckets, checkboxes: checkboxes };
-    }, { startCollapsed: false });
+    }, { startCollapsed: true });
   }
 
   // ---- Hard Drives -------------------------------------------------------
@@ -571,7 +634,8 @@ var Filters = {};
       var bucket = makeIconBucket("hd:" + stateKey, HARD_DRIVE_LABELS[stateKey], color, points, ids, "static", tooltipInfo, url, HARD_DRIVE_ICON_OPACITY[stateKey]);
       return { label: HARD_DRIVE_LABELS[stateKey], count: pointCount(points, 3), color: color, buckets: [bucket], iconUrl: url };
     });
-    renderGroup(container, "Hard Drives", "icon", HARD_DRIVE_COLORS.hasDrive, rows, { startCollapsed: false, iconUrl: url });
+    var total = rows.reduce(function(s, r) { return s + r.count; }, 0);
+    renderGroup(container, "Hard Drives (" + total + ")", "icon", HARD_DRIVE_COLORS.hasDrive, rows, { startCollapsed: true, iconUrl: url });
   }
 
   // ---- HUB ------------------------------------------------------------------
@@ -590,21 +654,41 @@ var Filters = {};
     renderGroup(container, "HUB", "icon", HUB_COLOR, rows, { startCollapsed: false, iconUrl: HUB_ICON_URL });
   }
 
-  // ---- Players ------------------------------------------------------------
+  // ---- Entities (Players + wildlife/enemy creatures) ----------------------
 
   // Unlike the other icon buckets above, a player's name/inventory isn't
   // known to the client up front -- it requires the same /api/instance
   // round-trip as buildings (see sav_map_data.describeInstance's player
-  // branch), hence tooltipKind "server" instead of "static".
-  function buildPlayersSection(container, payload) {
+  // branch), hence tooltipKind "server" instead of "static". Creatures don't
+  // have anything like that to fetch (no inventory/name), so their tooltip
+  // is resolved entirely client-side from the species label already in the
+  // payload -- see sav_map_data.collectCreatures.
+  function buildEntitiesSection(container, payload) {
+    var rows = [];
+
     var players = payload.players;
-    var count = pointCount(players.points, 3);
-    if (count === 0) {
+    var playerCount = pointCount(players.points, 3);
+    if (playerCount > 0) {
+      var playerBucket = makeIconBucket("players", "Players", PLAYER_COLOR, players.points, players.ids, "server", null, PLAYER_ICON_URL, 1);
+      rows.push({ label: "Player", count: playerCount, color: PLAYER_COLOR, buckets: [playerBucket], iconUrl: PLAYER_ICON_URL });
+    }
+
+    (payload.creatures || []).forEach(function(creatureType) {
+      var count = pointCount(creatureType.points, 3);
+      if (count === 0) {
+        return;
+      }
+      var bucket = makeIconBucket(
+        "creature:" + creatureType.typePath, creatureType.label, CREATURE_COLOR, creatureType.points,
+        creatureType.ids, "server", null, CREATURE_ICON_URL, 1);
+      rows.push({ label: creatureType.label, count: count, color: CREATURE_COLOR, buckets: [bucket], iconUrl: CREATURE_ICON_URL });
+    });
+
+    if (rows.length === 0) {
       return;
     }
-    var bucket = makeIconBucket("players", "Players", PLAYER_COLOR, players.points, players.ids, "server", null, PLAYER_ICON_URL, 1);
-    var rows = [{ label: "Player", count: count, color: PLAYER_COLOR, buckets: [bucket], iconUrl: PLAYER_ICON_URL }];
-    renderGroup(container, "Players", "icon", PLAYER_COLOR, rows, { startCollapsed: false, iconUrl: PLAYER_ICON_URL });
+    var total = rows.reduce(function(s, r) { return s + r.count; }, 0);
+    renderGroup(container, "Entities (" + total + ")", "icon", PLAYER_COLOR, rows, { startCollapsed: false, iconUrl: PLAYER_ICON_URL });
   }
 
   // ---- Building categories (Production/Power/Storage/Construction/Vehicles/Other) ----
@@ -637,7 +721,7 @@ var Filters = {};
     }
     rows.sort(function(a, b) { return b.count - a.count; });
     var total = rows.reduce(function(s, r) { return s + r.count; }, 0);
-    renderGroup(container, category + " (" + total + ")", "rect", color, rows, { startCollapsed: false });
+    renderGroup(container, category + " (" + total + ")", "rect", color, rows, { startCollapsed: true });
   }
 
   // Shared by Logistics (Fluids/Items/Hypertube) and Vehicles (Trains/Trucks/
@@ -677,7 +761,7 @@ var Filters = {};
         allBuckets = allBuckets.concat(result.buckets);
       });
       return { buckets: allBuckets, checkboxes: checkboxes };
-    }, { startCollapsed: false });
+    }, { startCollapsed: true });
   }
 
   // Construction needs both subcategories (Foundations/Ramps/Walls/...) and,
@@ -727,7 +811,7 @@ var Filters = {};
         allBuckets = allBuckets.concat(result.buckets);
       });
       return { buckets: allBuckets, checkboxes: checkboxes };
-    }, { startCollapsed: false });
+    }, { startCollapsed: true });
   }
 
   function buildBuildingCategorySections(container, payload) {
@@ -743,7 +827,7 @@ var Filters = {};
           { Fluids: "pipelines", Items: "belts", Hypertube: "hypertubes" });
       } else if (category === "Vehicles") {
         buildSubcategorizedSection(container, category, typeEntries, payload.lines, VEHICLE_SUBCATEGORY_ORDER,
-          { Trains: "railroads" });
+          { Trains: "railroads", Trucks: "vehiclePaths" });
       } else if (category === "Power") {
         buildSimpleCategorySection(container, category, typeEntries, [lineRow("powerLines", payload.lines)]);
       } else if (category === "Construction") {
@@ -771,6 +855,7 @@ var Filters = {};
       });
     });
     total += pointCount(payload.players.points, 3);
+    (payload.creatures || []).forEach(function(creatureType) { total += pointCount(creatureType.points, 3); });
     total += pointCount(payload.hub.points, 3);
     Object.keys(payload.collectables).forEach(function(key) {
       var c = payload.collectables[key];
@@ -793,7 +878,7 @@ var Filters = {};
     buildResourceNodeSection(container, payload);
     buildBuildingCategorySections(container, payload);
     buildHubSection(container, payload);
-    buildPlayersSection(container, payload);
+    buildEntitiesSection(container, payload);
     buildCollectablesSection(container, payload);
     buildHardDrivesSection(container, payload);
 

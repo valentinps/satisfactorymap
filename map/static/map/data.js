@@ -246,6 +246,7 @@
         MapApp.currentFile = filename;
         Filters.build(payload);
         Altitude.build(payload);
+        FindItem.build(payload);
         if (pinnedSelection) {
           restorePinnedSelection(pinnedSelection);
         }

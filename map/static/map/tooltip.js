@@ -182,15 +182,20 @@ var Tooltip = {};
     return section;
   }
 
+  // "Details" rather than "Production" -- this same generic row list backs
+  // resource nodes (Purity/Status), collectables (Status), and hard drives
+  // (Status/Requirement), none of which are "production" in any sense, so a
+  // fixed section title has to be one that fits all of them rather than the
+  // machine-specific one buildDetailContent uses below.
   function buildStaticContent(title, rows, z, worldPosition) {
     var root = el("div", "tt-popup");
     root.appendChild(el("div", "tt-title", title));
     root.appendChild(positionSection(z, worldPosition && worldPosition[0], worldPosition && worldPosition[1]));
     if (rows.length > 0) {
-      var production = el("div", "tt-section");
-      production.appendChild(el("div", "tt-section-title", "Production"));
-      rows.forEach(function(pair) { production.appendChild(row(pair[0], pair[1])); });
-      root.appendChild(production);
+      var details = el("div", "tt-section");
+      details.appendChild(el("div", "tt-section-title", "Details"));
+      rows.forEach(function(pair) { details.appendChild(row(pair[0], pair[1])); });
+      root.appendChild(details);
     }
     return root;
   }
@@ -211,31 +216,61 @@ var Tooltip = {};
     return root;
   }
 
+  // Adds a titled section for `rows` ([label, value] pairs) to `root`, but
+  // only if there's actually something to show -- callers build a candidate
+  // row list per topic first so an instance kind that doesn't have that
+  // concept (e.g. a storage container has no "Recipe") just skips the
+  // section entirely instead of showing an empty box.
+  function appendRowSection(root, title, rows) {
+    if (rows.length === 0) {
+      return;
+    }
+    var section = el("div", "tt-section");
+    section.appendChild(el("div", "tt-section-title", title));
+    rows.forEach(function(pair) { section.appendChild(row(pair[0], pair[1])); });
+    root.appendChild(section);
+  }
+
   function buildDetailContent(detail, z) {
     var root = el("div", "tt-popup");
     root.appendChild(el("div", "tt-title", detail.label || detail.instanceName));
     root.appendChild(positionSection(z, detail.position && detail.position[0], detail.position && detail.position[1]));
 
-    // Everything that isn't "where is this" -- recipe/power/status plus
-    // every inventory listing -- grouped under one "Production" heading
-    // instead of a long unnamed list of rows followed by a separate run of
-    // individually-titled inventory sections.
+    // Split by topic instead of one blanket "Production" heading -- a
+    // station name or a belt's load direction isn't production info, and
+    // lumping them in there read as nonsensical for non-machine instances
+    // (storage, stations, players, pipelines...).
+    var statusRows = [];
+    if (detail.petName) statusRows.push(["Name", detail.petName]);
+    if (detail.stationName) statusRows.push(["Station", detail.stationName]);
+    if (detail.runningStatus) statusRows.push(["Status", detail.runningStatus]);
+    if (detail.loadMode) statusRows.push(["Mode", detail.loadMode]);
+    appendRowSection(root, "Status", statusRows);
+
     var productionRows = [];
-    if (detail.stationName) productionRows.push(["Station", detail.stationName]);
     if (detail.recipe) productionRows.push(["Recipe", detail.recipe]);
     if (detail.clockSpeedPercent !== undefined) productionRows.push(["Clock speed", detail.clockSpeedPercent + "%"]);
     if (detail.productionProgressPercent !== undefined) productionRows.push(["Progress", detail.productionProgressPercent + "%"]);
-    if (detail.basePowerConsumptionMW !== undefined) productionRows.push(["Base power", detail.basePowerConsumptionMW + " MW"]);
-    if (detail.basePowerConsumptionRangeMW !== undefined) productionRows.push(["Power range", detail.basePowerConsumptionRangeMW[0] + "-" + detail.basePowerConsumptionRangeMW[1] + " MW"]);
-    if (detail.basePowerConsumptionMeanMW !== undefined) productionRows.push(["Mean power", detail.basePowerConsumptionMeanMW + " MW"]);
-    if (detail.runningStatus) productionRows.push(["Status", detail.runningStatus]);
-    if (detail.powerProductionMW !== undefined) productionRows.push(["Power production", detail.powerProductionMW + " MW"]);
-    if (detail.powerStoredMWh !== undefined) productionRows.push(["Charge", detail.powerStoredMWh + " MWh"]);
-    if (detail.fluidType) productionRows.push(["Fluid type", detail.fluidType]);
-    if (detail.fluidContent !== undefined) productionRows.push(["Fluid content", detail.fluidContent]);
-    if (detail.loadMode) productionRows.push(["Mode", detail.loadMode]);
+    appendRowSection(root, "Production", productionRows);
 
-    var inventorySections = [
+    var powerRows = [];
+    if (detail.basePowerConsumptionMW !== undefined) powerRows.push(["Base power", detail.basePowerConsumptionMW + " MW"]);
+    if (detail.basePowerConsumptionRangeMW !== undefined) powerRows.push(["Power range", detail.basePowerConsumptionRangeMW[0] + "-" + detail.basePowerConsumptionRangeMW[1] + " MW"]);
+    if (detail.basePowerConsumptionMeanMW !== undefined) powerRows.push(["Mean power", detail.basePowerConsumptionMeanMW + " MW"]);
+    if (detail.powerProductionMW !== undefined) powerRows.push(["Power production", detail.powerProductionMW + " MW"]);
+    if (detail.powerStoredMWh !== undefined) powerRows.push(["Charge", detail.powerStoredMWh + " MWh"]);
+    appendRowSection(root, "Power", powerRows);
+
+    var fluidRows = [];
+    if (detail.fluidType) fluidRows.push(["Fluid type", detail.fluidType]);
+    if (detail.fluidContent !== undefined) fluidRows.push(["Fluid content", detail.fluidContent]);
+    appendRowSection(root, "Fluid", fluidRows);
+
+    // Each inventory already carries its own title (Input/Output/Storage/...)
+    // so these are siblings of the sections above, not nested inside any of
+    // them -- nesting a titled box inside another titled box read as an
+    // unrelated sub-grouping rather than "also part of this instance".
+    [
       inventorySection("Items In Transit", detail.itemsOnBelt),
       inventorySection("Input Inventory", detail.inputInventory),
       inventorySection("Output Inventory", detail.outputInventory),
@@ -244,15 +279,11 @@ var Tooltip = {};
       inventorySection("Cargo", detail.cargoInventory),
       inventorySection("Inventory", detail.playerInventory),
       inventorySection("Power Shard / Somersloop Slots", detail.powerShardSlots),
-    ].filter(function(section) { return section !== null; });
-
-    if (productionRows.length > 0 || inventorySections.length > 0) {
-      var production = el("div", "tt-section");
-      production.appendChild(el("div", "tt-section-title", "Production"));
-      productionRows.forEach(function(pair) { production.appendChild(row(pair[0], pair[1])); });
-      inventorySections.forEach(function(section) { production.appendChild(section); });
-      root.appendChild(production);
-    }
+    ].forEach(function(section) {
+      if (section) {
+        root.appendChild(section);
+      }
+    });
 
     if (detail.rawProperties && detail.rawProperties.length > 0) {
       var details = document.createElement("details");

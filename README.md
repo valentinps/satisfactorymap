@@ -29,7 +29,25 @@ The server opens a landing page in your browser where you can choose how to load
 - **Local folder** — point at your Satisfactory save directory
 - **SFTP server** — connect to a dedicated server over SFTP (requires `pip install paramiko`)
 
-The selected mode is remembered across server restarts.
+Each restart lands on the mode-selection page; it does not remember your last choice.
+
+## Building footprints (optional)
+
+By default, buildings without hand-tuned fallback dimensions render as small
+circles on the map instead of their real rotated footprint. To get accurate
+building boxes, download `detailedModels.json` from
+[satisfactory-calculator.com](https://satisfactory-calculator.com)'s
+Interactive Map and place it at `parser/sav_data/detailedModels.json`:
+
+```bash
+curl -o parser/sav_data/detailedModels.json https://static.satisfactory-calculator.com/js/InteractiveMap/build/detailedModels.json
+```
+
+This file is not part of the `sat_sav_parse` submodule or this repo (it's a
+third-party asset, ~130 building types' collision-polygon data credited to
+AnthorNet — see `parser/README.md`) and is gitignored inside the submodule, so
+each clone needs to fetch it manually. The map works without it, just with
+less precise shapes for buildings that lack a fallback footprint.
 
 ## Parser dependency
 

@@ -8,37 +8,63 @@
 </head>
 <body>
 <div id="sidebar">
-  <div id="sidebarHeader">
-    <h1>Satisfactory Save Map</h1>
-    <button id="changeModeBtn" title="Back to mode selection">&#8592; Change mode</button>
+  <div id="sidebarTop">
+    <div id="sidebarHeader">
+      <h1>Satisfactory Save Map</h1>
+      <button id="changeModeBtn" title="Back to mode selection">&#8592; Change mode</button>
+    </div>
+
+    <div id="loadPanel">
+      <label for="saveSelect">Save file</label>
+      <select id="saveSelect"></select>
+      <button id="loadButton">Load</button>
+      <div id="loadStatus"></div>
+      <div id="loadProgressBar"><div id="loadProgressFill"></div></div>
+      <div id="totalObjectCount"></div>
+    </div>
+
+    <div id="sftpPanel" style="display:none"></div>
+
+    <div id="gameSettingsPanel" style="display:none"></div>
+
+    <div id="findItemPanel" style="display:none">
+      <div class="findItemTitle">Find Item</div>
+      <div class="findItemRow">
+        <input type="text" id="findItemInput" list="findItemCatalog" placeholder="Search item...">
+        <datalist id="findItemCatalog"></datalist>
+        <button id="findItemButton">Find</button>
+      </div>
+      <div id="findItemResult" style="display:none">
+        <div id="findItemSummary"></div>
+        <div id="findItemList" class="itemLocationList"></div>
+        <button id="findItemHighlightToggle">Show only these on map</button>
+      </div>
+    </div>
+
+    <div id="dimensionalDepotPanel" style="display:none">
+      <button id="dimensionalDepotButton">Dimensional Depot Contents</button>
+      <div id="dimensionalDepotList" class="itemLocationList" style="display:none"></div>
+    </div>
   </div>
 
-  <div id="loadPanel">
-    <label for="saveSelect">Save file</label>
-    <select id="saveSelect"></select>
-    <button id="loadButton">Load</button>
-    <div id="loadStatus"></div>
-    <div id="loadProgressBar"><div id="loadProgressFill"></div></div>
-    <div id="totalObjectCount"></div>
+  <div id="sidebarScroll">
+    <div id="filterPanelHeader">
+      <span id="filterPanelTitle">Map Layers</span>
+      <button id="uncheckAllButton" title="Hide everything on the map">Uncheck all</button>
+    </div>
+    <div id="filterPanel"></div>
   </div>
-
-  <div id="sftpPanel" style="display:none"></div>
-
-  <div id="gameSettingsPanel" style="display:none"></div>
-
-  <div id="filterPanelHeader">
-    <button id="uncheckAllButton" title="Hide everything on the map">Uncheck all</button>
-  </div>
-  <div id="filterPanel"></div>
 </div>
 <div id="map"></div>
 
 <div id="altitudePanel" style="display:none">
   <div class="altitudeTitle">Altitude</div>
   <div id="altitudeMaxLabel" class="altitudeValue"></div>
-  <div class="altitudeSliders">
-    <input type="range" id="altitudeMaxSlider" title="Maximum altitude">
-    <input type="range" id="altitudeMinSlider" title="Minimum altitude">
+  <div class="altitudeTrackWrap">
+    <div class="altitudeTrackBg"></div>
+    <div id="altitudeTrackFill" class="altitudeTrackFill"></div>
+    <input type="range" id="altitudeMaxSlider" class="altitudeRangeInput" title="Maximum altitude">
+    <input type="range" id="altitudeMinSlider" class="altitudeRangeInput" title="Minimum altitude">
   </div>
   <div id="altitudeMinLabel" class="altitudeValue"></div>
   <button id="altitudeResetButton">Reset</button>
@@ -49,6 +75,7 @@
 <script src="filters.js"></script>
 <script src="altitude.js"></script>
 <script src="tooltip.js"></script>
+<script src="finditem.js"></script>
 <script src="data.js"></script>
 </body>
 </html>

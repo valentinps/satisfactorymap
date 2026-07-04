@@ -408,6 +408,18 @@ def apiInstance():
       return flask.jsonify({"error": "This save isn't currently loaded. Click Load again, then retry."}), 409
    return flask.jsonify(sav_map_data.describeInstance(saveIndex, instanceName))
 
+@app.route("/api/find-item")
+def apiFindItem():
+   filename = flask.request.args.get("file")
+   itemPath = flask.request.args.get("item")
+   if not filename or not os.path.isfile(filename) or not itemPath:
+      return flask.jsonify({"error": "Missing or invalid file/item parameter."}), 400
+   cacheKey  = (filename, os.path.getmtime(filename))
+   saveIndex = saveIndexCache.get(cacheKey)
+   if saveIndex is None:
+      return flask.jsonify({"error": "This save isn't currently loaded. Click Load again, then retry."}), 409
+   return flask.jsonify(sav_map_data.findItemLocations(saveIndex, itemPath))
+
 @app.route("/map_highres.png")
 def mapImage():
    return flask.send_from_directory(REPO_ROOT, "map_highres.png")
