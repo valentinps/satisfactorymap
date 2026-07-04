@@ -750,9 +750,17 @@ def collectHardDrives(levels) -> dict:
       points = []
       ids = []
       worldPositions = []
+      # What a crash site demands before it'll hand over its hard drive --
+      # either an item stack (sav_data.crashSites.CRASH_SITES' "cost" entry,
+      # e.g. ("Steel Beam", 130)) or a power hookup ("power" entry, in MW);
+      # the two never appear on the same site. None for crash sites with
+      # neither. Parallels points/ids/worldPositions (same skip, same order)
+      # so index i's requirement always matches index i's position everywhere else.
+      requirements = []
       for instanceName in instanceNames:
          if instanceName in sav_data.crashSites.CRASH_SITES:
-            position = sav_data.crashSites.CRASH_SITES[instanceName][2]
+            crashSite = sav_data.crashSites.CRASH_SITES[instanceName]
+            position = crashSite[2]
             (px, py) = projectXY(position)
             points.append(px)
             points.append(py)
@@ -762,17 +770,30 @@ def collectHardDrives(levels) -> dict:
             # same reasoning applies here once a hard drive is dismantled.
             worldPositions.append(position[0])
             worldPositions.append(position[1])
-      return (points, ids, worldPositions)
+            info = crashSite[3]
+            cost = info.get("cost")
+            power = info.get("power")
+            if cost:
+               requirement = {"type": "cost", "item": cost[0], "quantity": cost[1]}
+            elif power is not None:
+               requirement = {"type": "power", "watts": power}
+            else:
+               requirement = None
+            requirements.append(requirement)
+      return (points, ids, worldPositions, requirements)
 
-   (notOpenedPoints, notOpenedIds, notOpenedWorldPositions) = bucketFor(notOpened)
-   (openWithDrivePoints, openWithDriveIds, openWithDriveWorldPositions) = bucketFor(openWithDrive)
-   (openEmptyPoints, openEmptyIds, openEmptyWorldPositions) = bucketFor(openAndEmpty)
-   (dismantledPoints, dismantledIds, dismantledWorldPositions) = bucketFor(dismantled)
+   # "Not yet opened" and "opened but the drive's still sitting there" are
+   # both just "there's a drive here to go get" from a map-reading point of
+   # view, so they're merged into one "hasDrive" bucket rather than kept as
+   # separate categories -- only whether the drive is still gettable, and
+   # what it costs to open, actually matters here.
+   (hasDrivePoints, hasDriveIds, hasDriveWorldPositions, hasDriveRequirements) = bucketFor(notOpened + openWithDrive)
+   (emptyPoints, emptyIds, emptyWorldPositions, emptyRequirements) = bucketFor(openAndEmpty)
+   (dismantledPoints, dismantledIds, dismantledWorldPositions, dismantledRequirements) = bucketFor(dismantled)
    return {
-      "notOpened": notOpenedPoints, "notOpenedIds": notOpenedIds, "notOpenedWorldPositions": notOpenedWorldPositions,
-      "openWithDrive": openWithDrivePoints, "openWithDriveIds": openWithDriveIds, "openWithDriveWorldPositions": openWithDriveWorldPositions,
-      "openEmpty": openEmptyPoints, "openEmptyIds": openEmptyIds, "openEmptyWorldPositions": openEmptyWorldPositions,
-      "dismantled": dismantledPoints, "dismantledIds": dismantledIds, "dismantledWorldPositions": dismantledWorldPositions,
+      "hasDrive": hasDrivePoints, "hasDriveIds": hasDriveIds, "hasDriveWorldPositions": hasDriveWorldPositions, "hasDriveRequirements": hasDriveRequirements,
+      "empty": emptyPoints, "emptyIds": emptyIds, "emptyWorldPositions": emptyWorldPositions, "emptyRequirements": emptyRequirements,
+      "dismantled": dismantledPoints, "dismantledIds": dismantledIds, "dismantledWorldPositions": dismantledWorldPositions, "dismantledRequirements": dismantledRequirements,
    }
 
 def _textPropertyValue(value):

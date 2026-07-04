@@ -115,16 +115,14 @@ var Filters = {};
   );
 
   var HARD_DRIVE_COLORS = {
-    notOpened: "#3355ff",
-    openWithDrive: "#00cc00",
-    openEmpty: "#cccccc",
+    hasDrive: "#3355ff",
+    empty: "#cccccc",
     dismantled: "#00cccc",
   };
 
   var HARD_DRIVE_LABELS = {
-    notOpened: "Not Opened",
-    openWithDrive: "Open, Drive Inside",
-    openEmpty: "Open, Empty",
+    hasDrive: "Has Drive",
+    empty: "Empty",
     dismantled: "Dismantled",
   };
 
@@ -174,6 +172,14 @@ var Filters = {};
   function pointCount(points, stride) {
     return Math.floor(points.length / stride);
   }
+
+  // Bucket keys (e.g. "building:Desc_ConstructorMk1_C", "node:...", "line:belts")
+  // are stable identifiers for a *kind* of thing, not a specific save's data --
+  // so a visibility choice made here survives both a same-file auto-refresh
+  // (see data.js's checkForNewerSave) and switching to an entirely different
+  // save. Persists for the life of the page (rebuilt fresh only on reload),
+  // deliberately never cleared by Filters.build itself.
+  var savedVisibility = {};
 
   // tooltipInfo(idx) -> {title, rows: [[label, value], ...]} for a "static"
   // bucket (no server round-trip; we already know everything worth showing).
@@ -317,9 +323,21 @@ var Filters = {};
         var rowDiv = el("div", "filterRow");
         var checkbox = document.createElement("input");
         checkbox.type = "checkbox";
-        checkbox.checked = true;
+        // A row's checkbox can control several buckets at once (e.g.
+        // Construction merges same-shape/different-material buckets into one
+        // row -- see buildConstructionSection), so restoring falls back to
+        // "visible" unless a previous visit explicitly recorded otherwise for
+        // one of them; in practice they're always toggled together.
+        var restoredVisible = row.buckets.reduce(function(acc, bucket) {
+          return savedVisibility.hasOwnProperty(bucket.key) ? savedVisibility[bucket.key] : acc;
+        }, true);
+        checkbox.checked = restoredVisible;
+        row.buckets.forEach(function(bucket) { bucket.visible = restoredVisible; });
         checkbox.addEventListener("change", function() {
-          row.buckets.forEach(function(bucket) { bucket.visible = checkbox.checked; });
+          row.buckets.forEach(function(bucket) {
+            bucket.visible = checkbox.checked;
+            savedVisibility[bucket.key] = checkbox.checked;
+          });
           MapApp.layer.requestRedraw();
         });
         rowDiv.appendChild(checkbox);
@@ -358,7 +376,10 @@ var Filters = {};
       // then redraw exactly once for the whole toggle -- instead of once
       // per descendant leaf row.
       childCheckboxes.forEach(function(checkbox) { setCheckedDeep(checkbox, checked); });
-      allBuckets.forEach(function(bucket) { bucket.visible = checked; });
+      allBuckets.forEach(function(bucket) {
+        bucket.visible = checked;
+        savedVisibility[bucket.key] = checked;
+      });
       MapApp.layer.requestRedraw();
     });
 
@@ -508,32 +529,49 @@ var Filters = {};
 
   // ---- Hard Drives -------------------------------------------------------
 
-  // "notOpened"/"openWithDrive" still have something for the player to get
-  // (full opacity); "openEmpty"/"dismantled" are already dealt with (dimmed)
-  // -- same icon throughout, since it's still physically a hard drive crate.
+  // "hasDrive" still has something for the player to get (full opacity);
+  // "empty"/"dismantled" are already dealt with (dimmed) -- same icon
+  // throughout, since it's still physically a hard drive crate.
   var HARD_DRIVE_ICON_OPACITY = {
-    notOpened: 1, openWithDrive: 1, openEmpty: COLLECTED_ICON_OPACITY, dismantled: COLLECTED_ICON_OPACITY,
+    hasDrive: 1, empty: COLLECTED_ICON_OPACITY, dismantled: COLLECTED_ICON_OPACITY,
   };
 
   function buildHardDrivesSection(container, payload) {
     var hardDrives = payload.hardDrives;
-    var stateKeys = ["notOpened", "openWithDrive", "openEmpty", "dismantled"];
+    var stateKeys = ["hasDrive", "empty", "dismantled"];
     var url = iconUrl("hardDrive");
     var rows = stateKeys.map(function(stateKey) {
       var color = HARD_DRIVE_COLORS[stateKey];
       var points = hardDrives[stateKey];
       var ids = hardDrives[stateKey + "Ids"];
       var worldPositions = hardDrives[stateKey + "WorldPositions"];
+      // What a crash site demands before it hands over its hard drive --
+      // either an item stack or a power hookup (see
+      // sav_map_data.collectHardDrives) -- always shown, explicitly as
+      // "None" rather than omitting the row, so its absence reads as a
+      // known fact rather than missing data.
+      var requirements = hardDrives[stateKey + "Requirements"];
+      function requirementText(requirement) {
+        if (!requirement) {
+          return "None";
+        }
+        if (requirement.type === "power") {
+          return requirement.watts + "W Power";
+        }
+        return requirement.quantity + "x " + requirement.item;
+      }
       // See sav_map_data.collectHardDrives -- needed even once dismantled,
       // since the actor itself is gone from the save by then.
       var tooltipInfo = function(index) {
         var position = worldPositions ? [worldPositions[index * 2], worldPositions[index * 2 + 1]] : undefined;
-        return { title: "Hard Drive", rows: [["Status", HARD_DRIVE_LABELS[stateKey]]], position: position };
+        var requirement = requirements ? requirements[index] : null;
+        var rows = [["Status", HARD_DRIVE_LABELS[stateKey]], ["Requirement", requirementText(requirement)]];
+        return { title: "Hard Drive", rows: rows, position: position };
       };
       var bucket = makeIconBucket("hd:" + stateKey, HARD_DRIVE_LABELS[stateKey], color, points, ids, "static", tooltipInfo, url, HARD_DRIVE_ICON_OPACITY[stateKey]);
       return { label: HARD_DRIVE_LABELS[stateKey], count: pointCount(points, 3), color: color, buckets: [bucket], iconUrl: url };
     });
-    renderGroup(container, "Hard Drives", "icon", HARD_DRIVE_COLORS.notOpened, rows, { startCollapsed: false, iconUrl: url });
+    renderGroup(container, "Hard Drives", "icon", HARD_DRIVE_COLORS.hasDrive, rows, { startCollapsed: false, iconUrl: url });
   }
 
   // ---- HUB ------------------------------------------------------------------
@@ -738,7 +776,7 @@ var Filters = {};
       var c = payload.collectables[key];
       total += pointCount(c.remaining, 3) + pointCount(c.collected, 3);
     });
-    ["notOpened", "openWithDrive", "openEmpty", "dismantled"].forEach(function(key) {
+    ["hasDrive", "empty", "dismantled"].forEach(function(key) {
       total += pointCount(payload.hardDrives[key], 3);
     });
     Object.keys(payload.lines).forEach(function(key) {
@@ -766,4 +804,26 @@ var Filters = {};
 
     MapApp.layer.requestRedraw();
   };
+
+  // "Uncheck all" -- every checkbox at every nesting level (top-level
+  // sections, subcategories, and leaf rows) is a real DOM checkbox somewhere
+  // under #filterPanel, so unchecking all of them plus every bucket covers
+  // the whole tree in one pass without needing to walk the group structure
+  // itself. Recorded into savedVisibility too, same as any other toggle (see
+  // the row/parent checkbox handlers above), so it survives a reload.
+  var uncheckAllButton = document.getElementById("uncheckAllButton");
+  if (uncheckAllButton) {
+    uncheckAllButton.addEventListener("click", function() {
+      var filterPanel = document.getElementById("filterPanel");
+      var checkboxes = filterPanel.querySelectorAll("input[type=checkbox]");
+      for (var i = 0; i < checkboxes.length; i++) {
+        checkboxes[i].checked = false;
+      }
+      MapApp.layer.buckets.forEach(function(bucket) {
+        bucket.visible = false;
+        savedVisibility[bucket.key] = false;
+      });
+      MapApp.layer.requestRedraw();
+    });
+  }
 })();

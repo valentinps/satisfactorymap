@@ -31,6 +31,14 @@ var Altitude = {};
   }
   window.addEventListener("resize", layoutSliders);
 
+  // Remembers the user's last chosen min/max (in absolute meters) across
+  // rebuilds -- e.g. an auto-refresh reload (see data.js's checkForNewerSave)
+  // shouldn't snap a deliberately narrowed altitude filter back open just
+  // because a newer save was parsed. Left null until the user actually moves
+  // a handle (or clicks Reset), so the very first build for a save still
+  // gets the plain full-range default.
+  var savedRange = null;
+
   function scanRange(points, stride, current) {
     var altIndex = stride - 1;
     for (var i = altIndex; i < points.length; i += stride) {
@@ -55,7 +63,7 @@ var Altitude = {};
       scanRange(c.remaining, 3, current);
       scanRange(c.collected, 3, current);
     });
-    ["notOpened", "openWithDrive", "openEmpty", "dismantled"].forEach(function(key) {
+    ["hasDrive", "empty", "dismantled"].forEach(function(key) {
       scanRange(payload.hardDrives[key], 3, current);
     });
     Object.keys(payload.lines).forEach(function(key) {
@@ -87,6 +95,7 @@ var Altitude = {};
       }
     }
     updateLabel(min, max);
+    savedRange = { min: min, max: max };
     MapApp.setAltitudeRange(min, max);
   }
 
@@ -100,10 +109,24 @@ var Altitude = {};
       slider.max = hi;
       slider.step = 1;
     });
-    minSlider.value = lo;
-    maxSlider.value = hi;
-    updateLabel(lo, hi);
-    MapApp.setAltitudeRange(-Infinity, Infinity); // Full range -- nothing filtered until the user moves a handle.
+
+    // Restore a previously chosen range (clamped to this build's actual
+    // altitude span, which can shift slightly build-to-build) instead of
+    // always reopening to the full range -- see savedRange above.
+    var initMin = lo, initMax = hi;
+    if (savedRange) {
+      initMin = Math.min(Math.max(savedRange.min, lo), hi);
+      initMax = Math.min(Math.max(savedRange.max, lo), hi);
+      if (initMin > initMax) {
+        initMin = lo;
+        initMax = hi;
+      }
+    }
+    minSlider.value = initMin;
+    maxSlider.value = initMax;
+    updateLabel(initMin, initMax);
+    var isFullRange = initMin === lo && initMax === hi;
+    MapApp.setAltitudeRange(isFullRange ? -Infinity : initMin, isFullRange ? Infinity : initMax);
 
     panel.style.display = "flex";
     layoutSliders();
@@ -115,6 +138,7 @@ var Altitude = {};
     minSlider.value = minSlider.min;
     maxSlider.value = maxSlider.max;
     updateLabel(parseFloat(minSlider.min), parseFloat(maxSlider.max));
+    savedRange = { min: parseFloat(minSlider.min), max: parseFloat(maxSlider.max) };
     MapApp.setAltitudeRange(-Infinity, Infinity);
   });
 })();

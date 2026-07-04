@@ -199,11 +199,34 @@
     return pollTimer;
   }
 
+  // Buckets are entirely rebuilt by Filters.build on every load (fresh
+  // objects, even for the exact same building), so a pinned tooltip/highlight
+  // can't just be left alone -- it has to be captured by stable bucket key +
+  // id before the rebuild and re-resolved against the new buckets afterward.
+  // Without this, --auto mode picking up a newer save (see checkForNewerSave)
+  // would silently drop whatever the user was inspecting every ~10s.
+  function restorePinnedSelection(selection) {
+    var bucket = MapApp.layer.buckets.filter(function(b) { return b.key === selection.bucketKey; })[0];
+    if (!bucket || !bucket.ids) {
+      return; // That kind of thing no longer exists in the new payload.
+    }
+    var idx = bucket.ids.indexOf(selection.id);
+    if (idx === -1) {
+      return; // That specific instance is gone (dismantled/collected/etc).
+    }
+    var stride = bucket.pointStride;
+    var z = bucket.renderType === "line" ? bucket.lines[idx][stride - 1] : bucket.points[idx * stride + stride - 1];
+    var hit = { bucket: bucket, id: selection.id, index: idx, z: z };
+    Tooltip.pin(selection.clientX, selection.clientY, hit);
+    MapApp.setHighlight(bucket, selection.id);
+  }
+
   function loadSelectedSave() {
     var filename = saveSelect.value;
     if (!filename) {
       return;
     }
+    var pinnedSelection = Tooltip.getPinnedSelection();
     showProgress("Starting", 0);
     loadButton.disabled = true;
     var pollTimer = pollProgress();
@@ -223,6 +246,9 @@
         MapApp.currentFile = filename;
         Filters.build(payload);
         Altitude.build(payload);
+        if (pinnedSelection) {
+          restorePinnedSelection(pinnedSelection);
+        }
         showGameSettings(payload.gameSettings);
         var loadedSave = lastSaves.filter(function(save) { return save.filename === filename; })[0];
         currentLoadedMtime = loadedSave ? loadedSave.mtime : Date.now() / 1000;

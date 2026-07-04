@@ -25,6 +25,20 @@ var Tooltip = {};
   var pendingTimer = null;
   var pinned = false;
 
+  // Identifies the pinned selection independent of any particular bucket
+  // *object* (which gets discarded and rebuilt wholesale on every reload --
+  // see filters.js's Filters.build) so data.js can re-resolve and re-pin the
+  // same logical thing after a reload, e.g. an auto-refresh picking up a
+  // newer save shouldn't silently drop whatever the user was inspecting.
+  // bucketKey is the stable key set on every bucket (see filters.js's
+  // makePointBucket/makeIconBucket/makeLineBucket); lastClientX/Y are needed
+  // to re-pin at the same screen position since Tooltip.pin takes screen
+  // coordinates, not just a hit.
+  var pinnedBucketKey = null;
+  var pinnedId = null;
+  var lastClientX = 0;
+  var lastClientY = 0;
+
   function ensureElement() {
     if (!tooltipEl) {
       tooltipEl = document.createElement("div");
@@ -35,6 +49,8 @@ var Tooltip = {};
   }
 
   function position(clientX, clientY) {
+    lastClientX = clientX;
+    lastClientY = clientY;
     var element = ensureElement();
     var offset = 14;
     var x = clientX + offset;
@@ -135,13 +151,13 @@ var Tooltip = {};
     return button;
   }
 
-  // worldX/worldY are the save's own raw world-space units (the same
-  // numbers the game's own debug coordinates/teleport commands use) --
-  // deliberately NOT the meters conversion Altitude uses, since these are
-  // meant to be copy-pasted elsewhere, where the raw units are what's
-  // actually useful. Shown as "..." (no copy icon) until known -- see
-  // buildStaticContent's background position fetch, the one case where
-  // these aren't available immediately.
+  // worldX/worldY are the save's own raw world-space units. The row itself
+  // still displays those raw units, but the in-game coordinate display (and
+  // teleport commands) use a value 100x smaller -- so the copy button
+  // converts on the way out rather than copying what's actually shown.
+  // Shown as "..." (no copy icon) until known -- see buildStaticContent's
+  // background position fetch, the one case where these aren't available
+  // immediately.
   function coordinatesRow(worldX, worldY) {
     var known = worldX !== undefined && worldY !== undefined;
     var text = known ? Math.round(worldX) + ", " + Math.round(worldY) : "...";
@@ -149,7 +165,7 @@ var Tooltip = {};
     var labelWrap = el("span", "tt-row-label-with-icon");
     labelWrap.appendChild(el("span", null, "Coordinates"));
     if (known) {
-      labelWrap.appendChild(copyIconButton(function() { return Math.round(worldX) + ", " + Math.round(worldY); }));
+      labelWrap.appendChild(copyIconButton(function() { return Math.round(worldX / 100) + ", " + Math.round(worldY / 100); }));
     }
     r.appendChild(labelWrap);
     r.appendChild(el("span", "tt-row-value", text));
@@ -318,6 +334,8 @@ var Tooltip = {};
   Tooltip.hide = function() {
     currentId = null;
     pinned = false;
+    pinnedBucketKey = null;
+    pinnedId = null;
     if (pendingTimer) {
       clearTimeout(pendingTimer);
       pendingTimer = null;
@@ -326,6 +344,17 @@ var Tooltip = {};
       tooltipEl.style.display = "none";
       tooltipEl.style.pointerEvents = "none";
     }
+  };
+
+  // Snapshot of the pinned selection, if any, for data.js to carry across a
+  // reload (see comment on pinnedBucketKey above). Returns null when nothing
+  // is pinned -- a plain hover preview isn't worth preserving since it'll
+  // naturally reappear the moment the mouse moves again.
+  Tooltip.getPinnedSelection = function() {
+    if (!pinned || !pinnedBucketKey) {
+      return null;
+    }
+    return { bucketKey: pinnedBucketKey, id: pinnedId, clientX: lastClientX, clientY: lastClientY };
   };
 
   // Hover preview -- ignored entirely while a tooltip is pinned (see map.js's
@@ -339,6 +368,8 @@ var Tooltip = {};
   Tooltip.pin = function(clientX, clientY, hit) {
     currentId = null; // Force renderHit to treat this as a fresh hit even if already showing via hover.
     pinned = true;
+    pinnedBucketKey = hit.bucket.key;
+    pinnedId = hit.id;
     ensureElement().style.pointerEvents = "auto";
     renderHit(clientX, clientY, hit);
   };

@@ -47,7 +47,6 @@ import sav_map_data
 STATIC_DIR       = os.path.join(_MAP_DIR, "static", "map")
 MAP_IMAGE_FILE   = os.path.join(REPO_ROOT, "map_highres.png")
 SFTP_CONFIG_FILE = os.path.join(REPO_ROOT, "sftp_config.json")
-SERVER_CONFIG_FILE = os.path.join(REPO_ROOT, "server_config.json")
 UPLOADS_DIR      = os.path.join(_MAP_DIR, "uploads")
 
 app = flask.Flask(__name__, static_folder=STATIC_DIR, static_url_path="")
@@ -68,26 +67,12 @@ class _ProgressBarHook(sav_parse.ProgressBar):
 sav_parse.ProgressBar = _ProgressBarHook
 
 # ---------------------------------------------------------------------------
-# Mode state  (set once by the landing page, persisted across server restarts)
+# Mode state  (set once per run by the landing page -- NOT persisted across
+# server restarts, so every launch shows the landing page again)
 # ---------------------------------------------------------------------------
 
 # type: None | "upload" | "local" | "sftp"
 currentMode: dict = {"type": None}
-
-def _saveServerConfig() -> None:
-   if currentMode["type"] in ("local", "sftp"):
-      try:
-         with open(SERVER_CONFIG_FILE, "w") as f:
-            json.dump(currentMode, f, indent=2)
-      except Exception as e:
-         print(f"Warning: could not save server config: {e}", file=sys.stderr)
-
-def _clearServerConfig() -> None:
-   try:
-      if os.path.isfile(SERVER_CONFIG_FILE):
-         os.remove(SERVER_CONFIG_FILE)
-   except Exception:
-      pass
 
 # ---------------------------------------------------------------------------
 # SFTP sync
@@ -194,7 +179,6 @@ def _applyLocalMode(path: str) -> None:
       _sftpStopEvent.set()
    currentMode.clear()
    currentMode.update({"type": "local", "path": path})
-   _saveServerConfig()
 
 def _applySftpMode(config: dict) -> None:
    localDir = _sftpLocalDir(config)
@@ -204,7 +188,6 @@ def _applySftpMode(config: dict) -> None:
    app.config["SFTP_CONFIG"] = config
    currentMode.clear()
    currentMode.update({"type": "sftp"})
-   _saveServerConfig()
    _startSftpLoop(config)
    print(f"SFTP: syncing {config['host']}:{config['remote_path']} → {localDir} "
          f"(every {config.get('sync_interval_seconds', 60)}s)")
@@ -218,34 +201,6 @@ def _applyUploadMode() -> None:
       _sftpStopEvent.set()
    currentMode.clear()
    currentMode.update({"type": "upload"})
-   # Upload mode is ephemeral — not written to server_config.json
-
-def _restoreMode() -> None:
-   """Called once at startup: re-applies the previously configured mode."""
-   if not os.path.isfile(SERVER_CONFIG_FILE):
-      return
-   try:
-      with open(SERVER_CONFIG_FILE, "r") as f:
-         cfg = json.load(f)
-      modeType = cfg.get("type")
-      if modeType == "local":
-         path = cfg.get("path", "")
-         if os.path.isdir(path):
-            _applyLocalMode(path)
-            print(f"Restored local mode: {path}")
-         else:
-            print(f"Warning: saved local path {path!r} no longer exists; showing landing page.")
-            _clearServerConfig()
-      elif modeType == "sftp":
-         sftpCfg = _loadSftpConfig()
-         if sftpCfg:
-            _applySftpMode(sftpCfg)
-            print("Restored SFTP mode.")
-         else:
-            print("Warning: server_config.json says SFTP but sftp_config.json missing; showing landing page.")
-            _clearServerConfig()
-   except Exception as e:
-      print(f"Warning: could not restore server config: {e}", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # SFTP config file helpers
@@ -376,7 +331,6 @@ def apiResetMode():
    app.config.pop("SFTP_CONFIG", None)
    if _sftpStopEvent is not None:
       _sftpStopEvent.set()
-   _clearServerConfig()
    return flask.jsonify({"ok": True})
 
 @app.route("/api/saves")
@@ -473,14 +427,8 @@ def main():
       print(f"ERROR: map_highres.png not found in {REPO_ROOT}.", file=sys.stderr)
       sys.exit(1)
 
-   _restoreMode()
-
    url = f"http://{args.host}:{args.port}/"
    print(f"Map viewer: {url}")
-   if currentMode["type"]:
-      print(f"Mode restored: {currentMode['type']}")
-   else:
-      print("No mode configured — landing page will be shown.")
    if not args.no_browser:
       webbrowser.open(url)
    app.run(host=args.host, port=args.port, debug=False, threaded=True)
