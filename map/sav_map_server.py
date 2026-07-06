@@ -420,6 +420,19 @@ def apiFindItem():
       return flask.jsonify({"error": "This save isn't currently loaded. Click Load again, then retry."}), 409
    return flask.jsonify(sav_map_data.findItemLocations(saveIndex, itemPath))
 
+@app.route("/api/building-info")
+def apiBuildingInfo():
+   filename = flask.request.args.get("file")
+   typesParam = flask.request.args.get("types")
+   if not filename or not os.path.isfile(filename) or not typesParam:
+      return flask.jsonify({"error": "Missing or invalid file/types parameter."}), 400
+   cacheKey  = (filename, os.path.getmtime(filename))
+   saveIndex = saveIndexCache.get(cacheKey)
+   if saveIndex is None:
+      return flask.jsonify({"error": "This save isn't currently loaded. Click Load again, then retry."}), 409
+   typePaths = typesParam.split(",")
+   return flask.jsonify(sav_map_data.collectBuildingInfo(saveIndex, typePaths))
+
 @app.route("/api/selection-inventory", methods=["POST"])
 def apiSelectionInventory():
    data = flask.request.get_json(force=True) or {}

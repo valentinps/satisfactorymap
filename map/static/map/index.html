@@ -93,6 +93,31 @@
   </div>
 </div>
 
+<!-- Building info window (see finditem.js's Building object) -- opened from a
+     building search suggestion (click or Enter). Distinct from #itemModal
+     since a building's save-wide summary (count/recipes/power/inventory) has
+     a richer shape than an item's plain location list. -->
+<div id="buildingModalOverlay" style="display:none">
+  <div id="buildingModal">
+    <div id="buildingModalHeader">
+      <img id="buildingModalIcon" alt="">
+      <div id="buildingModalHeadings">
+        <span id="buildingModalTitle"></span>
+        <span id="buildingModalCategory"></span>
+      </div>
+      <button id="buildingModalClose" title="Close">&times;</button>
+    </div>
+    <div id="buildingModalSummary"></div>
+    <div id="buildingModalStats"></div>
+    <div id="buildingModalScroll">
+      <div id="buildingModalRecipes"></div>
+      <div id="buildingModalInventoryLabel" class="buildingModalSectionLabel" style="display:none">Combined inventory</div>
+      <div id="buildingModalInventory" class="itemLocationList"></div>
+    </div>
+    <button id="buildingModalHighlightToggle">Show only this on map</button>
+  </div>
+</div>
+
 <!-- Right-drag rectangle selection (see selection.js). -->
 <div id="selectionRect" style="display:none"></div>
 

@@ -77,6 +77,14 @@ KNOWN_DESCRIPTOR_TO_BUILD_CORRECTIONS = {
    "Desc_PowerPoleWallDoubleMk2_C": "Build_PowerPoleWallDouble_Mk2_C",
    "Desc_PowerPoleWallDoubleMk3_C": "Build_PowerPoleWallDouble_Mk3_C",
    "Foundation_ConcretePolished_8x2_C": "Build_Foundation_ConcretePolished_8x2_2_C",
+   "Desc_CatwalkTurn_C": "Build_CatwalkCorner_C",  # the buildable was renamed "Corner", the descriptor wasn't
+   # The descriptor's "_Steel" suffix has no counterpart on the real buildable.
+   "Desc_Wall_Window_8x4_03_Steel_C": "Build_Wall_Window_8x4_03_C",
+   # The descriptors use a "4x*" size token, but the real buildable (a
+   # FGBuildableFoundationLightweight, displayName "Half Foundation") uses "8x*".
+   "Desc_QuarterPipeMiddle_Ficsit_4x1_C": "Build_QuarterPipeMiddle_Ficsit_8x1_C",
+   "Desc_QuarterPipeMiddle_Ficsit_4x2_C": "Build_QuarterPipeMiddle_Ficsit_8x2_C",
+   "Desc_QuarterPipeMiddle_Ficsit_4x4_C": "Build_QuarterPipeMiddle_Ficsit_8x4_C",
 }
 
 # Fixed-size fields: present when the buildable has one unchanging footprint.
@@ -96,6 +104,12 @@ CLEARANCE_BOX_RE = re.compile(
    r"Max=\(X=([\-\d.]+),Y=([\-\d.]+),Z=([\-\d.]+)\)"
 )
 BUILD_CATEGORY_PATH_RE = re.compile(r"BuildCategories/(Sub_\w+)/(SC_\w+)\.")
+GRID_DIMENSIONS_RE = re.compile(r"\(X=([\-\d.]+),Y=([\-\d.]+),Z=([\-\d.]+)\)")
+# The three Blueprint Designer tiers are the only classes in Docs.json with an
+# mDimensions field at all (verified against the full dump) -- it's in 8m
+# foundation-grid squares, not raw centimeters like mWidth/mDepth/mHeight, so
+# it needs its own scale factor rather than reusing DIMENSION_FIELDS.
+BLUEPRINT_DESIGNER_GRID_UNIT_CM = 800.0
 # e.g. "Desc_Wall_Concrete_8x1_Tris_C" -- the descriptor puts the size before
 # the Tris/FlipTris tag, the real buildable puts it after (Build_Wall_Concrete_Tris_8x1_C).
 TRIS_SIZE_SWAP_RE = re.compile(r"^Desc_(.+)_(\d+x\d+)_(Tris|FlipTris)_C$")
@@ -141,11 +155,17 @@ def parseClearanceBoxes(raw: str) -> list:
 
 
 def extractDimensions(entry: dict) -> dict:
-   return {
+   dimensions = {
       field[1:]: float(entry[field])
       for field in DIMENSION_FIELDS
       if entry.get(field)
    }
+   if not dimensions:
+      match = GRID_DIMENSIONS_RE.match(entry.get("mDimensions") or "")
+      if match:
+         (gridX, gridY, _gridZ) = (float(value) for value in match.groups())
+         dimensions = {"Width": gridX * BLUEPRINT_DESIGNER_GRID_UNIT_CM, "Depth": gridY * BLUEPRINT_DESIGNER_GRID_UNIT_CM}
+   return dimensions
 
 
 def extractAdaptiveLength(entry: dict) -> dict:

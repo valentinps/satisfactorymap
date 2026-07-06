@@ -22,6 +22,7 @@
 import datetime
 import enum
 import glob
+import json
 import os
 import struct
 import sys
@@ -29,6 +30,28 @@ import zlib
 import string
 from sav_data.data import CONVEYOR_BELTS, SOMERSLOOP, MERCER_SPHERE, MERCER_SHRINE, POWER_SLUG
 import sav_data.readableNames
+
+def _loadExtractedDisplayNames():
+   # ClassName -> mDisplayName, straight from the game's own Docs.json (see
+   # docs/extract_docs_json.py). Preferred over sav_data.readableNames'
+   # hand-curated dict wherever both have an entry -- Docs.json is the
+   # authoritative source and stays current across game updates; the hand
+   # dict now only fills the classes Docs.json doesn't reflect at all
+   # (vehicle/equipment BP_* actors, Char_* creatures, etc).
+   repoRoot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+   names = {}
+   for fileName in ("items.json", "buildings.json"):
+      path = os.path.join(repoRoot, "docs", "generated", fileName)
+      try:
+         with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+      except (OSError, ValueError):
+         continue
+      for className, entry in data.items():
+         names[className] = entry["displayName"]
+   return names
+
+EXTRACTED_DISPLAY_NAMES = _loadExtractedDisplayNames()
 
 PROGRESS_BAR_ENABLE_DECOMPRESS = True
 PROGRESS_BAR_ENABLE_PARSE = True
@@ -1642,6 +1665,8 @@ def pathNameToReadableName(name: str) -> str:
    pos = name.rfind(".")
    if pos != -1:
       name = name[pos+1:]
+   if name in EXTRACTED_DISPLAY_NAMES:
+      return EXTRACTED_DISPLAY_NAMES[name]
    if name in sav_data.readableNames.READABLE_PATH_NAME_CORRECTIONS:
       return sav_data.readableNames.READABLE_PATH_NAME_CORRECTIONS[name]
    pos = name.find("_", pos)

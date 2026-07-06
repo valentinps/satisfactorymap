@@ -141,11 +141,56 @@ html, body {
 }
 
 .searchSuggestionLabel {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 14px;
   color: #eee;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* "ITEMS" / "BUILDINGS" section divider inside the dropdown -- see
+   finditem.js's renderSuggestions, which now groups matches by kind. */
+.searchSuggestionGroupLabel {
+  padding: 7px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6a7180;
+}
+
+/* Show/hide toggle on a building suggestion row -- flips the exact same
+   sidebar checkbox this building's row owns (see filters.js's
+   buildingSearchEntries), so it stays in perfect sync with the sidebar no
+   matter which one is clicked. stopPropagation'd so it never also triggers
+   the row's own click-to-open-modal behavior. */
+.searchSuggestionToggle {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #5c6270;
+  cursor: pointer;
+}
+
+.searchSuggestionToggle:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: #eee;
+}
+
+.searchSuggestionToggle.isShown {
+  color: #5ba3e0;
+}
+
+.searchSuggestionToggle svg {
+  display: block;
 }
 
 .searchSuggestionEmpty {
@@ -566,7 +611,7 @@ body.no-category-selected #map {
 /* ---- Item search / Dimensional Depot results modal -- a single shared
    dialog (see finditem.js's openModal), centered over the map, used for
    both the search bar's results and the depot-icon button's contents. */
-#itemModalOverlay, #selectionModalOverlay {
+#itemModalOverlay, #selectionModalOverlay, #buildingModalOverlay {
   position: absolute;
   top: 0;
   left: 0;
@@ -633,6 +678,225 @@ body.no-category-selected #map {
 #itemModalHighlightToggle {
   flex: none;
   width: 100%;
+}
+
+/* ---- Building info window -- see finditem.js's Building object. Opened
+   from a building search suggestion (row click or Enter); shares the same
+   overlay/backdrop rule as #itemModal above, but its own dialog -- a
+   building's save-wide summary (count, recipe mix, power, combined
+   inventory) has a richer shape than an item's plain location list, so it
+   gets stat tiles and a small recipe bar chart instead of a single list. */
+#buildingModal {
+  width: 520px;
+  max-width: 90vw;
+  max-height: 82vh;
+  background: #20232a;
+  border: 1px solid #3a3f4a;
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.65);
+  padding: 18px 20px 16px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  color: #ddd;
+  transform: scale(0.96);
+  opacity: 0;
+  animation: buildingModalIn 0.16s ease-out forwards;
+}
+
+@keyframes buildingModalIn {
+  to { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #buildingModal { animation: none; transform: none; opacity: 1; }
+}
+
+#buildingModalHeader {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #3a3f4a;
+  flex: none;
+}
+
+#buildingModalIcon {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  object-fit: contain;
+  background: #171a20;
+  border: 1px solid #2c2f37;
+  border-radius: 8px;
+  padding: 4px;
+  box-sizing: border-box;
+}
+
+#buildingModalHeadings {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#buildingModalTitle {
+  font-weight: 700;
+  font-size: 18px;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Background/text color set inline per-category (see finditem.js's
+   Filters.buildingCategoryColor) -- ties this chip back to the exact color
+   the same building uses in the sidebar. */
+#buildingModalCategory {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+#buildingModalClose {
+  flex: none;
+  background: none;
+  border: none;
+  color: #999;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+#buildingModalClose:hover {
+  color: #fff;
+}
+
+#buildingModalSummary {
+  color: #bbb;
+  margin-bottom: 10px;
+  flex: none;
+}
+
+#buildingModalStats {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex: none;
+}
+
+.buildingStatTile {
+  flex: 1 1 0;
+  min-width: 0;
+  background: #262a31;
+  border: 1px solid #333844;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.buildingStatValue {
+  display: block;
+  font-family: "Consolas", "SF Mono", monospace;
+  font-size: 19px;
+  font-weight: 700;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.buildingStatLabel {
+  display: block;
+  font-size: 11px;
+  color: #9aa0ab;
+  margin-top: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+#buildingModalScroll {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.buildingModalSectionLabel {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #9aa0ab;
+  margin: 4px 0 8px;
+}
+
+#buildingModalRecipes {
+  margin-bottom: 14px;
+}
+
+.recipeBarRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.recipeBarLabel {
+  flex: 0 0 42%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #ddd;
+  font-size: 12.5px;
+}
+
+.recipeBarTrack {
+  flex: 1 1 auto;
+  height: 8px;
+  background: #171a20;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.recipeBarFill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.25s ease-out;
+}
+
+.recipeBarCount {
+  flex: none;
+  width: 36px;
+  text-align: right;
+  color: #8ab4f8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#buildingModalHighlightToggle {
+  flex: none;
+  width: 100%;
+  margin-top: 14px;
+  padding: 9px 0;
+  border-radius: 8px;
+  border: 1px solid #3a5070;
+  background: #2a3545;
+  color: #8ab4f8;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#buildingModalHighlightToggle:hover {
+  background: #33435a;
+  color: #fff;
 }
 
 /* ---- Rectangle selection (right-drag) -- see selection.js. -------------- */

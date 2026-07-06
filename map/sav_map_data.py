@@ -74,19 +74,33 @@ HYPERTUBE_SEGMENTS = (
 # by parser/sav_cli.py's --export-vehicle-path) that current saves no longer
 # populate. Build_VehiclePathNode_*_C (the junction points these segments
 # connect) stay plain point buildings, same as pipeline junctions/supports.
-VEHICLE_PATH_SEGMENTS = tuple(
-   f"/Game/FactoryGame/Buildable/Vehicle/VehiclePath/Build_VehiclePath_{tier}.Build_VehiclePath_{tier}_C"
-   for tier in ("Explorer", "FactoryCart", "Tractor", "Truck", "Universal")
+# Each tier lives in its own vehicle-specific folder (Universal is the odd one
+# out, sitting in a shared "VehiclePath" folder alongside the node classes) --
+# not a shared "VehiclePath" folder for all five, so these can't be generated
+# from one f-string template the way the folder name might suggest.
+VEHICLE_PATH_SEGMENTS = (
+   "/Game/FactoryGame/Buildable/Vehicle/Explorer/Build_VehiclePath_Explorer.Build_VehiclePath_Explorer_C",
+   "/Game/FactoryGame/Buildable/Vehicle/Golfcart/Build_VehiclePath_FactoryCart.Build_VehiclePath_FactoryCart_C",
+   "/Game/FactoryGame/Buildable/Vehicle/Tractor/Build_VehiclePath_Tractor.Build_VehiclePath_Tractor_C",
+   "/Game/FactoryGame/Buildable/Vehicle/Truck/Build_VehiclePath_Truck.Build_VehiclePath_Truck_C",
+   "/Game/FactoryGame/Buildable/Vehicle/VehiclePath/Build_VehiclePath_Universal.Build_VehiclePath_Universal_C",
 )
 
 # --- Build-menu categories --------------------------------------------------
-# The map's building category tree is driven by two generated/hand-curated
-# files under docs/ (see docs/extract_docs_json.py and docs/categoryLabels.json):
+# The map's building category tree is driven by three generated/hand-curated
+# files under docs/ (see docs/extract_docs_json.py, docs/categoryLabels.json,
+# docs/categoryOverrides.json):
 #   - docs/generated/buildingCategories.json: ClassName (short, e.g.
 #     "Build_ConstructorMk1_C") -> {topCategory, subCategory, menuPriority},
-#     extracted straight from the game's Docs.json.
+#     extracted straight from the game's Docs.json. The truthful data --
+#     never hand-edit this to reorganize the menu, use the override file below.
 #   - docs/categoryLabels.json: hand-guessed display names for the internal
 #     Sub_*/SC_* names above (Docs.json has no display string for either).
+#   - docs/categoryOverrides.json: optional hand-maintained regrouping, applied
+#     on top of the two files above at load time -- e.g. filing SC_Floors/
+#     SC_Ramps/SC_QuatPipes under a brand-new "Foundation" top category instead
+#     of wherever Docs.json's own topCategory puts them. See its own comment
+#     for the exact shape; entirely optional; missing/empty is a no-op.
 # Any placed buildable whose class isn't in buildingCategories.json (new game
 # content Docs.json hasn't caught up to yet, or one of the handful of stale
 # descriptors that don't resolve to a real buildable) falls into the catch-all
@@ -106,6 +120,13 @@ def _shortClassName(typePath: str) -> str:
    pos = typePath.rfind(".")
    return typePath[pos+1:] if pos != -1 else typePath
 
+def _loadJsonFile(path: str) -> dict:
+   try:
+      with open(path, encoding="utf-8") as handle:
+         return json.load(handle)
+   except (OSError, ValueError):
+      return {}
+
 def _loadBuildMenuCategories():
    # Returns (classNameToCatSub, menuOrder) where classNameToCatSub maps a
    # short ClassName -> (category, subcategory) display-label pair, and
@@ -113,24 +134,36 @@ def _loadBuildMenuCategories():
    # frontend renders the tree in.
    categoriesPath = os.path.join(_REPO_ROOT, "docs", "generated", "buildingCategories.json")
    labelsPath = os.path.join(_REPO_ROOT, "docs", "categoryLabels.json")
+   overridesPath = os.path.join(_REPO_ROOT, "docs", "categoryOverrides.json")
    classNameToCatSub: dict[str, tuple] = {}
    menuOrder = []
-   try:
-      with open(categoriesPath, encoding="utf-8") as handle:
-         buildingCategories = json.load(handle)
-      with open(labelsPath, encoding="utf-8") as handle:
-         labels = json.load(handle)
-   except (OSError, ValueError):
+   buildingCategories = _loadJsonFile(categoriesPath)
+   if not buildingCategories:
       return (classNameToCatSub, menuOrder)
 
+   labels = _loadJsonFile(labelsPath)
    topLabels = labels.get("topCategories", {})
    subLabels = labels.get("subCategories", {})
+
+   # docs/categoryOverrides.json is entirely optional (missing/empty is a
+   # no-op) -- see its own comment and the doc comment above this function.
+   # subcategoryOverrides moves a whole internal subcategory (SC_*) to a
+   # different top category id, which can be an existing "Sub_*" one or a
+   # brand-new one the override file invents; topCategoryLabels supplies the
+   # display label for the latter case (an existing "Sub_*" id already has
+   # one via topLabels above). Override labels win on a collision, though in
+   # practice they only ever add ids topLabels doesn't have.
+   overrides = _loadJsonFile(overridesPath)
+   subcategoryOverrides = overrides.get("subcategoryOverrides", {})
+   topLabels = dict(topLabels)
+   topLabels.update(overrides.get("topCategoryLabels", {}))
 
    # internal subcategory name -> (internal top category, display label, best/lowest menuPriority seen)
    subcategoryInfo: dict[str, tuple] = {}
    for className, entry in buildingCategories.items():
       topInternal = entry.get("topCategory")
       subInternal = entry.get("subCategory")
+      topInternal = subcategoryOverrides.get(subInternal, topInternal)
       topLabel = topLabels.get(topInternal, topInternal)
       subLabel = subLabels.get(subInternal, subInternal)
       classNameToCatSub[className] = (topLabel, subLabel)
@@ -141,10 +174,14 @@ def _loadBuildMenuCategories():
       if existing is None or priority < existing[2]:
          subcategoryInfo[subInternal] = (topInternal, subLabel, priority)
 
-   topOrder = list(TOP_CATEGORY_ORDER_GUESS) + sorted(set(topLabels) - set(TOP_CATEGORY_ORDER_GUESS))
    subsByTop: dict[str, list] = {}
    for (topInternal, subLabel, priority) in subcategoryInfo.values():
       subsByTop.setdefault(topInternal, []).append((priority, subLabel))
+   # Every top category id actually in play (built-in or override-introduced)
+   # needs a slot in the tab order -- topLabels alone would miss a brand-new
+   # override id if the override file didn't also bother repeating it in
+   # topCategoryLabels (it's still filed correctly, just unlabeled/raw-id).
+   topOrder = list(TOP_CATEGORY_ORDER_GUESS) + sorted(set(subsByTop) - set(TOP_CATEGORY_ORDER_GUESS))
    for topInternal in topOrder:
       subs = subsByTop.get(topInternal)
       if not subs:
@@ -236,88 +273,207 @@ def projectVectorXY(worldVector) -> list:
    return [worldVector[0] * _PIXELS_PER_WORLD_UNIT, -worldVector[1] * _PIXELS_PER_WORLD_UNIT]
 
 # Real building footprints aren't stored anywhere in the save (it's static
-# game/mesh data). sav_data/detailedModels.json is satisfactory-calculator.com's
-# own per-building-type collision polygon data (covers 131 building types,
-# scale/offset-corrected -- see _loadScimFootprintsByTypePath below), which is
-# both more precise and far more complete than guessing dimensions from wiki
-# text. A few building types it doesn't cover fall back to hand-curated
-# estimates (also wiki-sourced, cross-checked against the SCIM data's measured
-# values for buildings present in both, e.g. Assembler/Refinery/Smelter/etc.
-# matched almost exactly).
+# game/mesh data). docs/generated/buildings.json (see docs/generated/SCHEMA.md)
+# is extracted straight from the game's own Docs.json and covers ~546
+# building types -- every placed buildable of interest -- so it's used as the
+# only source for footprint boxes now, keyed by short ClassName the same way
+# CLASSNAME_TO_CATSUB is.
 FALLBACK_FOOTPRINTS_METERS = (
-   ("ConveyorLift", (1.0, 1.0)), # See CONVEYOR_LIFT_TYPE_PATHS -- not a real collision box, just a visible/clickable marker.
-   ("Converter", (16.0, 16.0)),
-   ("AlienPowerBuilding", (28.0, 28.0)), # Alien Power Augmenter -- not in the SCIM dataset; 28x28m per the wiki.
-   ("MinerMk2", (6.0, 14.0)),
-   ("MinerMk3", (6.0, 14.0)),
-   ("StorageContainerMk2", (5.0, 10.0)), # Industrial Storage Container
-   # Biomass Burner (with input, Build_GeneratorBiomass_Automated_C) isn't in
-   # the SCIM dataset, but it's the exact same physical building as the
-   # input-less Biomass Burner (Build_GeneratorBiomass_C, which IS covered --
-   # just with a conveyor input attached, no different footprint) -- reusing
-   # that measured size here instead of falling back to a plain point.
-   # Deliberately does NOT match Build_GeneratorIntegratedBiomass_C (the one
-   # built into the HUB, which isn't a real placed building and should stay
-   # a point).
-   ("GeneratorBiomass_Automated", (8.0, 8.0)),
-   ("TrainDockingStation", (16.0, 34.0)), # Freight Platform (solid and liquid)
-   ("TrainPlatformEmpty", (16.0, 34.0)),
-   # Foundations/ramps come in many material skins (Asphalt/Concrete/
-   # ConcretePolished/Metal/plain) and thicknesses (8x1/8x2/8x4), but the
-   # SCIM dataset only happens to cover one variant of each shape -- every
-   # other material/thickness measured identically to the covered one
-   # (confirmed by cross-checking multiple covered variants), so they all
-   # share the same fallback rather than rendering as plain points.
-   # "Foundation_" (not "Foundation") deliberately excludes
-   # "FoundationPassthrough_*" (the small lift/pipe/hypertube floor-hole
-   # pieces, a genuinely different/smaller shape) and "Foundation/Build_
-   # Pillar*" (folder path only, not a "Foundation_" substring). Likewise
-   # "_Ramp_" (underscores on both sides) matches "Build_Ramp_*" without
-   # matching "FenceRamp_*"/"CatwalkRamp_*"/"RailingRamp_*" (compound names
-   # with no underscore before "Ramp" -- thin railings, a different shape).
-   ("QuarterPipe", (4.0, 4.0)), # Checked first: also matches "Foundation_"'s folder path otherwise.
-   ("Foundation_", (8.0, 8.0)),
-   ("_Ramp_", (8.0, 8.0)),
-   ("RampDouble", (8.0, 8.0)),
-   ("RampInverted", (8.0, 8.0)),
-   ("InvertedRamp", (8.0, 8.0)),
-   # Smart/Programmable Splitter and Priority Merger (plus all the Lift-mounted
-   # variants of every splitter/merger) aren't in the SCIM dataset, but share
-   # the same physical attachment footprint in-game as the plain
-   # Splitter/Merger, which is -- measured from that same dataset.
-   ("CA_Splitter", (4.0, 4.0)),
-   ("CA_Merger", (4.0, 4.0)),
+   # ConveyorLift isn't a real collision box, just a visible/clickable marker
+   # (see CONVEYOR_LIFT_TYPE_PATHS) -- buildings.json has no clearance/
+   # dimensions data for it at all (it's an adaptive-length piece), and even
+   # if it did, a lift's real footprint is a thin vertical connector that
+   # would barely register on a top-down map.
+   ("ConveyorLift", (1.0, 1.0)),
 )
 
-def _loadScimFootprintsByTypePath() -> dict:
-   jsonPath = os.path.join(_PARSER_DIR, "sav_data", "detailedModels.json")
+def _footprintMetersFromBuildingEntry(entry: dict):
+   # Prefers clearance (mClearanceData): the union bounding box across all of
+   # a building's clearance volumes, taking only the X/Y (top-down) extents
+   # and ignoring Z (height) -- exactly what a 2D map footprint needs. This is
+   # deliberately preferred over `dimensions` even when both are present,
+   # because `dimensions`' Width/Depth/Height keys don't reliably map to
+   # horizontal-vs-vertical axes for every building shape: a wall reports
+   # Width=800/Height=400 with no Depth at all, and naively using Height as a
+   # second horizontal axis would draw it as a solid 8x4m block instead of the
+   # thin ~0.5m-thick panel its clearance box actually describes. See
+   # docs/generated/SCHEMA.md's "three size fields" section.
+   clearance = entry.get("clearance")
+   if clearance:
+      minX = min(box["min"]["x"] for box in clearance)
+      maxX = max(box["max"]["x"] for box in clearance)
+      minY = min(box["min"]["y"] for box in clearance)
+      maxY = max(box["max"]["y"] for box in clearance)
+      (widthCm, depthCm) = (maxX - minX, maxY - minY)
+      # Docs.json's own mClearanceData is occasionally stale: e.g.
+      # Build_BigGarageDoor_16x8_C (Roll-Up Gate) reports mWidth=1600 (16m,
+      # matching its displayName/description) but carries the exact same
+      # mClearanceData as the unrelated small Build_Gate_Automated_8x4_C (8m),
+      # giving a box only half the real width. Whichever clearance axis is
+      # already the larger of the two (the "long" axis for any wall/door/gate-
+      # shaped buildable) gets bumped up to `dimensions.Width` if that's bigger
+      # still -- never shrunk, and the other (thickness) axis is left alone,
+      # so this is a no-op for the vast majority of buildables where clearance
+      # already matches or exceeds Width (verified against every building.json
+      # entry: BigGarageDoor's 3 material skins are the only ones affected).
+      dimensions = entry.get("dimensions") or {}
+      width = dimensions.get("Width")
+      if width is not None and width > max(widthCm, depthCm):
+         if widthCm >= depthCm:
+            widthCm = width
+         else:
+            depthCm = width
+      return (widthCm / WORLD_UNITS_PER_METER, depthCm / WORLD_UNITS_PER_METER)
+   dimensions = entry.get("dimensions") or {}
+   (width, depth) = (dimensions.get("Width"), dimensions.get("Depth"))
+   if width is not None and depth is not None:
+      return (width / WORLD_UNITS_PER_METER, depth / WORLD_UNITS_PER_METER)
+   return None
+
+# A handful of buildables carry no usable size data in Docs.json at all --
+# no mWidth/mDepth/mHeight, no mClearanceData, no adaptive-length field
+# either (verified against the full raw dump, not just buildings.json).
+# Hand-measured/wiki-sourced fallback for those, same spirit as the ConveyorLift
+# marker below but keyed by exact ClassName since these aren't multi-variant
+# families needing substring matching.
+HAND_CURATED_FOOTPRINTS_METERS_BY_CLASSNAME = {
+   "Build_Elevator_C": (8.0, 8.0),  # Personnel Elevator -- one foundation square; shaft height is player-built/variable, but the base footprint is fixed.
+   # Wall-Mounted Flood Light has no collision at all in-game (confirmed by
+   # the wiki, not just a data gap) -- this is a nominal marker size for
+   # visibility/click-ability, not a measured footprint.
+   "Build_FloodlightWall_C": (0.6, 0.3),
+}
+
+def _loadRawBuildingsJson() -> dict:
+   buildingsPath = os.path.join(_REPO_ROOT, "docs", "generated", "buildings.json")
    try:
-      with open(jsonPath, "r", encoding="utf-8") as fin:
-         rawData = json.load(fin)
+      with open(buildingsPath, encoding="utf-8") as handle:
+         return json.load(handle)
    except (OSError, ValueError):
       return {}
 
-   footprintsByTypePath = {}
-   for (typePath, entry) in rawData.items():
-      scale = entry.get("scale", 1)
-      xOffset = entry.get("xOffset", 0)
-      yOffset = entry.get("yOffset", 0)
-      xs = []
-      ys = []
-      for form in entry.get("forms", []):
-         for (px, py) in form.get("points", []):
-            xs.append((px + xOffset) * scale)
-            ys.append((py + yOffset) * scale)
-      if xs:
-         footprintsByTypePath[typePath] = ((max(xs) - min(xs)) / WORLD_UNITS_PER_METER, (max(ys) - min(ys)) / WORLD_UNITS_PER_METER)
-   return footprintsByTypePath
+# Cached once -- reused both for the ordinary X/Y footprint below and for the
+# full X/Y/Z half-extents _footprintHalfExtentsMeters needs for tilted
+# instances (see _tiltedFootprintPixels).
+_RAW_BUILDINGS_JSON = _loadRawBuildingsJson()
 
-SCIM_FOOTPRINTS_METERS_BY_TYPEPATH = _loadScimFootprintsByTypePath()
+def _loadBuildingFootprints() -> dict:
+   footprintsByClassName = dict(HAND_CURATED_FOOTPRINTS_METERS_BY_CLASSNAME)
+   for (className, entry) in _RAW_BUILDINGS_JSON.items():
+      footprint = _footprintMetersFromBuildingEntry(entry)
+      if footprint is not None:
+         footprintsByClassName[className] = footprint
+   return footprintsByClassName
+
+BUILDING_FOOTPRINTS_METERS_BY_CLASSNAME = _loadBuildingFootprints()
+
+def _footprintHalfExtentsMeters(className: str):
+   # Half-extents (width, depth, height) in meters -- unlike
+   # BUILDING_FOOTPRINTS_METERS_BY_CLASSNAME (X/Y only, full width/depth,
+   # sized for the ordinary flat-on-the-ground case), this also keeps the Z
+   # half-extent from the same clearance box, needed to reconstruct a
+   # tilted instance's true 3D box (see _tiltedFootprintPixels). Returns None
+   # if there's nothing to compute it from (no clearance, no dimensions).
+   entry = _RAW_BUILDINGS_JSON.get(className)
+   if entry is None:
+      return None
+   clearance = entry.get("clearance")
+   if clearance:
+      minX = min(box["min"]["x"] for box in clearance)
+      maxX = max(box["max"]["x"] for box in clearance)
+      minY = min(box["min"]["y"] for box in clearance)
+      maxY = max(box["max"]["y"] for box in clearance)
+      minZ = min(box["min"]["z"] for box in clearance)
+      maxZ = max(box["max"]["z"] for box in clearance)
+      return ((maxX - minX) / 2 / WORLD_UNITS_PER_METER, (maxY - minY) / 2 / WORLD_UNITS_PER_METER,
+              (maxZ - minZ) / 2 / WORLD_UNITS_PER_METER)
+   dimensions = entry.get("dimensions") or {}
+   (width, depth) = (dimensions.get("Width"), dimensions.get("Depth"))
+   if width is not None and depth is not None:
+      height = dimensions.get("Height") or 0.0
+      return (width / 2 / WORLD_UNITS_PER_METER, depth / 2 / WORLD_UNITS_PER_METER, height / 2 / WORLD_UNITS_PER_METER)
+   return None
+
+# Below this, qx^2+qy^2 (see _tiltIntensity) is treated as floating-point
+# noise around a pure yaw rotation rather than a genuine tilt -- small enough
+# to not visibly matter (well under a degree of true pitch/roll) while safely
+# clearing the noise floor seen on real pure-yaw quaternions in practice.
+_TILT_THRESHOLD = 0.001
+
+def _tiltIntensity(rotation) -> float:
+   (qx, qy, _qz, _qw) = rotation
+   return qx * qx + qy * qy
+
+def _convexHull(points: list) -> list:
+   # Standard monotone-chain convex hull (Andrew's algorithm) over a small
+   # point set (8 box corners here) -- O(n log n), trivial at this size.
+   # Returns hull vertices in order (winding direction doesn't matter for
+   # either canvas path-filling or the ray-casting point-in-polygon test the
+   # frontend uses -- see map.js's _tracePolygon/_pointInPolygon).
+   pts = sorted(set(points))
+   if len(pts) <= 2:
+      return pts
+   def cross(o, a, b):
+      return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+   lower = []
+   for p in pts:
+      while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+         lower.pop()
+      lower.append(p)
+   upper = []
+   for p in reversed(pts):
+      while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+         upper.pop()
+      upper.append(p)
+   return lower[:-1] + upper[:-1]
+
+def _tiltedFootprintPolygon(rotation, halfExtentsMeters):
+   # The true top-down silhouette of a building's local 3D box after a FULL
+   # rotation (not just yaw) -- see collectBuildings' use of this for why
+   # it's only ever computed for the rare genuinely-tilted instances
+   # (Pillars/Beams bracing a run between two out-of-line snap points). A
+   # rotated box's silhouette is the convex hull of its 8 corners projected
+   # to the XY plane -- generally a hexagon, not a rectangle, for a
+   # genuinely tilted box (a plain axis-aligned bounding box was tried first
+   # and rejected: it can only grow along world X/Y, so it can never point
+   # toward the tilt's actual diagonal direction).
+   # Projected via projectVectorXY (not a bare meters->pixels scale) so this
+   # picks up the same Y-axis flip every other world-space vector on the map
+   # goes through -- corners are computed directly in centimeters (this
+   # project's native world unit) to feed it without a separate conversion.
+   (halfWidthM, halfDepthM, halfHeightM) = halfExtentsMeters
+   (halfWidthCm, halfDepthCm, halfHeightCm) = (
+      halfWidthM * WORLD_UNITS_PER_METER, halfDepthM * WORLD_UNITS_PER_METER, halfHeightM * WORLD_UNITS_PER_METER)
+   cornersPixels = []
+   for sx in (-1.0, 1.0):
+      for sy in (-1.0, 1.0):
+         for sz in (-1.0, 1.0):
+            rotated = rotateVectorByQuaternion(rotation, [sx * halfWidthCm, sy * halfDepthCm, sz * halfHeightCm])
+            cornersPixels.append(tuple(projectVectorXY(rotated)))
+   hull = _convexHull(cornersPixels)
+   flatPolygon = []
+   for (x, y) in hull:
+      flatPolygon.append(x)
+      flatPolygon.append(y)
+   return flatPolygon
+
+def _footprintForInstance(typePath: str, rotation, bucketFootprintPixels):
+   # Returns (yaw, tiltedPolygonOrNone) for one placed instance.
+   # tiltedPolygonOrNone is only non-None for the rare genuinely-tilted case,
+   # a flat [x1,y1,x2,y2,...] pixel-offset list (relative to the instance's
+   # own position, already in final rotated orientation -- no further yaw
+   # needed at render time) -- see _tiltedFootprintPolygon's doc comment.
+   if bucketFootprintPixels is None or _tiltIntensity(rotation) <= _TILT_THRESHOLD:
+      return (_renderedYaw(rotation), None)
+   halfExtents = _footprintHalfExtentsMeters(_shortClassName(typePath))
+   if halfExtents is None:
+      return (_renderedYaw(rotation), None)
+   return (0.0, _tiltedFootprintPolygon(rotation, halfExtents))
 
 def footprintPixels(typePath: str):
    # Returns None for anything not covered -- callers should render those as
    # a plain point, not a box.
-   footprint = SCIM_FOOTPRINTS_METERS_BY_TYPEPATH.get(typePath)
+   footprint = BUILDING_FOOTPRINTS_METERS_BY_CLASSNAME.get(_shortClassName(typePath))
    if footprint is None:
       for (substring, fallback) in FALLBACK_FOOTPRINTS_METERS:
          if substring in typePath:
@@ -331,6 +487,29 @@ def footprintPixels(typePath: str):
 def yawFromQuaternion(rotation) -> float:
    (qx, qy, qz, qw) = rotation
    return math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+
+# Buildings that snap between two arbitrary connection points (Pillars in
+# particular, also seen on Beams) can end up with a rotation that ISN'T a
+# pure yaw -- e.g. a pillar segment bracing a diagonal run between two
+# out-of-line points genuinely has pitch/roll baked into its quaternion
+# alongside whatever yaw. yawFromQuaternion still returns *a* number for
+# those (atan2 is defined for any input), but it isn't a meaningful top-down
+# angle -- confirmed against a real save: ~25% of one save's ~20800 Concrete
+# Pillar segments carry a non-trivial pitch/roll component, spread across a
+# wide range of tilt amounts, not just clean 90 degree-equivalent flips.
+# That's exactly what _footprintForInstance's _tiltIntensity check is for,
+# though: by the time a rotation reaches here, it's already been confirmed to
+# be a pure yaw (or fallen back here because no polygon could be computed --
+# see there), so the value below is always a real, meaningful angle. It is
+# NOT safe to special-case a square footprint (halfWidth == halfDepth) to
+# always render axis-aligned here -- a square only repeats every 90 degrees,
+# not at every angle, so forcing yaw to 0 would silently discard a genuine
+# 45-degree (or any non-90-multiple) placement. (An earlier version of this
+# function did exactly that, back when it also had to cover the tilted case
+# itself -- once tilt got its own dedicated path, the shortcut no longer had
+# a reason to exist and was just quietly wrong.)
+def _renderedYaw(rotation) -> float:
+   return yawFromQuaternion(rotation)
 
 def rotateVectorByQuaternion(rotation, vector) -> list:
    (qx, qy, qz, qw) = rotation
@@ -408,6 +587,42 @@ def _findLightweightBuildableGroups(levels):
             return info[1:] # Drop the leading lightweightVersion int.
    return []
 
+def _newBuildingBucket(typePath: str) -> dict:
+   footprint = footprintPixels(typePath)
+   return {
+      "label": readableLabel(typePath), "points": [], "ids": [], "footprintPixels": footprint,
+      # Sparse pointIndex -> flat [x1,y1,x2,y2,...] polygon (pixel offsets
+      # from the instance's own position, already in final rotated
+      # orientation), only populated for the rare genuinely-tilted instance
+      # (see _footprintForInstance) whose true top-down silhouette isn't
+      # this bucket's shared axis-aligned footprintPixels rect -- None (not
+      # even an empty dict) when nothing in this bucket ever needed it, so
+      # the frontend can cheaply skip the whole per-point override lookup
+      # for the overwhelming majority of buckets.
+      "tiltedFootprints": {},
+      # Largest distance from center to any point actually used anywhere in
+      # this bucket (starts at the plain rect's own corner distance, grows if
+      # any tilted polygon reaches further) -- the frontend's hover/click
+      # hit-test needs this, not the plain footprintPixels, to size its
+      # cursor-centered spatial-grid query radius, or a tilted instance's
+      # enlarged silhouette could fall outside that radius and become
+      # unclickable.
+      "maxFootprintRadius": math.hypot(footprint[0], footprint[1]) if footprint is not None else 0.0,
+   }
+
+def _appendBuildingInstance(bucket: dict, typePath: str, rotation, position, instanceId: str) -> None:
+   (px, py) = projectXY(position)
+   (yaw, tiltedPolygon) = _footprintForInstance(typePath, rotation, bucket["footprintPixels"])
+   if tiltedPolygon is not None:
+      bucket["tiltedFootprints"][len(bucket["ids"])] = tiltedPolygon
+      polygonRadius = max(math.hypot(tiltedPolygon[i], tiltedPolygon[i + 1]) for i in range(0, len(tiltedPolygon), 2))
+      bucket["maxFootprintRadius"] = max(bucket["maxFootprintRadius"], polygonRadius)
+   bucket["points"].append(px)
+   bucket["points"].append(py)
+   bucket["points"].append(yaw)
+   bucket["points"].append(worldZToMeters(position[2]))
+   bucket["ids"].append(instanceId)
+
 def collectBuildings(levels) -> dict:
    # categoryBuckets: category -> typePath -> {"label": str, "points": [x,y,yaw,z,...], "ids": [instanceName,...]}
    categoryBuckets: dict[str, dict[str, dict]] = {}
@@ -425,14 +640,10 @@ def collectBuildings(levels) -> dict:
                typeBuckets = categoryBuckets.setdefault(category, {})
                bucket = typeBuckets.get(typePath)
                if bucket is None:
-                  bucket = {"label": readableLabel(typePath), "points": [], "ids": [], "footprintPixels": footprintPixels(typePath)}
+                  bucket = _newBuildingBucket(typePath)
                   typeBuckets[typePath] = bucket
-               (px, py) = projectXY(actorOrComponentObjectHeader.position)
-               bucket["points"].append(px)
-               bucket["points"].append(py)
-               bucket["points"].append(yawFromQuaternion(actorOrComponentObjectHeader.rotation))
-               bucket["points"].append(worldZToMeters(actorOrComponentObjectHeader.position[2]))
-               bucket["ids"].append(actorOrComponentObjectHeader.instanceName)
+               _appendBuildingInstance(bucket, typePath, actorOrComponentObjectHeader.rotation,
+                                        actorOrComponentObjectHeader.position, actorOrComponentObjectHeader.instanceName)
 
    for (typePath, instances) in _findLightweightBuildableGroups(levels):
       if typePath in LINE_RENDERED_TYPE_PATHS or typePath in EXCLUDED_BUILDING_TYPE_PATHS:
@@ -443,16 +654,11 @@ def collectBuildings(levels) -> dict:
       typeBuckets = categoryBuckets.setdefault(category, {})
       bucket = typeBuckets.get(typePath)
       if bucket is None:
-         bucket = {"label": readableLabel(typePath), "points": [], "ids": [], "footprintPixels": footprintPixels(typePath)}
+         bucket = _newBuildingBucket(typePath)
          typeBuckets[typePath] = bucket
       for (idx, instance) in enumerate(instances):
          (rotationQuaternion, position) = (instance[0], instance[1])
-         (px, py) = projectXY(position)
-         bucket["points"].append(px)
-         bucket["points"].append(py)
-         bucket["points"].append(yawFromQuaternion(rotationQuaternion))
-         bucket["points"].append(worldZToMeters(position[2]))
-         bucket["ids"].append(f"LightweightBuildable:{typePath}:{idx}")
+         _appendBuildingInstance(bucket, typePath, rotationQuaternion, position, f"LightweightBuildable:{typePath}:{idx}")
 
    buildingCategories = []
    for category in categoryBuckets:
@@ -462,6 +668,8 @@ def collectBuildings(levels) -> dict:
          types.append({
             "typePath": typePath, "label": bucket["label"], "points": bucket["points"], "ids": bucket["ids"],
             "footprintPixels": bucket["footprintPixels"],
+            "tiltedFootprints": bucket["tiltedFootprints"] or None,
+            "maxFootprintRadius": bucket["maxFootprintRadius"],
             "renderType": "rect" if bucket["footprintPixels"] is not None else "circle",
             "subcategory": categorizeSubcategory(category, typePath),
          })
@@ -1041,11 +1249,27 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
    # on every click. Cached by sav_map_server.py alongside the map payload.
    headersByInstanceName = {}
    objectsByInstanceName = {}
+   instanceNamesByTypePath: dict[str, list] = {}
    for level in parsedSave.levels:
       for actorOrComponentObjectHeader in level.actorAndComponentObjectHeaders:
          headersByInstanceName[actorOrComponentObjectHeader.instanceName] = actorOrComponentObjectHeader
+         if isinstance(actorOrComponentObjectHeader, sav_parse.ActorHeader):
+            instanceNamesByTypePath.setdefault(actorOrComponentObjectHeader.typePath, []).append(
+               actorOrComponentObjectHeader.instanceName)
       for object in level.objects:
          objectsByInstanceName[object.instanceName] = object
+
+   # Lightweight buildables (foundations/walls/ramps/beams) have no real
+   # ActorHeader of their own -- see _findLightweightBuildableGroups -- so the
+   # loop above misses them entirely. Folding their synthetic
+   # "LightweightBuildable:<typePath>:<idx>" ids in here too (collectBuildings
+   # generates the same ones) means collectBuildingInfo's instance count for
+   # e.g. a Foundation comes out right, even though every other per-instance
+   # lookup it does (recipe/power/inventory) is a harmless no-op for these --
+   # none of those concepts apply to a lightweight buildable anyway.
+   for (typePath, instances) in _findLightweightBuildableGroups(parsedSave.levels):
+      instanceNamesByTypePath.setdefault(typePath, []).extend(
+         f"LightweightBuildable:{typePath}:{idx}" for idx in range(len(instances)))
 
    # Player-given train station names live on a separate
    # FGTrainStationIdentifier actor (its own ActorHeader, not a component of
@@ -1118,6 +1342,7 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
       "stationNameByStationInstance": stationNameByStationInstance,
       "pipeNetworkIdToFluid": pipeNetworkIdToFluid,
       "lightweightInstancesById": lightweightInstancesById,
+      "instanceNamesByTypePath": instanceNamesByTypePath,
       "itemLocationIndex": _collectItemLocationIndex(objectsByInstanceName),
       "dimensionalDepotByItem": {
          entry["itemPath"]: entry["count"] for entry in collectDimensionalDepotContents(parsedSave.levels)
@@ -1379,6 +1604,26 @@ def listSearchableItems() -> list:
    items.sort(key=lambda entry: entry["label"])
    return items
 
+# Icon files are named by readable label (e.g. "icons/items/Iron Plate.png",
+# "icons/buildings/Assembler.png" -- see finditem.js), but the label the map
+# actually shows for something doesn't always have an exact-filename icon:
+# merged multi-material/multi-size building rows in particular (e.g.
+# "Foundation (4 m)") rarely match one of the many per-skin/per-size icon
+# files verbatim. Sending the frontend the list of what icon files actually
+# exist (just the bare labels, no ".png") lets it fuzzy-match a close-enough
+# icon at render time instead of only ever trying one exact filename -- see
+# finditem.js's bestFuzzyIconLabel. Computed once at import time (these are
+# static bundled assets, not something that changes per save).
+def _listIconLabels(iconSubfolder: str) -> list:
+   iconsDir = os.path.join(_MAP_DIR, "static", "map", "icons", iconSubfolder)
+   try:
+      return sorted(os.path.splitext(name)[0] for name in os.listdir(iconsDir) if name.lower().endswith(".png"))
+   except OSError:
+      return []
+
+ITEM_ICON_LABELS = _listIconLabels("items")
+BUILDING_ICON_LABELS = _listIconLabels("buildings")
+
 def aggregateSelectionInventory(saveIndex: dict, instanceNames: list) -> list:
    # Sums everything held across the given selected instances (the
    # rectangle-selection "total inventory" -- see the frontend's
@@ -1469,6 +1714,107 @@ def aggregateSelectionInventory(saveIndex: dict, instanceNames: list) -> list:
       items.append({"item": label, "label": label, "count": round(raw / 1000, 1), "isFluid": True})
    items.sort(key=lambda entry: entry["count"], reverse=True)
    return items
+
+def collectBuildingInfo(saveIndex: dict, typePaths: list) -> dict:
+   # The save-wide counterpart to describeInstance: instead of one placed
+   # instance, summarizes every instance of a building type -- or, for a
+   # same-shape/different-material group the frontend merges into one search
+   # entry (see filters.js's mergedMaterialLabel), every instance across all
+   # of those typePaths combined. Reuses aggregateSelectionInventory for the
+   # "shared inventory" (everything currently sitting in these buildings'
+   # inventories, added up) and the same rated-power table describeInstance
+   # uses for a single instance, just summed per instance here instead.
+   instanceNamesByTypePath = saveIndex.get("instanceNamesByTypePath", {})
+   objects = saveIndex["objects"]
+
+   allInstanceNames = []
+   recipeCounts: dict[str, int] = {}
+   recipeOrder = []
+   noRecipeCount = 0
+   hasRecipeCapableInstance = False
+   totalPowerMinMW = 0.0
+   totalPowerMaxMW = 0.0
+   hasPowerConsumer = False
+   totalPowerProductionMW = 0.0
+   hasPowerProducer = False
+
+   for typePath in typePaths:
+      isGenerator = "Generator" in typePath
+      instanceNames = instanceNamesByTypePath.get(typePath, [])
+      allInstanceNames.extend(instanceNames)
+      for instanceName in instanceNames:
+         object = objects.get(instanceName)
+         if object is None:
+            continue # Lightweight buildables (foundations/walls/...) -- no recipe/power/inventory concept for these.
+         properties = object.properties
+
+         recipe = sav_parse.getPropertyValue(properties, "mCurrentRecipe")
+         recipePathName = recipe.pathName if recipe is not None and hasattr(recipe, "pathName") and recipe.pathName else None
+         if recipePathName is not None:
+            hasRecipeCapableInstance = True
+            recipeLabel = readableLabel(recipePathName)
+            for noisePrefix in ("Recipe, ", "Alternate, "):
+               if recipeLabel.startswith(noisePrefix):
+                  recipeLabel = recipeLabel[len(noisePrefix):]
+            if recipeLabel not in recipeCounts:
+               recipeCounts[recipeLabel] = 0
+               recipeOrder.append(recipeLabel)
+            recipeCounts[recipeLabel] += 1
+         elif recipe is not None:
+            # A recipe reference exists but couldn't be resolved to a name --
+            # treat the same as "no recipe set" rather than dropping the instance.
+            hasRecipeCapableInstance = True
+            noRecipeCount += 1
+
+         canOverclock = (
+            recipe is not None or
+            sav_parse.getPropertyValue(properties, "mExtractableResource") is not None or
+            isGenerator
+         )
+         clockSpeedFraction = 1.0
+         if canOverclock:
+            clockSpeed = sav_parse.getPropertyValue(properties, "mCurrentPotential")
+            clockSpeedFraction = clockSpeed if clockSpeed is not None else 1.0
+
+         if isGenerator:
+            powerComponent = _resolveComponentObject(saveIndex, properties, "mPowerInfo")
+            if powerComponent is not None:
+               production = sav_parse.getPropertyValue(powerComponent.properties, "mDynamicProductionCapacity")
+               if production is None:
+                  production = sav_parse.getPropertyValue(powerComponent.properties, "mBaseProduction")
+               if production is not None:
+                  hasPowerProducer = True
+                  totalPowerProductionMW += production
+         else:
+            ratedPowerMW = _ratedPowerForTypePath(typePath, recipePathName)
+            if ratedPowerMW is not None:
+               scaled = _scaleRatedPowerForClockSpeed(ratedPowerMW, clockSpeedFraction)
+               hasPowerConsumer = True
+               if isinstance(scaled, tuple):
+                  totalPowerMinMW += scaled[0]
+                  totalPowerMaxMW += scaled[1]
+               else:
+                  totalPowerMinMW += scaled
+                  totalPowerMaxMW += scaled
+
+   result = {
+      "count": len(allInstanceNames),
+      "inventory": aggregateSelectionInventory(saveIndex, allInstanceNames),
+   }
+   if hasRecipeCapableInstance:
+      recipeRows = [{"label": label, "count": recipeCounts[label]} for label in recipeOrder]
+      if noRecipeCount:
+         recipeRows.append({"label": "No recipe set", "count": noRecipeCount})
+      recipeRows.sort(key=lambda row: row["count"], reverse=True)
+      result["recipes"] = recipeRows
+   if hasPowerConsumer:
+      if round(totalPowerMinMW, 1) == round(totalPowerMaxMW, 1):
+         result["powerConsumptionMW"] = round(totalPowerMinMW, 1)
+      else:
+         result["powerConsumptionRangeMW"] = [round(totalPowerMinMW, 1), round(totalPowerMaxMW, 1)]
+   if hasPowerProducer:
+      result["powerProductionMW"] = round(totalPowerProductionMW, 1)
+   return result
 
 def describeInstance(saveIndex: dict, instanceName: str) -> dict:
    # Lightweight buildables (foundations/walls/ramps/beams/decorative pieces)
@@ -1746,11 +2092,15 @@ def collectGameSettings(levels) -> dict:
 # The single canonical typePath used to place each whole-line kind in the
 # build-menu tree (they render as one merged line bucket, not per-typePath, so
 # they need one representative to look up their category/subcategory).
+# Vehicle paths aren't here -- unlike power lines/railroads/hypertubes, the
+# five tiers (Explorer/FactoryCart/Tractor/Truck/Universal) are genuinely
+# distinct buildables with distinct names, so they're split per-tier via
+# collectSplinePathGroups (like belts/pipes) instead of merged into one
+# generically-labeled "Vehicle Path" bucket.
 _LINE_KIND_TYPEPATH = {
    "powerLines": "/Game/FactoryGame/Buildable/Factory/PowerLine/Build_PowerLine.Build_PowerLine_C",
    "railroads": "/Game/FactoryGame/Buildable/Factory/Train/Track/Build_RailroadTrack.Build_RailroadTrack_C",
    "hypertubes": "/Game/FactoryGame/Buildable/Factory/PipeHyper/Build_PipeHyper.Build_PipeHyper_C",
-   "vehiclePaths": "/Game/FactoryGame/Buildable/Vehicle/VehiclePath/Build_VehiclePath_Universal.Build_VehiclePath_Universal_C",
 }
 
 def _annotateLineKinds(lines: dict) -> dict:
@@ -1776,15 +2126,18 @@ def buildMapPayload(parsedSave: sav_parse.ParsedSave) -> dict:
       "hub": collectHub(parsedSave.levels),
       "gameSettings": collectGameSettings(parsedSave.levels),
       "itemCatalog": listSearchableItems(),
+      "iconManifest": {"items": ITEM_ICON_LABELS, "buildings": BUILDING_ICON_LABELS},
       "dimensionalDepot": collectDimensionalDepotContents(parsedSave.levels),
       "lines": _annotateLineKinds({
          "powerLines": collectPowerLines(parsedSave.levels),
          "railroads": collectSplinePaths(parsedSave.levels, RAILROAD_SEGMENTS),
          "hypertubes": collectSplinePaths(parsedSave.levels, HYPERTUBE_SEGMENTS),
-         "vehiclePaths": collectSplinePaths(parsedSave.levels, VEHICLE_PATH_SEGMENTS, splinePropertyName="mSplinePoints"),
       }),
-      # Belts and pipes are split per mark (Mk.1..Mk.6 / Mk.1-Mk.2) so each is
-      # independently toggleable -- see the frontend's Conveyor Belts/Pipelines groups.
+      # Belts, pipes, and vehicle paths are split per mark/tier (e.g. Belt
+      # Mk.1..Mk.6, Truck/Explorer/Universal Vehicle Path) so each is
+      # independently toggleable -- see the frontend's Conveyor Belts/Pipelines/
+      # Vehicle Paths groups.
       "belts": collectSplinePathGroups(parsedSave.levels, CONVEYOR_BELT_ONLY_TYPE_PATHS),
       "pipes": collectSplinePathGroups(parsedSave.levels, PIPELINE_SEGMENTS),
+      "vehiclePaths": collectSplinePathGroups(parsedSave.levels, VEHICLE_PATH_SEGMENTS, splinePropertyName="mSplinePoints"),
    }

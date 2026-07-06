@@ -185,9 +185,14 @@ var MapApp = {};
       var pixelOrigin = map.getPixelOrigin();
       var topLeft = this._topLeft;
       var affine = this._computeAffine(zoom, pixelOrigin, topLeft);
+      var footprint = _footprintForPoint(bucket, idx, bucket.points[p + 2]);
 
       ctx.beginPath();
-      this._traceRect(ctx, bucket.points[p], bucket.points[p + 1], bucket.points[p + 2], bucket.footprintPixels[0], bucket.footprintPixels[1], affine);
+      if (footprint.verts) {
+        _tracePolygon(ctx, bucket.points[p], bucket.points[p + 1], footprint.verts, affine);
+      } else {
+        this._traceRect(ctx, bucket.points[p], bucket.points[p + 1], footprint.yaw, footprint.halfWidth, footprint.halfDepth, affine);
+      }
       ctx.fillStyle = bucket.color;
       ctx.fill();
       ctx.strokeStyle = "#ffffff";
@@ -463,16 +468,39 @@ var MapApp = {};
         var halfWidth = bucket.footprintPixels[0];
         var halfDepth = bucket.footprintPixels[1];
         var tiny = halfWidth * 2 * affine.scaleX < SUBPIXEL_RECT_THRESHOLD && halfDepth * 2 * affine.scaleY < SUBPIXEL_RECT_THRESHOLD;
-        ctx.fillStyle = _withAlpha(bucket.color, 0.55);
+        var hasOverrides = !!bucket.tiltedFootprints; // See _footprintForPoint -- false for almost every bucket.
+        var fillColor = _withAlpha(bucket.color, 0.55);
+        ctx.fillStyle = fillColor;
         ctx.beginPath();
         var indices = _collectGridIndices(bucket._grid, minX, maxX, minY, maxY, this._scratchIndices);
+        // Deferred [x,y,verts, x,y,verts, ...] for this bucket's tilted
+        // instances -- only ever allocated if the bucket actually has any
+        // (see the comment below on why they can't just join the loop above).
+        var deferredPolygons = null;
         for (var ii = 0; ii < indices.length; ii++) {
-          var i = indices[ii] * 4;
+          var idx = indices[ii];
+          var i = idx * 4;
           var x = pts[i];
           var y = pts[i + 1];
           var yaw = pts[i + 2];
           var z = pts[i + 3];
           if (x < minX || x > maxX || y < minY || y > maxY || z < altMin || z > altMax) {
+            continue;
+          }
+          var verts = hasOverrides && bucket.tiltedFootprints[idx];
+          if (verts) {
+            // Measured, not guessed: adding even a few thousand closePath()'d
+            // polygon subpaths into the SAME accumulating path as tens of
+            // thousands of ctx.rect() calls below took a shared path from
+            // ~5ms to ~300ms to fill in a synthetic benchmark at this scale
+            // -- apparently mixing the two path-command styles knocks the
+            // whole path out of the browser's specialized fast-rect
+            // representation. Tilted instances are rare enough that
+            // deferring them to their own individual beginPath/fill each
+            // (below, after this bucket's plain rects are filled) sidesteps
+            // that entirely, and was faster still than batching them
+            // together in a second shared path.
+            (deferredPolygons || (deferredPolygons = [])).push(x, y, verts);
             continue;
           }
           if (tiny) {
@@ -484,6 +512,14 @@ var MapApp = {};
           }
         }
         ctx.fill();
+        if (deferredPolygons) {
+          ctx.fillStyle = fillColor;
+          for (var dp = 0; dp < deferredPolygons.length; dp += 3) {
+            ctx.beginPath();
+            _tracePolygon(ctx, deferredPolygons[dp], deferredPolygons[dp + 1], deferredPolygons[dp + 2], affine);
+            ctx.fill();
+          }
+        }
       }
     },
 
@@ -501,9 +537,11 @@ var MapApp = {};
         var halfWidth = bucket.footprintPixels[0];
         var halfDepth = bucket.footprintPixels[1];
         var tiny = halfWidth * 2 * affine.scaleX < SUBPIXEL_RECT_THRESHOLD && halfDepth * 2 * affine.scaleY < SUBPIXEL_RECT_THRESHOLD;
+        var hasOverrides = !!bucket.tiltedFootprints; // See _footprintForPoint -- false for almost every bucket.
         var indices = _collectGridIndices(bucket._grid, minX, maxX, minY, maxY, this._scratchIndices);
         for (var ii = 0; ii < indices.length; ii++) {
-          var i = indices[ii] * 4;
+          var idx = indices[ii];
+          var i = idx * 4;
           var x = pts[i];
           var y = pts[i + 1];
           var yaw = pts[i + 2];
@@ -511,7 +549,8 @@ var MapApp = {};
           if (x < minX || x > maxX || y < minY || y > maxY || z < altMin || z > altMax) {
             continue;
           }
-          items.push({ z: z, bucket: bucket, x: x, y: y, yaw: yaw, tiny: tiny });
+          var verts = hasOverrides && bucket.tiltedFootprints[idx];
+          items.push({ z: z, bucket: bucket, x: x, y: y, yaw: yaw, tiny: !verts && tiny, halfWidth: halfWidth, halfDepth: halfDepth, verts: verts || null });
         }
       }
       if (items.length === 0) {
@@ -523,26 +562,39 @@ var MapApp = {};
       // a fresh path/fill is needed whenever the color changes -- runs of
       // same-bucket items (common, since nearby altitudes tend to share a
       // floor/category) still batch into a single fill() the same as before.
+      // A polygon item (a tilted instance -- see _footprintForPoint) also
+      // forces a fresh path even when the color hasn't changed: mixing its
+      // closePath()'d subpath into the same accumulating path as plain
+      // ctx.rect() calls measurably tanks fill() performance at scale (see
+      // _drawRectBucketsFlat's comment for the benchmark) by apparently
+      // knocking the whole path out of the browser's specialized fast-rect
+      // representation -- keeping polygon and non-polygon runs in separate
+      // paths avoids that regardless of how they interleave in Z-order.
       var currentColor = null;
+      var currentIsPolygon = null;
       var hasOpenPath = false;
       for (var k = 0; k < items.length; k++) {
         var item = items[k];
         var color = _withAlpha(item.bucket.color, 0.55);
-        if (color !== currentColor) {
+        var isPolygon = !!item.verts;
+        if (color !== currentColor || isPolygon !== currentIsPolygon) {
           if (hasOpenPath) {
             ctx.fill();
           }
           ctx.beginPath();
           ctx.fillStyle = color;
           currentColor = color;
+          currentIsPolygon = isPolygon;
           hasOpenPath = true;
         }
-        if (item.tiny) {
+        if (isPolygon) {
+          _tracePolygon(ctx, item.x, item.y, item.verts, affine);
+        } else if (item.tiny) {
           var cx = affine.originX + item.x * affine.scaleX;
           var cy = affine.originY + item.y * affine.scaleY;
           ctx.rect(cx - 0.75, cy - 0.75, 1.5, 1.5);
         } else {
-          this._traceRect(ctx, item.x, item.y, item.yaw, item.bucket.footprintPixels[0], item.bucket.footprintPixels[1], affine);
+          this._traceRect(ctx, item.x, item.y, item.yaw, item.halfWidth, item.halfDepth, affine);
         }
       }
       if (hasOpenPath) {
@@ -682,13 +734,15 @@ var MapApp = {};
         }
         var halfWidth = rectBucket.footprintPixels[0];
         var halfDepth = rectBucket.footprintPixels[1];
-        // A point further than this from the box center can't possibly be
-        // inside it regardless of rotation -- checking this cheap distance
-        // first, before any trig, skips the expensive inverse-rotation for
-        // the vast majority of points on every single hover tick (this runs
-        // on every mousemove, not just on redraw, so it's the hottest path
-        // of all once a bucket has tens of thousands of points).
-        var maxRadius = Math.sqrt(halfWidth * halfWidth + halfDepth * halfDepth);
+        var hasOverrides = !!rectBucket.tiltedFootprints; // See _footprintForPoint -- false for almost every bucket.
+        // maxFootprintRadius (== this rect's own corner distance unless some
+        // instance in this bucket needed a bigger tilted polygon, see
+        // collectBuildings) is what the *query radius* below has to use --
+        // the plain rect size alone would make an enlarged tilted polygon's
+        // cells fall outside the search and become unclickable. The
+        // per-instance containment check further down still uses each
+        // point's own (possibly overridden) shape.
+        var maxRadius = rectBucket.maxFootprintRadius || Math.sqrt(halfWidth * halfWidth + halfDepth * halfDepth);
         // Only cells within maxRadius of the cursor can possibly contain a
         // box that reaches the cursor -- same grid used by _redraw, queried
         // with a cursor-centered box instead of the viewport (see
@@ -710,14 +764,24 @@ var MapApp = {};
           if (Math.abs(ddx) > maxRadius || Math.abs(ddy) > maxRadius) {
             continue;
           }
-          // Inverse-rotate the cursor offset into the building's local frame
-          // (see _drawRectBuckets for the matching forward rotation + the
-          // note on why yaw is negated here).
-          var cos = Math.cos(byaw);
-          var sin = Math.sin(byaw);
-          var localX = ddx * cos - ddy * sin;
-          var localY = ddx * sin + ddy * cos;
-          if (Math.abs(localX) <= halfWidth && Math.abs(localY) <= halfDepth && bz > bestBoxZ) {
+          var verts = hasOverrides && rectBucket.tiltedFootprints[rectIdx];
+          var isHit;
+          if (verts) {
+            // verts is already in final rotated orientation (see
+            // sav_map_data.collectBuildings), so the cursor offset is tested
+            // against it directly -- no inverse-rotation needed.
+            isHit = _pointInPolygon(ddx, ddy, verts);
+          } else {
+            // Inverse-rotate the cursor offset into the building's local frame
+            // (see _drawRectBuckets for the matching forward rotation + the
+            // note on why yaw is negated here).
+            var cos = Math.cos(byaw);
+            var sin = Math.sin(byaw);
+            var localX = ddx * cos - ddy * sin;
+            var localY = ddx * sin + ddy * cos;
+            isHit = Math.abs(localX) <= halfWidth && Math.abs(localY) <= halfDepth;
+          }
+          if (isHit && bz > bestBoxZ) {
             bestBoxZ = bz;
             bestBoxHit = { bucket: rectBucket, id: rectBucket.ids[rectIdx], index: rectIdx, z: bz };
           }
@@ -902,6 +966,65 @@ var MapApp = {};
     img.src = url;
     _iconCache[url] = img;
     return img;
+  }
+
+  // Per-point footprint override for a rect bucket -- see
+  // sav_map_data.collectBuildings' tiltedFootprints. Most buildings only
+  // ever rotate around the vertical axis (yaw), so one shared
+  // bucket.footprintPixels covers every instance; a Pillar/Beam bracing a
+  // diagonal run between two out-of-line snap points genuinely has pitch/
+  // roll baked into its rotation too, which can make its true top-down
+  // extent bigger than the bucket's default -- tiltedFootprints carries a
+  // precomputed, correct override for just those (rare) instances, keyed by
+  // point index, so the overwhelming majority of points here take the cheap
+  // path (a single object-property check that's immediately false).
+  function _footprintForPoint(bucket, idx, yaw) {
+    var verts = bucket.tiltedFootprints && bucket.tiltedFootprints[idx];
+    if (verts) {
+      return { verts: verts };
+    }
+    return { halfWidth: bucket.footprintPixels[0], halfDepth: bucket.footprintPixels[1], yaw: yaw };
+  }
+
+  // Traces one already-rotated polygon (a tilted instance's true top-down
+  // silhouette -- see sav_map_data._tiltedFootprintPolygon) into ctx's
+  // current path. verts is a flat [x1,y1,x2,y2,...] list of pixel offsets
+  // from (x,y), already in final orientation -- unlike _traceRect, no
+  // rotation is applied here, just translation + the same screen scale.
+  function _tracePolygon(ctx, x, y, verts, affine) {
+    var cx = affine.originX + x * affine.scaleX;
+    var cy = affine.originY + y * affine.scaleY;
+    for (var k = 0; k < verts.length; k += 2) {
+      var sx = cx + verts[k] * affine.scaleX;
+      var sy = cy + verts[k + 1] * affine.scaleY;
+      if (k === 0) {
+        ctx.moveTo(sx, sy);
+      } else {
+        ctx.lineTo(sx, sy);
+      }
+    }
+    ctx.closePath();
+  }
+
+  // Standard ray-casting point-in-polygon test (even-odd rule) -- (localX,
+  // localY) and verts must already be in the same (untransformed map-pixel)
+  // space, which is exactly how hitTest phase 1 uses this: the cursor's
+  // offset from the instance's center against verts as sav_map_data
+  // computed them (see _tracePolygon's doc comment on why no rotation is
+  // needed here either).
+  function _pointInPolygon(localX, localY, verts) {
+    var inside = false;
+    var n = verts.length / 2;
+    for (var i = 0, j = n - 1; i < n; j = i++) {
+      var xi = verts[i * 2], yi = verts[i * 2 + 1];
+      var xj = verts[j * 2], yj = verts[j * 2 + 1];
+      var intersect = ((yi > localY) !== (yj > localY)) &&
+        (localX < (xj - xi) * (localY - yi) / (yj - yi) + xi);
+      if (intersect) {
+        inside = !inside;
+      }
+    }
+    return inside;
   }
 
   // bucket.color is always a "#rrggbb" hex string (see filters.js's color

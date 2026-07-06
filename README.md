@@ -31,23 +31,13 @@ The server opens a landing page in your browser where you can choose how to load
 
 Each restart lands on the mode-selection page; it does not remember your last choice.
 
-## Building footprints (optional)
+## Building footprints
 
-By default, buildings without hand-tuned fallback dimensions render as small
-circles on the map instead of their real rotated footprint. To get accurate
-building boxes, download `detailedModels.json` from
-[satisfactory-calculator.com](https://satisfactory-calculator.com)'s
-Interactive Map and place it at `parser/sav_data/detailedModels.json`:
-
-```bash
-curl -o parser/sav_data/detailedModels.json https://static.satisfactory-calculator.com/js/InteractiveMap/build/detailedModels.json
-```
-
-This file is not part of the `sat_sav_parse` submodule or this repo (it's a
-third-party asset, ~130 building types' collision-polygon data credited to
-AnthorNet — see `parser/README.md`) and is gitignored inside the submodule, so
-each clone needs to fetch it manually. The map works without it, just with
-less precise shapes for buildings that lack a fallback footprint.
+Buildings render as boxes sized from `docs/generated/buildings.json` (see
+`docs/generated/SCHEMA.md`), which is extracted from the game's own
+`Docs.json` and bundled in this repo — no extra download needed. Buildings
+missing size data there (a small number of logic-only buildables) fall back
+to a plain circle marker on the map.
 
 ## Parser dependency
 

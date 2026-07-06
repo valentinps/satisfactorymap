@@ -566,21 +566,30 @@
     "adaptiveLength": {},
     "clearance": [],
     "description": "The Blueprint Designer is used to create custom factory designs and save them as Blueprints.\r\nBlueprints can be accessed from the Blueprint tab of the Build Menu.\r\n\r\nNote that buildings can only be placed in the Blueprint Designer if they are fully within the boundary frame.\r\n\r\nDimensions: 32 m x 32 m x 32 m",
-    "dimensions": {},
+    "dimensions": {
+      "Depth": 3200.0,
+      "Width": 3200.0
+    },
     "displayName": "Blueprint Designer Mk.1"
   },
   "Build_BlueprintDesigner_MK2_C": {
     "adaptiveLength": {},
     "clearance": [],
     "description": "The Blueprint Designer is used to create custom factory designs and save them as Blueprints.\r\nBlueprints can be accessed from the Blueprint tab of the Build Menu.\r\n\r\nNote that buildings can only be placed in the Blueprint Designer if they are fully within the boundary frame.\r\n\r\nDimensions: 40 m x 40 m x 40 m",
-    "dimensions": {},
+    "dimensions": {
+      "Depth": 4000.0,
+      "Width": 4000.0
+    },
     "displayName": "Blueprint Designer Mk.2"
   },
   "Build_BlueprintDesigner_Mk3_C": {
     "adaptiveLength": {},
     "clearance": [],
     "description": "The Blueprint Designer is used to create custom factory designs and save them as Blueprints.\r\nBlueprints can be accessed from the Blueprint tab of the Build Menu.\r\n\r\nNote that buildings can only be placed in the Blueprint Designer if they are fully within the boundary frame.\r\n\r\nDimensions: 48 m x 48 m x 48 m",
-    "dimensions": {},
+    "dimensions": {
+      "Depth": 4800.0,
+      "Width": 4800.0
+    },
     "displayName": "Blueprint Designer Mk.3"
   },
   "Build_CandyCaneDecor_C": {

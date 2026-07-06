@@ -1,14 +1,28 @@
-// Drives the top bar's item search and the Dimensional Depot icon button,
-// both of which show their results in the same centered modal dialog (see
-// #itemModalOverlay in index.html). The search looks up one item across
-// every inventory in the save (see sav_map_data.findItemLocations /
-// collectItemLocationIndex, queried via /api/find-item) and lists every
-// building that holds it -- names and quantities, most first -- with an
-// optional toggle to highlight (and hide everything else) just those
-// buildings on the map. The Depot button shows sav_map_data.
-// collectDimensionalDepotContents's contents the same way, minus the
-// highlight toggle (the Depot is a single global inventory with no map
-// position of its own).
+// Drives the top bar's search (items AND buildings) and the Dimensional
+// Depot icon button. Item results and Depot contents show in the shared
+// #itemModalOverlay dialog (see below); building results get their own
+// richer #buildingModalOverlay (count/recipes/power/inventory -- see
+// sav_map_data.collectBuildingInfo, queried via /api/building-info).
+//
+// Item search looks up one item across every inventory in the save (see
+// sav_map_data.findItemLocations / collectItemLocationIndex, queried via
+// /api/find-item) and lists every building that holds it -- names and
+// quantities, most first -- with an optional toggle to highlight (and hide
+// everything else) just those buildings on the map. The Depot button shows
+// sav_map_data.collectDimensionalDepotContents's contents the same way,
+// minus the highlight toggle (the Depot is a single global inventory with no
+// map position of its own).
+//
+// Building search instead lists every placed building type (from
+// filters.js's buildingSearchEntries, one entry per sidebar row -- so
+// same-shape/different-material skins are already merged together the same
+// way the sidebar shows them). Each suggestion row carries its own show/hide
+// toggle wired directly to that row's real sidebar checkbox, so toggling
+// visibility from a suggestion and from the sidebar are the exact same
+// action, never two states to keep in sync. Selecting a building (click or
+// Enter) opens the building modal with its own "Show only this on map"
+// isolate toggle, sharing the item search's highlight/banner machinery below
+// (only one highlight -- item or building -- is ever active at a time).
 
 var FindItem = {};
 
@@ -20,12 +34,17 @@ var FindItem = {};
   var suggestionsEl = document.getElementById("searchSuggestions");
   var depotButton = document.getElementById("depotIconButton");
 
-  var MAX_SUGGESTIONS = 8;
+  var MAX_SUGGESTIONS_PER_KIND = 5;
   // Item icons are stored under readable name (see static/map/icons/items/,
   // e.g. "Iron Plate.png") -- the same catalog label the search matches on,
   // so the file name is just the label. Not every catalog item has one; a
   // missing image is hidden per-row (see onerror in renderSuggestions).
+  // Buildings have their own equivalent set under icons/buildings/, keyed
+  // the same way -- covers every unique-shaped building (machines, special
+  // buildings) but not every material skin of a multi-skin piece (those
+  // just fall back to no icon, same graceful-miss handling as items).
   var ITEM_ICON_BASE = "icons/items/";
+  var BUILDING_ICON_BASE = "icons/buildings/";
 
   var overlay = document.getElementById("itemModalOverlay");
   var modalTitle = document.getElementById("itemModalTitle");
@@ -33,6 +52,18 @@ var FindItem = {};
   var modalList = document.getElementById("itemModalList");
   var modalClose = document.getElementById("itemModalClose");
   var modalHighlightToggle = document.getElementById("itemModalHighlightToggle");
+
+  var buildingOverlay = document.getElementById("buildingModalOverlay");
+  var buildingModalIcon = document.getElementById("buildingModalIcon");
+  var buildingModalTitle = document.getElementById("buildingModalTitle");
+  var buildingModalCategory = document.getElementById("buildingModalCategory");
+  var buildingModalClose = document.getElementById("buildingModalClose");
+  var buildingModalSummary = document.getElementById("buildingModalSummary");
+  var buildingModalStats = document.getElementById("buildingModalStats");
+  var buildingModalRecipes = document.getElementById("buildingModalRecipes");
+  var buildingModalInventoryLabel = document.getElementById("buildingModalInventoryLabel");
+  var buildingModalInventory = document.getElementById("buildingModalInventory");
+  var buildingModalHighlightToggle = document.getElementById("buildingModalHighlightToggle");
 
   var banner = document.getElementById("activeFilterBanner");
   var bannerLabel = document.getElementById("activeFilterLabel");
@@ -51,13 +82,164 @@ var FindItem = {};
     '</svg>'
   );
 
-  var catalog = []; // [{label, itemPath}] -- the full searchable item list (see FindItem.build).
-  var catalogByLabel = {}; // label -> itemPath, for an exact-match Enter on a fully typed name.
-  var currentSuggestions = []; // The subset currently shown in the dropdown.
+  // Suggestion-row show/hide toggle glyphs (see makeVisibilityToggle) --
+  // plain inline markup (not a data-URI <img> like HIGHLIGHT_ICON_URL above)
+  // since this is a real <button> whose color CSS drives the stroke via
+  // currentColor, letting :hover/.isShown recolor it for free.
+  var EYE_OPEN_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16">' +
+    '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>' +
+    '<circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/>' +
+    '</svg>';
+  var EYE_OFF_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16">' +
+    '<path d="M2 12s3.6-7 10-7c1.5 0 2.9.3 4.1.8M22 12s-1.2 2.3-3.4 4.2M9.9 9.9a3 3 0 0 0 4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
+    '</svg>';
+
+  // Fallback glyphs for when neither an exact nor a fuzzy icon match exists
+  // (see attachIconWithFallback) -- a plain gem for items, a plain building
+  // silhouette for buildings, so the two kinds still read as distinct even
+  // when generic. Hand-drawn shapes, not game assets, so there's always
+  // something sane to fall back to no matter how the real icon set changes.
+  var DEFAULT_ITEM_ICON_URL = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="26" height="26">' +
+    '<path d="M12 3 L20 9 L17 20 L7 20 L4 9 Z" fill="none" stroke="#7a8190" stroke-width="1.5" stroke-linejoin="round"/>' +
+    '<path d="M4 9 L20 9 M8.5 9 L12 3 L15.5 9 M8.5 9 L7 20 M15.5 9 L17 20" fill="none" stroke="#7a8190" stroke-width="1" stroke-linejoin="round"/>' +
+    '</svg>'
+  );
+  var DEFAULT_BUILDING_ICON_URL = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="26" height="26">' +
+    '<path d="M4 10 L12 4 L20 10 V20 H4 Z" fill="none" stroke="#7a8190" stroke-width="1.5" stroke-linejoin="round"/>' +
+    '<rect x="10" y="14" width="4" height="6" fill="none" stroke="#7a8190" stroke-width="1.2"/>' +
+    '</svg>'
+  );
+
+  // {items: [...bare labels...], buildings: [...]} -- every icon file that
+  // actually exists under icons/items/ and icons/buildings/ (see
+  // sav_map_data.ITEM_ICON_LABELS/BUILDING_ICON_LABELS), populated by
+  // FindItem.build. Used only as the fuzzy-match candidate pool when an
+  // exact-filename guess 404s -- see bestFuzzyIconLabel.
+  var iconManifest = { items: [], buildings: [] };
+
+  // Turns a label into a bag of comparable tokens: lowercased, "<N> m" (the
+  // "(4 m)" size suffix docs/generated/buildings.json displayNames use, see
+  // SCHEMA.md) collapsed to "<N>m" (the convention the actual icon filenames
+  // use, e.g. "Foundation 4m (Concrete).png"), then every other run of
+  // punctuation/whitespace turned into a token boundary.
+  function tokenizeIconLabel(label) {
+    return label
+      .toLowerCase()
+      .replace(/(\d+)\s*m\b/g, "$1m")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .filter(function(t) { return t.length > 0; });
+  }
+
+  // Finds the closest available icon label for a target label that has no
+  // exact-filename icon -- e.g. building categories/tooltips/search entries
+  // all go through sav_map_data.readableLabel, which strips ANY trailing
+  // "(...)" from a name (originally just to drop the noisy "(full/original/
+  // path)" pathNameToReadableName appends for unmapped names -- see there),
+  // so a merged row like "Foundation (4 m)" surfaces here as bare
+  // "Foundation", with every size/material distinction gone. No icon file is
+  // named just "Foundation.png" (every real one also bakes in a size and
+  // material skin, e.g. "Foundation 4m (Concrete).png"), so this has to
+  // reconstruct a plausible specific icon from a deliberately-vague name.
+  //
+  // A candidate only qualifies at all if it contains EVERY token of the
+  // target somewhere in its own name (order-independent) -- "Foundation"
+  // must not fall back to "Foundation Stairs.png" just because they share a
+  // word; if nothing contains the full target, there's nothing close enough
+  // and attachIconWithFallback drops to the default glyph instead. Among
+  // qualifying candidates, ranked by:
+  //   1. Starts with the target's own words in order ("Foundation 4m
+  //      (Concrete)" over "Frame Foundation" for a bare "Foundation" target,
+  //      even though "Frame Foundation" is Jaccard-*closer* in length --
+  //      order matters more than brevity here).
+  //   2. Fewest extra/unrelated words beyond the target (prefer the more
+  //      specific, less-decorated match).
+  //   3. Largest embedded "<N>m" size token -- "take the biggest size
+  //      variant" per request, the deciding tiebreak once 1 and 2 are equal
+  //      (the common case: the target has no size of its own, so every size
+  //      of the same family ties on both of the above).
+  function bestFuzzyIconLabel(targetLabel, candidateLabels) {
+    var targetTokens = tokenizeIconLabel(targetLabel);
+    if (targetTokens.length === 0 || !candidateLabels || candidateLabels.length === 0) {
+      return null;
+    }
+
+    var best = null;
+    var bestKey = null; // [isPrefixMatch (0/1), -extraTokenCount, sizeNum], compared lexicographically.
+    candidateLabels.forEach(function(candidate) {
+      var candTokens = tokenizeIconLabel(candidate);
+      if (candTokens.length < targetTokens.length) {
+        return;
+      }
+      var candSet = {};
+      candTokens.forEach(function(t) { candSet[t] = true; });
+      var hasEveryTargetToken = targetTokens.every(function(t) { return candSet[t]; });
+      if (!hasEveryTargetToken) {
+        return;
+      }
+
+      var isPrefixMatch = targetTokens.every(function(t, i) { return candTokens[i] === t; });
+      var extraTokenCount = candTokens.length - targetTokens.length;
+      var sizeNum = -1;
+      candTokens.forEach(function(t) {
+        var m = /^(\d+)m$/.exec(t);
+        if (m) sizeNum = Math.max(sizeNum, parseInt(m[1], 10));
+      });
+      var key = [isPrefixMatch ? 1 : 0, -extraTokenCount, sizeNum];
+
+      if (!bestKey || key[0] > bestKey[0] || (key[0] === bestKey[0] && (key[1] > bestKey[1] ||
+          (key[1] === bestKey[1] && key[2] > bestKey[2])))) {
+        best = candidate;
+        bestKey = key;
+      }
+    });
+    return best;
+  }
+
+  // Sets img's icon, falling back from an exact-filename guess to the best
+  // fuzzy match to, failing that, a generic glyph -- shared by every place an
+  // item/building icon shows up (suggestion rows, the building modal header).
+  // Never leaves img visibly broken: the default glyph is a data URI, so it
+  // can't itself 404.
+  function attachIconWithFallback(img, kind, label) {
+    var iconBase = kind === "building" ? BUILDING_ICON_BASE : ITEM_ICON_BASE;
+    var manifestLabels = kind === "building" ? iconManifest.buildings : iconManifest.items;
+    var defaultIconUrl = kind === "building" ? DEFAULT_BUILDING_ICON_URL : DEFAULT_ITEM_ICON_URL;
+    var triedFuzzy = false;
+    img.style.visibility = "visible";
+    img.onerror = function() {
+      if (!triedFuzzy) {
+        triedFuzzy = true;
+        var fuzzyLabel = bestFuzzyIconLabel(label, manifestLabels);
+        if (fuzzyLabel) {
+          img.src = iconBase + encodeURIComponent(fuzzyLabel + ".png");
+          return;
+        }
+      }
+      img.onerror = null; // The default glyph is a data URI -- it cannot itself fail.
+      img.src = defaultIconUrl;
+    };
+    img.src = iconBase + encodeURIComponent(label + ".png");
+  }
+
+  var catalog = []; // [{kind:"item", label, itemPath}, {kind:"building", label, typePaths, category, subcategory, row}, ...]
+  var itemCatalogByLabel = {}; // label -> itemPath, for an exact-match Enter on a fully typed item name.
+  var buildingCatalogByLabel = {}; // label -> building catalog entry, same for a fully typed building name.
+  var currentSuggestions = []; // The subset currently shown in the dropdown (flat, in display order, kinds mixed).
+  var currentRowElements = []; // Row DOM elements parallel to currentSuggestions (group-label divs aren't part of this).
   var activeIndex = -1; // Highlighted suggestion row (keyboard/hover), -1 = none.
   var savedVisibility = null; // bucket.key -> visible, captured right before highlighting so "show all layers again" restores exactly what was on.
   var highlighting = false;
-  var lastResult = null; // The currently-open modal's search result, if it's a searchable one (null for the Depot view).
+  var highlightedBuildingEntry = null; // Set by showBuildingHighlight, so clearHighlight can re-sync its checkbox.
+  var lastKind = null; // "item" | "building" -- which of the two below is the live one.
+  var lastResult = null; // The currently-open item modal's search result, if it's a searchable one (null for the Depot view).
+  var lastBuilding = null; // {entry, info} for the currently-open building modal.
 
   function el(tag, className, text) {
     var e = document.createElement(tag);
@@ -109,17 +291,23 @@ var FindItem = {};
     return rows;
   }
 
-  // Removes the temporary highlight bucket (if any) and restores whatever
-  // every other bucket's visibility was right before highlighting started --
-  // matched by bucket.key, which stays valid even across a reload in between
-  // (see filters.js's savedVisibility comment: keys are stable identifiers
-  // for a *kind* of thing, not tied to one specific save's data).
+  // Removes the temporary highlight bucket (if any -- only the item-search
+  // kind creates one, see showHighlight) and restores whatever every other
+  // bucket's visibility was right before highlighting started -- matched by
+  // bucket.key, which stays valid even across a reload in between (see
+  // filters.js's savedVisibility comment: keys are stable identifiers for a
+  // *kind* of thing, not tied to one specific save's data). Shared by both
+  // highlight kinds (item search's synthetic bucket, building search's
+  // isolate-in-place -- see showBuildingHighlight) since only one is ever
+  // active at a time.
   function clearHighlight() {
     if (!highlighting) {
       return;
     }
     highlighting = false;
-    MapApp.layer.buckets = MapApp.layer.buckets.filter(function(b) { return b.key !== HIGHLIGHT_BUCKET_KEY; });
+    if (lastKind === "item") {
+      MapApp.layer.buckets = MapApp.layer.buckets.filter(function(b) { return b.key !== HIGHLIGHT_BUCKET_KEY; });
+    }
     if (savedVisibility) {
       MapApp.layer.buckets.forEach(function(b) {
         if (savedVisibility.hasOwnProperty(b.key)) {
@@ -128,7 +316,16 @@ var FindItem = {};
       });
       savedVisibility = null;
     }
+    // showBuildingHighlight forced this row's checkbox to "on" without a real
+    // change event (see there) -- put it back in sync with the bucket state
+    // just restored above, so the sidebar doesn't show "visible" for a
+    // building that's actually gone back to hidden.
+    if (highlightedBuildingEntry && highlightedBuildingEntry.row.checkbox) {
+      highlightedBuildingEntry.row.checkbox.checked = highlightedBuildingEntry.row.buckets[0].visible;
+    }
+    highlightedBuildingEntry = null;
     modalHighlightToggle.textContent = "Show only these on map";
+    buildingModalHighlightToggle.textContent = "Show only this on map";
     banner.style.display = "none";
     MapApp.layer.requestRedraw();
   }
@@ -192,7 +389,30 @@ var FindItem = {};
     // user was already looking.
   }
 
-  // ---- Modal dialog (shared by search results and the Depot view) --------
+  // Building search's equivalent of showHighlight -- but a building's own
+  // buckets already exist and are real, permanent sidebar buckets (see
+  // filters.js's buildingSearchEntries), so this just hides every other
+  // bucket and forces this one's own bucket(s) visible in place, rather than
+  // building a synthetic one-off bucket the way item search does. Also
+  // forces the building's own sidebar checkbox to reflect "shown" so the two
+  // controls don't end up disagreeing once the isolate is cleared.
+  function showBuildingHighlight(entry) {
+    savedVisibility = {};
+    MapApp.layer.buckets.forEach(function(b) {
+      savedVisibility[b.key] = b.visible;
+      b.visible = false;
+    });
+    entry.row.buckets.forEach(function(b) { b.visible = true; });
+    if (entry.row.checkbox) {
+      entry.row.checkbox.checked = true;
+    }
+    highlightedBuildingEntry = entry;
+    highlighting = true;
+    buildingModalHighlightToggle.textContent = "Show all layers again";
+    MapApp.layer.requestRedraw();
+  }
+
+  // ---- Item/Depot modal dialog ---------------------------------------------
 
   function openModal(title) {
     modalTitle.textContent = title;
@@ -204,29 +424,20 @@ var FindItem = {};
   // find-item filter -- that's the banner's job. If a filter is live, closing
   // the modal just returns to the map view (banner reappears); otherwise
   // there's nothing to keep, so lastResult is dropped.
-  function closeModal() {
+  function closeItemModal() {
     overlay.style.display = "none";
     if (highlighting) {
       banner.style.display = "flex";
     } else {
       lastResult = null;
+      lastKind = null;
     }
   }
 
-  modalClose.addEventListener("click", closeModal);
+  modalClose.addEventListener("click", closeItemModal);
   overlay.addEventListener("click", function(e) {
     if (e.target === overlay) {
-      closeModal(); // Click on the backdrop, not the dialog itself.
-    }
-  });
-  document.addEventListener("keydown", function(e) {
-    if (e.key !== "Escape") {
-      return;
-    }
-    if (overlay.style.display !== "none") {
-      closeModal();
-    } else if (highlighting) {
-      clearHighlight(); // No modal open, but a filter is live on the map -- Esc reverts it.
+      closeItemModal(); // Click on the backdrop, not the dialog itself.
     }
   });
 
@@ -254,10 +465,153 @@ var FindItem = {};
 
   function showResult(result) {
     lastResult = result;
+    lastKind = "item";
     clearHighlight();
     openModal(result.label);
     fillModalFromResult(result);
     modalHighlightToggle.textContent = "Show only these on map";
+  }
+
+  // ---- Building info modal --------------------------------------------------
+
+  function openBuildingModal(entry) {
+    buildingModalTitle.textContent = entry.label;
+    buildingModalCategory.textContent = entry.subcategory ? entry.category + " › " + entry.subcategory : entry.category;
+    var chipColor = Filters.buildingCategoryColor(entry.category);
+    buildingModalCategory.style.background = chipColor + "26"; // ~15% alpha tint, hex-appended (2-digit alpha).
+    buildingModalCategory.style.color = chipColor;
+    attachIconWithFallback(buildingModalIcon, "building", entry.label);
+    banner.style.display = "none";
+    buildingOverlay.style.display = "flex";
+  }
+
+  function closeBuildingModal() {
+    buildingOverlay.style.display = "none";
+    if (highlighting) {
+      banner.style.display = "flex";
+    } else {
+      lastBuilding = null;
+      lastKind = null;
+    }
+  }
+
+  buildingModalClose.addEventListener("click", closeBuildingModal);
+  buildingOverlay.addEventListener("click", function(e) {
+    if (e.target === buildingOverlay) {
+      closeBuildingModal();
+    }
+  });
+
+  document.addEventListener("keydown", function(e) {
+    if (e.key !== "Escape") {
+      return;
+    }
+    if (overlay.style.display !== "none") {
+      closeItemModal();
+    } else if (buildingOverlay.style.display !== "none") {
+      closeBuildingModal();
+    } else if (highlighting) {
+      clearHighlight(); // No modal open, but a filter is live on the map -- Esc reverts it.
+    }
+  });
+
+  function statTile(value, label) {
+    var tile = el("div", "buildingStatTile");
+    tile.appendChild(el("span", "buildingStatValue", value));
+    tile.appendChild(el("span", "buildingStatLabel", label));
+    return tile;
+  }
+
+  function formatMW(mw) {
+    return mw.toLocaleString(undefined, { maximumFractionDigits: 1 }) + " MW";
+  }
+
+  // Fills the building modal's stats/recipe-mix/inventory from a
+  // collectBuildingInfo() result WITHOUT touching the highlight -- reusable
+  // both for a fresh search (showBuildingResult) and for reopening from the
+  // banner's "Details" button while an isolate is still active.
+  function fillBuildingModalFromInfo(entry, info) {
+    buildingModalSummary.textContent = info.count.toLocaleString() + " placed across the save.";
+
+    buildingModalStats.innerHTML = "";
+    buildingModalStats.appendChild(statTile(info.count.toLocaleString(), "Count"));
+    if (info.powerConsumptionMW !== undefined) {
+      buildingModalStats.appendChild(statTile(formatMW(info.powerConsumptionMW), "Power draw"));
+    } else if (info.powerConsumptionRangeMW) {
+      buildingModalStats.appendChild(statTile(
+        info.powerConsumptionRangeMW[0].toLocaleString() + "–" + info.powerConsumptionRangeMW[1].toLocaleString() + " MW",
+        "Power draw (varies)"));
+    } else if (info.powerProductionMW !== undefined) {
+      buildingModalStats.appendChild(statTile(formatMW(info.powerProductionMW), "Power output"));
+    }
+    if (info.recipes && info.recipes.length > 0) {
+      buildingModalStats.appendChild(statTile(String(info.recipes.length), "Recipes in use"));
+    }
+
+    buildingModalRecipes.innerHTML = "";
+    if (info.recipes && info.recipes.length > 0) {
+      var chipColor = Filters.buildingCategoryColor(entry.category);
+      buildingModalRecipes.appendChild(el("div", "buildingModalSectionLabel", "Recipe mix"));
+      var maxCount = info.recipes.reduce(function(m, r) { return Math.max(m, r.count); }, 1);
+      info.recipes.forEach(function(recipeRow) {
+        var row = el("div", "recipeBarRow");
+        row.appendChild(el("span", "recipeBarLabel", recipeRow.label));
+        var track = el("div", "recipeBarTrack");
+        var fill = el("div", "recipeBarFill");
+        fill.style.width = Math.max(3, (recipeRow.count / maxCount) * 100) + "%";
+        fill.style.background = chipColor;
+        track.appendChild(fill);
+        row.appendChild(track);
+        row.appendChild(el("span", "recipeBarCount", recipeRow.count.toLocaleString()));
+        buildingModalRecipes.appendChild(row);
+      });
+    }
+
+    if (info.inventory && info.inventory.length > 0) {
+      buildingModalInventoryLabel.style.display = "block";
+      renderLocationList(buildingModalInventory, info.inventory.map(function(entryRow) {
+        return [entryRow.label, entryRow.count.toLocaleString() + (entryRow.isFluid ? " m³" : "")];
+      }));
+    } else {
+      buildingModalInventoryLabel.style.display = "none";
+      buildingModalInventory.innerHTML = "";
+    }
+
+    buildingModalHighlightToggle.style.display = info.count > 0 ? "block" : "none";
+  }
+
+  function showBuildingResult(entry, info) {
+    lastBuilding = { entry: entry, info: info };
+    lastKind = "building";
+    clearHighlight();
+    fillBuildingModalFromInfo(entry, info);
+    buildingModalHighlightToggle.textContent = "Show only this on map";
+  }
+
+  function runBuildingSearchFor(entry) {
+    var filename = window.MapApp.currentFile;
+    if (!filename) {
+      return;
+    }
+    openBuildingModal(entry);
+    buildingModalSummary.textContent = "Loading…";
+    buildingModalStats.innerHTML = "";
+    buildingModalRecipes.innerHTML = "";
+    buildingModalInventoryLabel.style.display = "none";
+    buildingModalInventory.innerHTML = "";
+    buildingModalHighlightToggle.style.display = "none";
+    fetch("/api/building-info?file=" + encodeURIComponent(filename) + "&types=" + encodeURIComponent(entry.typePaths.join(",")))
+      .then(function(response) { return response.json(); })
+      .then(function(info) {
+        if (info.error) {
+          buildingModalSummary.textContent = info.error;
+          return;
+        }
+        showBuildingResult(entry, info);
+      })
+      .catch(function(error) {
+        buildingModalSummary.textContent = "Search failed: " + error;
+      });
   }
 
   function runSearchFor(itemPath, label) {
@@ -285,24 +639,20 @@ var FindItem = {};
 
   // ---- Spotlight-style suggestions dropdown -------------------------------
 
-  function itemIconUrl(label) {
-    return ITEM_ICON_BASE + encodeURIComponent(label + ".png");
-  }
-
   function hideSuggestions() {
     suggestionsEl.style.display = "none";
     currentSuggestions = [];
+    currentRowElements = [];
     activeIndex = -1;
   }
 
   function setActive(index) {
     activeIndex = index;
-    var rows = suggestionsEl.children;
-    for (var i = 0; i < rows.length; i++) {
+    for (var i = 0; i < currentRowElements.length; i++) {
       var isActive = i === index;
-      rows[i].classList.toggle("active", isActive);
-      if (isActive && rows[i].scrollIntoView) {
-        rows[i].scrollIntoView({ block: "nearest" });
+      currentRowElements[i].classList.toggle("active", isActive);
+      if (isActive && currentRowElements[i].scrollIntoView) {
+        currentRowElements[i].scrollIntoView({ block: "nearest" });
       }
     }
   }
@@ -310,20 +660,77 @@ var FindItem = {};
   function selectSuggestion(entry) {
     searchInput.value = entry.label;
     hideSuggestions();
-    runSearchFor(entry.itemPath, entry.label);
+    if (entry.kind === "building") {
+      runBuildingSearchFor(entry);
+    } else {
+      runSearchFor(entry.itemPath, entry.label);
+    }
+  }
+
+  // The show/hide eye button on a building suggestion row -- see the header
+  // comment. Reads/writes entry.row.checkbox directly (the same real DOM
+  // checkbox the sidebar row owns, see filters.js's appendLeafRow), so this
+  // is never a second source of truth for the building's visibility.
+  function makeVisibilityToggle(entry) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "searchSuggestionToggle";
+
+    function refresh() {
+      var isShown = !entry.row.checkbox || entry.row.checkbox.checked;
+      btn.classList.toggle("isShown", isShown);
+      btn.innerHTML = isShown ? EYE_OPEN_SVG : EYE_OFF_SVG;
+      btn.title = isShown ? "Hide " + entry.label + " on the map" : "Show " + entry.label + " on the map";
+    }
+    refresh();
+
+    // Stopped at mousedown (not just click) so this never reaches the row's
+    // own mousedown listener below, which would otherwise also treat this as
+    // "select this suggestion" and open the info modal.
+    btn.addEventListener("mousedown", function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    btn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      if (entry.row.checkbox) {
+        entry.row.checkbox.click(); // Fires the sidebar's own change handler -- redraw, savedVisibility, all of it, for free.
+      }
+      refresh();
+    });
+    return btn;
+  }
+
+  function suggestionRow(entry, index) {
+    var row = el("div", "searchSuggestionRow");
+    var img = document.createElement("img");
+    img.className = "searchSuggestionIcon";
+    img.alt = "";
+    attachIconWithFallback(img, entry.kind, entry.label);
+    row.appendChild(img);
+    row.appendChild(el("span", "searchSuggestionLabel", entry.label));
+    if (entry.kind === "building") {
+      row.appendChild(makeVisibilityToggle(entry));
+    }
+    // mousedown (not click) + preventDefault so selecting doesn't first
+    // blur the input and let the document-level outside-click handler race
+    // in and close the dropdown before the pick registers.
+    row.addEventListener("mousedown", function(e) {
+      e.preventDefault();
+      selectSuggestion(entry);
+    });
+    row.addEventListener("mouseenter", function() { setActive(index); });
+    return row;
   }
 
   // Substring match, case-insensitive, with prefix matches sorted first so
   // typing "iron" surfaces "Iron Plate"/"Iron Rod" ahead of "Reinforced Iron
-  // Plate". The catalog is already alphabetical, so a stable sort keeps ties
-  // in that order.
-  function renderSuggestions(query) {
-    var q = query.trim().toLowerCase();
-    if (!q) {
-      hideSuggestions();
-      return;
-    }
-    var matches = catalog.filter(function(entry) {
+  // Plate". Each kind is matched/capped independently, then rendered as its
+  // own labeled group ("ITEMS" / "BUILDINGS") -- skipped when only one kind
+  // has any matches, so a query that's obviously just an item (or just a
+  // building) doesn't show an empty section header for the other.
+  function matchCatalog(entries, q) {
+    var matches = entries.filter(function(entry) {
       return entry.label.toLowerCase().indexOf(q) !== -1;
     });
     matches.sort(function(a, b) {
@@ -331,34 +738,46 @@ var FindItem = {};
       var bPrefix = b.label.toLowerCase().indexOf(q) === 0 ? 0 : 1;
       return aPrefix - bPrefix;
     });
-    currentSuggestions = matches.slice(0, MAX_SUGGESTIONS);
+    return matches.slice(0, MAX_SUGGESTIONS_PER_KIND);
+  }
+
+  function renderSuggestions(query) {
+    var q = query.trim().toLowerCase();
+    if (!q) {
+      hideSuggestions();
+      return;
+    }
+    var itemMatches = matchCatalog(catalog.filter(function(e) { return e.kind === "item"; }), q);
+    var buildingMatches = matchCatalog(catalog.filter(function(e) { return e.kind === "building"; }), q);
+    currentSuggestions = itemMatches.concat(buildingMatches);
 
     suggestionsEl.innerHTML = "";
+    currentRowElements = [];
     if (currentSuggestions.length === 0) {
-      suggestionsEl.appendChild(el("div", "searchSuggestionEmpty", "No matching item."));
+      suggestionsEl.appendChild(el("div", "searchSuggestionEmpty", "No matching item or building."));
       suggestionsEl.style.display = "block";
       activeIndex = -1;
       return;
     }
-    currentSuggestions.forEach(function(entry, index) {
-      var row = el("div", "searchSuggestionRow");
-      var img = document.createElement("img");
-      img.className = "searchSuggestionIcon";
-      img.src = itemIconUrl(entry.label);
-      img.alt = "";
-      img.addEventListener("error", function() { img.style.visibility = "hidden"; });
-      row.appendChild(img);
-      row.appendChild(el("span", "searchSuggestionLabel", entry.label));
-      // mousedown (not click) + preventDefault so selecting doesn't first
-      // blur the input and let the document-level outside-click handler race
-      // in and close the dropdown before the pick registers.
-      row.addEventListener("mousedown", function(e) {
-        e.preventDefault();
-        selectSuggestion(entry);
+
+    var showGroupLabels = itemMatches.length > 0 && buildingMatches.length > 0;
+    var index = 0;
+    [["Items", itemMatches], ["Buildings", buildingMatches]].forEach(function(group) {
+      var groupEntries = group[1];
+      if (groupEntries.length === 0) {
+        return;
+      }
+      if (showGroupLabels) {
+        suggestionsEl.appendChild(el("div", "searchSuggestionGroupLabel", group[0]));
+      }
+      groupEntries.forEach(function(entry) {
+        var row = suggestionRow(entry, index);
+        currentRowElements.push(row);
+        suggestionsEl.appendChild(row);
+        index++;
       });
-      row.addEventListener("mouseenter", function() { setActive(index); });
-      suggestionsEl.appendChild(row);
     });
+
     activeIndex = 0;
     setActive(0);
     suggestionsEl.style.display = "block";
@@ -382,12 +801,15 @@ var FindItem = {};
       e.preventDefault();
       setActive((activeIndex - 1 + currentSuggestions.length) % currentSuggestions.length);
     } else if (e.key === "Enter") {
+      var typedLabel = searchInput.value.trim();
       if (activeIndex >= 0 && currentSuggestions[activeIndex]) {
         selectSuggestion(currentSuggestions[activeIndex]);
-      } else if (catalogByLabel.hasOwnProperty(searchInput.value.trim())) {
-        var label = searchInput.value.trim();
+      } else if (itemCatalogByLabel.hasOwnProperty(typedLabel)) {
         hideSuggestions();
-        runSearchFor(catalogByLabel[label], label);
+        runSearchFor(itemCatalogByLabel[typedLabel], typedLabel);
+      } else if (buildingCatalogByLabel.hasOwnProperty(typedLabel)) {
+        hideSuggestions();
+        runBuildingSearchFor(buildingCatalogByLabel[typedLabel]);
       }
     } else if (e.key === "Escape") {
       hideSuggestions();
@@ -418,17 +840,36 @@ var FindItem = {};
     }
   });
 
-  // Banner "Show all" reverts the filter; "Details" reopens the full list
-  // (keeping the filter active -- closing that list returns to the banner).
+  // Building modal's equivalent of the item modal's highlight toggle above --
+  // see showBuildingHighlight for why this isolates in place rather than
+  // building a synthetic bucket.
+  buildingModalHighlightToggle.addEventListener("click", function() {
+    if (highlighting) {
+      clearHighlight();
+    } else if (lastBuilding) {
+      showBuildingHighlight(lastBuilding.entry);
+      buildingModalHighlightToggle.textContent = "Show all layers again";
+      buildingOverlay.style.display = "none";
+      bannerLabel.textContent = "Showing only: " + lastBuilding.entry.label;
+      banner.style.display = "flex";
+    }
+  });
+
+  // Banner "Show all" reverts the filter; "Details" reopens the full list/
+  // modal for whichever kind is currently isolated (keeping the filter
+  // active -- closing that back up returns to the banner).
   bannerClear.addEventListener("click", clearHighlight);
   bannerDetails.addEventListener("click", function() {
-    if (!lastResult) {
-      return;
+    if (lastKind === "item" && lastResult) {
+      fillModalFromResult(lastResult);
+      modalHighlightToggle.textContent = "Show all layers again";
+      banner.style.display = "none";
+      overlay.style.display = "flex";
+    } else if (lastKind === "building" && lastBuilding) {
+      openBuildingModal(lastBuilding.entry);
+      fillBuildingModalFromInfo(lastBuilding.entry, lastBuilding.info);
+      buildingModalHighlightToggle.textContent = "Show all layers again";
     }
-    fillModalFromResult(lastResult);
-    modalHighlightToggle.textContent = "Show all layers again";
-    banner.style.display = "none";
-    overlay.style.display = "flex";
   });
 
   depotButton.addEventListener("click", function() {
@@ -447,29 +888,50 @@ var FindItem = {};
     }));
   });
 
-  // Rebuilds the (save-independent) item catalog and resets any in-progress
-  // search/highlight -- called alongside Filters.build/Altitude.build on
-  // every load (see data.js), since a reload's fresh buckets shouldn't be
-  // silently hidden by a highlight the user set up against the old ones.
+  // Rebuilds the item + building catalogs and resets any in-progress search/
+  // highlight -- called alongside Filters.build/Altitude.build on every load
+  // (see data.js, AFTER Filters.build specifically, so
+  // Filters.getBuildingSearchEntries() already reflects the fresh payload),
+  // since a reload's fresh buckets shouldn't be silently hidden by a
+  // highlight the user set up against the old ones.
   FindItem.build = function(payload) {
     // Hard reset -- Filters.build already cleared/rebuilt every bucket (so the
     // old highlight bucket is gone and savedVisibility is stale), so just drop
     // all find-item state rather than trying to "revert" against buckets that
     // no longer exist.
     overlay.style.display = "none";
+    buildingOverlay.style.display = "none";
     banner.style.display = "none";
     highlighting = false;
+    highlightedBuildingEntry = null;
     savedVisibility = null;
     lastResult = null;
+    lastBuilding = null;
+    lastKind = null;
     modalHighlightToggle.textContent = "Show only these on map";
+    buildingModalHighlightToggle.textContent = "Show only this on map";
     searchInput.value = "";
     hideSuggestions();
 
-    catalog = (payload.itemCatalog || []).slice();
-    catalogByLabel = {};
-    catalog.forEach(function(entry) {
-      catalogByLabel[entry.label] = entry.itemPath;
+    var itemEntries = (payload.itemCatalog || []).map(function(entry) {
+      return { kind: "item", label: entry.label, itemPath: entry.itemPath };
     });
+    itemCatalogByLabel = {};
+    itemEntries.forEach(function(entry) { itemCatalogByLabel[entry.label] = entry.itemPath; });
+
+    // One entry per merged sidebar row (see filters.js's buildingSearchEntries) --
+    // already deduped/labeled exactly the way the sidebar groups same-shape/
+    // different-material buildings, so search and sidebar always agree on
+    // what counts as "one building".
+    var buildingEntries = (Filters.getBuildingSearchEntries ? Filters.getBuildingSearchEntries() : []).map(function(row) {
+      return { kind: "building", label: row.label, typePaths: row.typePaths, category: row.category, subcategory: row.subcategory, row: row };
+    });
+    buildingCatalogByLabel = {};
+    buildingEntries.forEach(function(entry) { buildingCatalogByLabel[entry.label] = entry; });
+
+    catalog = itemEntries.concat(buildingEntries);
+
+    iconManifest = payload.iconManifest || { items: [], buildings: [] };
 
     window.MapApp.currentDepotItems = payload.dimensionalDepot || [];
   };

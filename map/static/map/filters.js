@@ -28,6 +28,7 @@ var Filters = {};
     Logistics: "#3498db",
     Organisation: "#1abc9c",
     Walls: "#95a5a6",
+    Foundation: "#7a7a7a",
     Unknown: "#e74c3c",
   };
 
@@ -160,7 +161,6 @@ var Filters = {};
     pipelines: "Pipeline",
     railroads: "Railroad",
     hypertubes: "Hypertube",
-    vehiclePaths: "Vehicle Path",
   };
 
   // Category/subcategory order comes from the payload (payload.menuOrder,
@@ -203,7 +203,7 @@ var Filters = {};
 
   // tooltipInfo(idx) -> {title, rows: [[label, value], ...]} for a "static"
   // bucket (no server round-trip; we already know everything worth showing).
-  function makePointBucket(key, label, color, points, renderType, pointStride, ids, tooltipKind, tooltipInfo, footprintPixels, drawPriority) {
+  function makePointBucket(key, label, color, points, renderType, pointStride, ids, tooltipKind, tooltipInfo, footprintPixels, drawPriority, tiltedFootprints, maxFootprintRadius) {
     return MapApp.layer.addBucket({
       key: key, label: label, color: color, visible: true,
       renderType: renderType || "circle",
@@ -213,6 +213,18 @@ var Filters = {};
       tooltipKind: tooltipKind || "none",
       tooltipInfo: tooltipInfo || null,
       footprintPixels: footprintPixels || null,
+      // See sav_map_data.collectBuildings -- sparse pointIndex -> flat
+      // [x1,y1,x2,y2,...] polygon override for the rare genuinely-tilted
+      // instance (a Pillar/Beam bracing a diagonal run), whose true top-down
+      // silhouette isn't this bucket's shared axis-aligned footprintPixels
+      // rect -- already in final rotated orientation (map.js's
+      // _tracePolygon/_pointInPolygon just translate it, no further
+      // rotation), plus the largest center-to-edge distance actually used
+      // anywhere in the bucket (map.js's hover/click hit-test needs that to
+      // size its spatial-grid query radius correctly). null for the
+      // overwhelming majority of buckets that never need it.
+      tiltedFootprints: tiltedFootprints || null,
+      maxFootprintRadius: maxFootprintRadius || (footprintPixels ? Math.hypot(footprintPixels[0], footprintPixels[1]) : 0),
       // Buckets are drawn (and so painted over each other) in this order,
       // ascending -- see map.js's _redraw, which sorts buckets by this
       // before each frame. Plain category order isn't altitude, so without
@@ -345,6 +357,11 @@ var Filters = {};
     rowDiv.appendChild(el("label", null, row.displayLabel || row.label));
     rowDiv.appendChild(el("span", "count", String(row.count)));
     childrenDiv.appendChild(rowDiv);
+    // Building rows (see buildingSearchEntries) hang onto their own checkbox
+    // so the search bar's show/hide toggle can drive this exact element --
+    // one source of truth for a building's visibility, whether it's flipped
+    // from here or from a search suggestion.
+    row.checkbox = checkbox;
     return checkbox;
   }
 
@@ -459,6 +476,19 @@ var Filters = {};
   // works exactly as before since those live inside the relocated children
   // div, untouched.
   var categoryEntries = [];
+
+  // One entry per merged building row created below (see mergedBuildingRow) --
+  // reused by finditem.js to make placed buildings searchable from the top
+  // search bar, alongside items. Each entry IS the row object itself
+  // ({label, count, color, buckets, typePaths, category, subcategory}), plus
+  // a `checkbox` property appendLeafRow attaches once the row is actually
+  // rendered into the sidebar (see below) -- by the time Filters.build
+  // returns, every entry here has a live checkbox, so toggling it from a
+  // search suggestion flips the exact same bucket-visibility state (and stays
+  // in sync with) the sidebar's own row.
+  var buildingSearchEntries = [];
+  Filters.getBuildingSearchEntries = function() { return buildingSearchEntries; };
+  Filters.buildingCategoryColor = function(category) { return BUILDING_CATEGORY_COLORS[category] || BUILDING_CATEGORY_COLORS.Unknown; };
 
   // Leaflet doesn't notice its container resized just because a CSS
   // width/left value changed -- invalidateSize() is the real API for that,
@@ -821,16 +851,23 @@ var Filters = {};
   function buildingRow(typeEntry, color, drawPriority) {
     var bucket = makePointBucket(
       "building:" + typeEntry.typePath, typeEntry.label, color, typeEntry.points, typeEntry.renderType, 4,
-      typeEntry.ids, "server", null, typeEntry.footprintPixels, drawPriority);
+      typeEntry.ids, "server", null, typeEntry.footprintPixels, drawPriority,
+      typeEntry.tiltedFootprints, typeEntry.maxFootprintRadius);
     return { label: typeEntry.label, count: pointCount(typeEntry.points, 4), color: color, renderType: typeEntry.renderType, buckets: [bucket] };
   }
 
   // Same-shape/different-material typeEntries (see mergedMaterialLabel) merged
-  // into a single row controlling all of their buckets at once.
-  function mergedBuildingRow(mergedLabel, typeEntries, color, drawPriority) {
+  // into a single row controlling all of their buckets at once. `typePaths`
+  // and `category` aren't used by the sidebar itself -- they're carried
+  // along so this same row object can double as a building-search catalog
+  // entry (see buildingSearchEntries above).
+  function mergedBuildingRow(mergedLabel, typeEntries, color, drawPriority, category) {
     var buckets = typeEntries.map(function(typeEntry) { return buildingRow(typeEntry, color, drawPriority).buckets[0]; });
     var count = typeEntries.reduce(function(s, t) { return s + pointCount(t.points, 4); }, 0);
-    return { label: mergedLabel, count: count, color: color, renderType: typeEntries[0].renderType, buckets: buckets };
+    return {
+      label: mergedLabel, count: count, color: color, renderType: typeEntries[0].renderType, buckets: buckets,
+      typePaths: typeEntries.map(function(t) { return t.typePath; }), category: category,
+    };
   }
 
   // Foundations/frames/walls (Organisation/Walls categories) sit at ground
@@ -908,8 +945,8 @@ var Filters = {};
   // The whole filter tree of placed buildables, grouped by the build-menu
   // category/subcategory each typePath maps to (order from payload.menuOrder,
   // built from docs/generated/buildingCategories.json). Point/rect buildings,
-  // per-mark belts/pipes, and the whole-line kinds (power lines/railroads/
-  // hypertubes/vehicle paths) are all folded into one category -> subcategory
+  // per-mark belts/pipes/vehicle-paths, and the whole-line kinds (power lines/
+  // railroads/hypertubes) are all folded into one category -> subcategory
   // -> rows structure; any typePath not in the build menu lands in "Unknown".
   function buildBuildingCategorySections(navList, detailPane, payload) {
     // catData[category] = { subOrder: [subName,...], subSeen: {}, subs: {subName: [rows]}, loose: [rows] }
@@ -967,11 +1004,16 @@ var Filters = {};
       });
       mergedOrder.forEach(function(key) {
         var g = mergedGroups[key];
-        addRow(category, g.subcategory, mergedBuildingRow(g.mergedLabel, g.entries, color, drawPriority));
+        var row = mergedBuildingRow(g.mergedLabel, g.entries, color, drawPriority, category);
+        row.subcategory = g.subcategory;
+        buildingSearchEntries.push(row);
+        addRow(category, g.subcategory, row);
       });
     });
 
-    // Per-mark belts/pipes (line buckets), placed by the category/subcategory
+    // Per-mark belts/pipes, and per-tier vehicle paths (Explorer/FactoryCart/
+    // Tractor/Truck/Universal Vehicle Path -- five distinct buildables, each
+    // its own toggleable line bucket), placed by the category/subcategory
     // sav_map_data attached to each group.
     (payload.belts || []).forEach(function(group) {
       addRow(group.category || "Unknown", group.subcategory, beltPipeRow("line:belt:", LINE_COLORS.belts, group));
@@ -979,9 +1021,12 @@ var Filters = {};
     (payload.pipes || []).forEach(function(group) {
       addRow(group.category || "Unknown", group.subcategory, beltPipeRow("line:pipe:", LINE_COLORS.pipelines, group));
     });
+    (payload.vehiclePaths || []).forEach(function(group) {
+      addRow(group.category || "Unknown", group.subcategory, beltPipeRow("line:vehiclePath:", LINE_COLORS.vehiclePaths, group));
+    });
 
-    // Whole-line kinds (power lines, railroads, hypertubes, vehicle paths).
-    ["powerLines", "railroads", "hypertubes", "vehiclePaths"].forEach(function(key) {
+    // Whole-line kinds (power lines, railroads, hypertubes).
+    ["powerLines", "railroads", "hypertubes"].forEach(function(key) {
       var lineData = payload.lines[key];
       if (!lineData || lineData.polylines.length === 0) {
         return;
@@ -1023,6 +1068,7 @@ var Filters = {};
     });
     (payload.belts || []).forEach(function(group) { total += group.polylines.length; });
     (payload.pipes || []).forEach(function(group) { total += group.polylines.length; });
+    (payload.vehiclePaths || []).forEach(function(group) { total += group.polylines.length; });
     return total;
   }
 
@@ -1032,6 +1078,7 @@ var Filters = {};
     navList.innerHTML = "";
     detailPane.innerHTML = "";
     categoryEntries = [];
+    buildingSearchEntries = [];
     MapApp.layer.clearBuckets();
 
     buildResourceNodeSection(navList, detailPane, payload);

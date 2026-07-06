@@ -87,6 +87,13 @@ then `clearance`, then `adaptiveLength` for whichever is non-empty.
    Example: `Build_Foundation_Metal_8x4_C` has `Width: 800, Depth: 800,
    Height: 400` (8m x 8m x 4m foundation).
 
+   The three Blueprint Designer tiers (`Build_BlueprintDesigner_C`/`_MK2_C`/
+   `_Mk3_C`) are a special case: they have no `mWidth`/`mDepth`/`mHeight` at
+   all, only an `mDimensions` struct in 8m foundation-grid squares (e.g.
+   `(X=4,Y=4,Z=4)` for the 32m x 32m x 32m Mk.1). The extractor converts that
+   to `Width`/`Depth` in centimeters (`grid units * 800`) so it lands in this
+   same bucket rather than needing a fourth size representation.
+
 2. **`clearance`** -- parsed from the game's `mClearanceData`, a physical
    bounding box around the building's origin, given as `min`/`max` corners in
    centimeters. Present on most buildables (even ones that also have
@@ -103,7 +110,20 @@ then `clearance`, then `adaptiveLength` for whichever is non-empty.
      if the game defines multiple soft-clearance volumes for that piece.
    - Some buildables have `clearance: []` (empty) -- no clearance data in
      Docs.json for that class (seen on some adaptive-length pieces like
-     conveyor belts, which rely on `adaptiveLength` instead).
+     conveyor belts, which rely on `adaptiveLength` instead). A few classes
+     (`Build_Elevator_C`, `Build_FloodlightWall_C`) have *nothing* at all --
+     no `clearance`, `dimensions`, or `adaptiveLength` -- despite having a
+     real physical footprint in-game; consumers needing a size for these
+     have to fall back to a hand-curated value (see
+     `HAND_CURATED_FOOTPRINTS_METERS_BY_CLASSNAME` in `map/sav_map_data.py`).
+   - Known stale-data quirk: `Build_BigGarageDoor_16x8_C` (and its
+     `_Concrete_C`/`_Steel_C` skins) report the exact same `mClearanceData`
+     as the unrelated, much smaller `Build_Gate_Automated_8x4_C` -- half the
+     real 16m width. `dimensions.Width` (1600) is correct for these; it's
+     just `clearance` that's wrong. Confirmed by comparing every building's
+     `dimensions.Width`/`Depth` against its `clearance` extents -- these 3
+     are the only ones where the named dimension exceeds what clearance
+     alone would imply.
 
 3. **`adaptiveLength`** -- present on buildables whose length is chosen by
    the player at build time (belts, pipes, power lines, railway, conveyor
@@ -155,10 +175,14 @@ Build-menu placement, keyed by the same `Build_*_C` name as `buildings.json`.
 - Source data quirk: this info lives on a separate `FGBuildingDescriptor`
   companion class (`Desc_*_C`), not on the buildable itself, and the two are
   linked only by naming convention -- not an explicit field. `extract_docs_json.py`
-  resolves ~99% of these automatically (`Desc_X_C` -> `Build_X_C`, case
-  differences, a Tris/FlipTris size-token reorder) plus a handful of hardcoded
-  corrections for real typos/irregularities in the game's own class names
-  (e.g. `Build_WalkwayTrun_C` -- yes, "Trun"). A few descriptors (~4) are
-  themselves stale leftovers with no matching buildable at all and are
-  dropped with a printed warning when the script runs -- not every building in
-  `buildings.json` is guaranteed to have a category entry here.
+  resolves the vast majority of these automatically (`Desc_X_C` -> `Build_X_C`,
+  case differences, a Tris/FlipTris size-token reorder) plus a hardcoded
+  correction table (`KNOWN_DESCRIPTOR_TO_BUILD_CORRECTIONS`) for real typos/
+  irregularities in the game's own class names -- e.g. `Build_WalkwayTrun_C`
+  (yes, "Trun"), `Build_CatwalkCorner_C` (descriptor still says `CatwalkTurn`),
+  or `Build_QuarterPipeMiddle_Ficsit_8x1_C` (descriptor says `4x1` where every
+  other size token in this file says `8x1`). Every entry currently resolves
+  (546/546); if a future Docs.json update introduces a new one that doesn't,
+  the script prints a warning and drops it rather than guessing -- don't
+  assume every building in `buildings.json` is guaranteed to have a category
+  entry here.

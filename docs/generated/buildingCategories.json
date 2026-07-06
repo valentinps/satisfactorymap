@@ -119,6 +119,11 @@
     "subCategory": "SC_Event",
     "topCategory": "Sub_Special"
   },
+  "Build_CatwalkCorner_C": {
+    "menuPriority": 2.0,
+    "subCategory": "SC_Catwalks",
+    "topCategory": "Sub_Organisation"
+  },
   "Build_CatwalkCross_C": {
     "menuPriority": 4.0,
     "subCategory": "SC_Catwalks",
@@ -1271,6 +1276,21 @@
   },
   "Build_QuarterPipeMiddle_Concrete_8x4_C": {
     "menuPriority": 12.0,
+    "subCategory": "SC_Floors",
+    "topCategory": "Sub_Organisation"
+  },
+  "Build_QuarterPipeMiddle_Ficsit_8x1_C": {
+    "menuPriority": 4.0,
+    "subCategory": "SC_Floors",
+    "topCategory": "Sub_Organisation"
+  },
+  "Build_QuarterPipeMiddle_Ficsit_8x2_C": {
+    "menuPriority": 5.0,
+    "subCategory": "SC_Floors",
+    "topCategory": "Sub_Organisation"
+  },
+  "Build_QuarterPipeMiddle_Ficsit_8x4_C": {
+    "menuPriority": 6.0,
     "subCategory": "SC_Floors",
     "topCategory": "Sub_Organisation"
   },

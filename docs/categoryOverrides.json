@@ -1,0 +1,12 @@
+{
+  "_comment": "Hand-maintained regrouping of the build menu tree, layered on top of docs/generated/buildingCategories.json (the truthful, Docs.json-extracted data) at load time -- never edit buildingCategories.json itself to reorganize the menu, edit this instead. subcategoryOverrides moves an entire internal subcategory (SC_*, see buildingCategories.json/categoryLabels.json) to a different top category in one shot -- every buildable in that subcategory follows it, regardless of which top category Docs.json originally put it under. The target can be an existing internal top category id (e.g. 'Sub_Power') or a brand-new one you invent (like 'Foundation' below); a made-up id needs a display label in topCategoryLabels since it won't be in categoryLabels.json, but overriding onto an existing Sub_* id doesn't (it already has one there).",
+  "topCategoryLabels": {
+    "Foundation": "Foundation"
+  },
+  "subcategoryOverrides": {
+    "SC_Floors": "Foundation",
+    "SC_Ramps": "Foundation",
+    "SC_Inverted": "Foundation",
+    "SC_QuatPipes": "Foundation"
+  }
+}
