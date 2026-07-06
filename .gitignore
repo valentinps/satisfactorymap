@@ -21,3 +21,6 @@ map_output/
 __pycache__/
 *.pyc
 *.pyo
+
+# Local git worktrees (superpowers:using-git-worktrees)
+.worktrees/
