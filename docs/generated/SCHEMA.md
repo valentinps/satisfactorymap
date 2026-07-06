@@ -1,0 +1,164 @@
+# Generated data files
+
+Produced by `docs/extract_docs_json.py` from `docs/Docs.json`. Regenerate after
+every game update / Docs.json refresh:
+
+```
+py docs/extract_docs_json.py
+```
+
+All three files are keyed by `ClassName` (the short in-game class, e.g.
+`Desc_IronPlate_C`, `Recipe_IronPlate_C`, `Build_Wall_Conveyor_8x4_04_C`) --
+the same short name `sav_parse.pathNameToReadableName` / the map's typePath
+lookups already work with.
+
+## recipes.json
+
+```json
+"Recipe_IronPlate_C": {
+  "displayName": "Iron Plate",
+  "ingredients": [{ "item": "Desc_IronIngot_C", "amount": 3.0 }],
+  "product": [{ "item": "Desc_IronPlate_C", "amount": 2.0 }],
+  "producedIn": ["Build_ConstructorMk1_C", "BP_WorkBenchComponent_C", "FGBuildableAutomatedWorkBench"],
+  "durationSeconds": 6.0
+}
+```
+
+- `ingredients` / `product`: amount is per craft cycle, not per minute.
+- `producedIn`: short class names of buildings/components that can craft this
+  recipe. Not always a `Build_*` buildable -- workbench/hand-craft entries show
+  up as `BP_WorkBenchComponent_C` or a bare native class like
+  `FGBuildableAutomatedWorkBench`. Treat as opaque identifiers, not guaranteed
+  to resolve in `buildings.json`.
+- `durationSeconds` is `null` if the field was missing/empty (shouldn't happen
+  for real recipes, but the source data isn't assumed reliable).
+- Only real craftable recipes (`FGRecipe` group). Customization recipes
+  (paint/pattern/swatch unlocks) are skipped entirely -- not real crafting.
+
+## items.json
+
+```json
+"Desc_IronPlate_C": {
+  "displayName": "Iron Plate",
+  "description": "Used for crafting.\r\nOne of the most basic parts.",
+  "stackSize": "SS_BIG",
+  "stackSizeCount": 200
+}
+```
+
+- Covers everything that isn't a `Build_*` buildable and has a non-empty
+  display name: raw resources, parts, consumables, ammo, equipment/weapons,
+  vehicle descriptors. Broad on purpose -- see `extract_docs_json.py` header
+  for the exact rule.
+- `stackSize` is the raw game enum (`SS_ONE`, `SS_SMALL`, `SS_MEDIUM`,
+  `SS_BIG`, `SS_HUGE`, `SS_FLUID`); `stackSizeCount` is the actual resolved
+  number of items per stack for that enum, already computed by the game data
+  so you don't need your own enum-to-count table.
+- `description` keeps the game's literal `\r\n` line breaks.
+
+## buildings.json
+
+```json
+"Build_Wall_Conveyor_8x4_04_C": {
+  "displayName": "Perpendicular Wall Conveyor",
+  "description": "...",
+  "dimensions": { "Width": 800.0, "Height": 400.0, "AngularDepth": 0.0 },
+  "clearance": [{ "min": {...}, "max": {...}, "rotated": false }],
+  "adaptiveLength": {}
+}
+```
+
+### The three size fields, and why there are three
+
+Buildables in this game don't share one consistent "size" representation.
+Rather than guess/normalize, the extractor stores whatever the source data
+actually gives per building, in up to three independent buckets. **A given
+building may populate one, two, or all three** -- check `dimensions` first,
+then `clearance`, then `adaptiveLength` for whichever is non-empty.
+
+1. **`dimensions`** -- fixed footprint, present when the game itself exposes
+   simple named fields. Keys are whichever of these existed on that class
+   (missing ones are just absent, not zero):
+   - `Width`, `Depth`, `Height` -- straightforward box dimensions in
+     centimeters (game's native unit; divide by 100 for meters).
+   - `AngularDepth` -- extra depth-like offset seen on some walls (angled
+     wall pieces), usually `0.0` for straight ones.
+
+   Example: `Build_Foundation_Metal_8x4_C` has `Width: 800, Depth: 800,
+   Height: 400` (8m x 8m x 4m foundation).
+
+2. **`clearance`** -- parsed from the game's `mClearanceData`, a physical
+   bounding box around the building's origin, given as `min`/`max` corners in
+   centimeters. Present on most buildables (even ones that also have
+   `dimensions`), and is often the *only* size info for pieces that don't
+   expose named width/depth/height (beams, corner pieces, angled buildables).
+   - `rotated: true` means the box came with a `RelativeTransform` rotation
+     in the source data -- **the box's X/Y/Z axes do not necessarily line up
+     with width/depth/height in that case**. The extractor deliberately does
+     NOT try to remap axes here; consume the box as "this is the physical
+     footprint around the origin" rather than "X is width". Example:
+     `Build_Beam_C` has `rotated: true` and its box's short axis (Z, ~0-400)
+     is actually the beam's *length* direction, not height.
+   - Some buildables have more than one clearance box (list, not single dict)
+     if the game defines multiple soft-clearance volumes for that piece.
+   - Some buildables have `clearance: []` (empty) -- no clearance data in
+     Docs.json for that class (seen on some adaptive-length pieces like
+     conveyor belts, which rely on `adaptiveLength` instead).
+
+3. **`adaptiveLength`** -- present on buildables whose length is chosen by
+   the player at build time (belts, pipes, power lines, railway, conveyor
+   lifts, beams), so there's no single fixed size to report. Keys are
+   whichever of these existed:
+   - `MeshLength` / `MeshHeight` -- the length of one repeating mesh segment
+     (e.g. `Build_ConveyorBeltMk1_C` -> `MeshLength: 200`), not the total
+     buildable length, which is player-chosen and per-instance (only known
+     from the save file itself, not Docs.json).
+   - `DefaultLength` / `MaxLength` / `Length` / `CachedLength` -- seen on
+     beams (`DefaultLength`/`MaxLength`) and wires (`MaxLength`).
+   - `MaxPowerTowerLength`, `LengthPerCost` -- power line specific.
+   - `FlowIndicatorMinimumPipeLength` -- pipeline specific, not really a size.
+   - `OpposingConnectionClearance` -- conveyor lift specific.
+
+### Gotcha: `displayName` can encode a size variant that isn't in the numeric fields
+
+Some buildings' in-game display name includes a size that describes a
+*variant*, not necessarily matching how `dimensions` breaks it down. Example:
+`Build_Foundation_Metal_8x4_C` -> `displayName: "Foundation (4 m)"` (the "4 m"
+refers to the *height* variant of an otherwise-standard 8x8 foundation footprint)
+while `dimensions` correctly reports `Width: 800, Depth: 800, Height: 400`.
+**Treat `dimensions`/`clearance`/`adaptiveLength` as the source of truth for
+math; don't parse size out of `displayName` text.**
+
+### Entries with no size data at all
+
+A building can have `dimensions: {}`, `clearance: []`, and `adaptiveLength: {}`
+all empty simultaneously (e.g. logic-only buildables like priority switches).
+That's a legitimate "no physical footprint data available", not a bug.
+
+## buildingCategories.json
+
+```json
+"Build_WorkBench_C": {
+  "topCategory": "Sub_Production",
+  "subCategory": "SC_Workstations",
+  "menuPriority": 1.0
+}
+```
+
+Build-menu placement, keyed by the same `Build_*_C` name as `buildings.json`.
+
+- `topCategory` / `subCategory` are the game's internal asset names (folder
+  `Sub_<X>` / asset `SC_<X>`), not display strings -- there's no
+  human-readable label for either anywhere in Docs.json. Need a hand-curated
+  name map for UI display (6 top categories, 50 subcategories total).
+- `menuPriority` sorts buildables within a subcategory, lower first.
+- Source data quirk: this info lives on a separate `FGBuildingDescriptor`
+  companion class (`Desc_*_C`), not on the buildable itself, and the two are
+  linked only by naming convention -- not an explicit field. `extract_docs_json.py`
+  resolves ~99% of these automatically (`Desc_X_C` -> `Build_X_C`, case
+  differences, a Tris/FlipTris size-token reorder) plus a handful of hardcoded
+  corrections for real typos/irregularities in the game's own class names
+  (e.g. `Build_WalkwayTrun_C` -- yes, "Trun"). A few descriptors (~4) are
+  themselves stale leftovers with no matching buildable at all and are
+  dropped with a printed warning when the script runs -- not every building in
+  `buildings.json` is guaranteed to have a category entry here.

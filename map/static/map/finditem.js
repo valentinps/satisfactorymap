@@ -1,30 +1,43 @@
-// "Find Item" search: looks up one item across every inventory in the save
-// (see sav_map_data.findItemLocations / collectItemLocationIndex, queried
-// via /api/find-item) and lists every building that holds it -- names and
-// quantities, most first -- with an optional toggle to highlight (and hide
-// everything else) just those buildings on the map. Also exposes the
-// Dimensional Depot's contents (see sav_map_data.collectDimensionalDepotContents),
-// a single global shared inventory with no map position of its own, both as
-// its own standalone list and folded into the search results above wherever
-// the searched item is sitting in the Depot too.
+// Drives the top bar's item search and the Dimensional Depot icon button,
+// both of which show their results in the same centered modal dialog (see
+// #itemModalOverlay in index.html). The search looks up one item across
+// every inventory in the save (see sav_map_data.findItemLocations /
+// collectItemLocationIndex, queried via /api/find-item) and lists every
+// building that holds it -- names and quantities, most first -- with an
+// optional toggle to highlight (and hide everything else) just those
+// buildings on the map. The Depot button shows sav_map_data.
+// collectDimensionalDepotContents's contents the same way, minus the
+// highlight toggle (the Depot is a single global inventory with no map
+// position of its own).
 
 var FindItem = {};
 
 (function() {
   "use strict";
 
-  var panel = document.getElementById("findItemPanel");
-  var input = document.getElementById("findItemInput");
-  var catalogList = document.getElementById("findItemCatalog");
-  var findButton = document.getElementById("findItemButton");
-  var resultBox = document.getElementById("findItemResult");
-  var summaryEl = document.getElementById("findItemSummary");
-  var listEl = document.getElementById("findItemList");
-  var highlightToggle = document.getElementById("findItemHighlightToggle");
+  var searchInput = document.getElementById("mainSearchInput");
+  var searchBox = document.getElementById("searchBox");
+  var suggestionsEl = document.getElementById("searchSuggestions");
+  var depotButton = document.getElementById("depotIconButton");
 
-  var depotPanel = document.getElementById("dimensionalDepotPanel");
-  var depotButton = document.getElementById("dimensionalDepotButton");
-  var depotList = document.getElementById("dimensionalDepotList");
+  var MAX_SUGGESTIONS = 8;
+  // Item icons are stored under readable name (see static/map/icons/items/,
+  // e.g. "Iron Plate.png") -- the same catalog label the search matches on,
+  // so the file name is just the label. Not every catalog item has one; a
+  // missing image is hidden per-row (see onerror in renderSuggestions).
+  var ITEM_ICON_BASE = "icons/items/";
+
+  var overlay = document.getElementById("itemModalOverlay");
+  var modalTitle = document.getElementById("itemModalTitle");
+  var modalSummary = document.getElementById("itemModalSummary");
+  var modalList = document.getElementById("itemModalList");
+  var modalClose = document.getElementById("itemModalClose");
+  var modalHighlightToggle = document.getElementById("itemModalHighlightToggle");
+
+  var banner = document.getElementById("activeFilterBanner");
+  var bannerLabel = document.getElementById("activeFilterLabel");
+  var bannerDetails = document.getElementById("activeFilterDetails");
+  var bannerClear = document.getElementById("activeFilterClear");
 
   var HIGHLIGHT_BUCKET_KEY = "find-item-highlight";
   var HIGHLIGHT_COLOR = "#ff3b81";
@@ -38,10 +51,13 @@ var FindItem = {};
     '</svg>'
   );
 
-  var catalogByLabel = {}; // Typed/selected label -> itemPath (short class name), for resolving the datalist's free-text input.
+  var catalog = []; // [{label, itemPath}] -- the full searchable item list (see FindItem.build).
+  var catalogByLabel = {}; // label -> itemPath, for an exact-match Enter on a fully typed name.
+  var currentSuggestions = []; // The subset currently shown in the dropdown.
+  var activeIndex = -1; // Highlighted suggestion row (keyboard/hover), -1 = none.
   var savedVisibility = null; // bucket.key -> visible, captured right before highlighting so "show all layers again" restores exactly what was on.
   var highlighting = false;
-  var lastResult = null;
+  var lastResult = null; // The currently-open modal's search result, if it's a searchable one (null for the Depot view).
 
   function el(tag, className, text) {
     var e = document.createElement(tag);
@@ -112,7 +128,8 @@ var FindItem = {};
       });
       savedVisibility = null;
     }
-    highlightToggle.textContent = "Show only these on map";
+    modalHighlightToggle.textContent = "Show only these on map";
+    banner.style.display = "none";
     MapApp.layer.requestRedraw();
   }
 
@@ -168,116 +185,292 @@ var FindItem = {};
     });
 
     highlighting = true;
-    highlightToggle.textContent = "Show all layers again";
+    modalHighlightToggle.textContent = "Show all layers again";
     MapApp.layer.requestRedraw();
+    // Intentionally does NOT re-fit the view to the results -- the current
+    // zoom/pan is kept so the highlight is applied in place, wherever the
+    // user was already looking.
+  }
 
-    // Jump the view to the results instead of leaving the user to hunt for
-    // them at whatever pan/zoom they happened to be at -- the whole point of
-    // this feature is making them easy to find.
-    var latLngs = plottable.map(function(loc) { return [loc.position[1], loc.position[0]]; });
-    MapApp.map.fitBounds(L.latLngBounds(latLngs), { padding: [40, 40], maxZoom: 4 });
+  // ---- Modal dialog (shared by search results and the Depot view) --------
+
+  function openModal(title) {
+    modalTitle.textContent = title;
+    banner.style.display = "none"; // The modal and its map-view banner are never shown together.
+    overlay.style.display = "flex";
+  }
+
+  // Closing the modal (X / backdrop / Escape) must NOT revert an active
+  // find-item filter -- that's the banner's job. If a filter is live, closing
+  // the modal just returns to the map view (banner reappears); otherwise
+  // there's nothing to keep, so lastResult is dropped.
+  function closeModal() {
+    overlay.style.display = "none";
+    if (highlighting) {
+      banner.style.display = "flex";
+    } else {
+      lastResult = null;
+    }
+  }
+
+  modalClose.addEventListener("click", closeModal);
+  overlay.addEventListener("click", function(e) {
+    if (e.target === overlay) {
+      closeModal(); // Click on the backdrop, not the dialog itself.
+    }
+  });
+  document.addEventListener("keydown", function(e) {
+    if (e.key !== "Escape") {
+      return;
+    }
+    if (overlay.style.display !== "none") {
+      closeModal();
+    } else if (highlighting) {
+      clearHighlight(); // No modal open, but a filter is live on the map -- Esc reverts it.
+    }
+  });
+
+  // Fills the modal's title/summary/list from a search result WITHOUT
+  // touching the highlight -- so it's reusable both for a fresh search
+  // (showResult) and for reopening the list from the banner's "Details"
+  // button while a filter is still active.
+  function fillModalFromResult(result) {
+    modalTitle.textContent = result.label;
+    var unit = result.isFluid ? " m³" : "";
+    if (result.locations.length === 0) {
+      modalSummary.textContent = "Not found in any inventory.";
+      modalList.innerHTML = "";
+      modalHighlightToggle.style.display = "none";
+      return;
+    }
+    modalSummary.textContent = result.totalCount.toLocaleString() + unit +
+      " across " + result.locations.length.toLocaleString() + " location" + (result.locations.length === 1 ? "" : "s") + ".";
+    renderLocationList(modalList, groupLocationsForDisplay(result.locations).map(function(row) {
+      return [row.label, row.count.toLocaleString() + unit];
+    }));
+    var hasPlottable = result.locations.some(function(loc) { return loc.position; });
+    modalHighlightToggle.style.display = hasPlottable ? "block" : "none";
   }
 
   function showResult(result) {
     lastResult = result;
     clearHighlight();
-    resultBox.style.display = "block";
-    summaryEl.textContent = "";
-    listEl.innerHTML = "";
-    var unit = result.isFluid ? " m³" : "";
-    if (result.locations.length === 0) {
-      summaryEl.textContent = "No " + result.label + " found in any inventory.";
-      highlightToggle.style.display = "none";
-      return;
-    }
-    summaryEl.textContent = result.totalCount.toLocaleString() + unit + " " + result.label +
-      " across " + result.locations.length.toLocaleString() + " location" + (result.locations.length === 1 ? "" : "s") + ".";
-    renderLocationList(listEl, groupLocationsForDisplay(result.locations).map(function(row) {
-      return [row.label, row.count.toLocaleString() + unit];
-    }));
-    var hasPlottable = result.locations.some(function(loc) { return loc.position; });
-    highlightToggle.style.display = hasPlottable ? "inline-block" : "none";
+    openModal(result.label);
+    fillModalFromResult(result);
+    modalHighlightToggle.textContent = "Show only these on map";
   }
 
-  function runSearch() {
-    var typed = input.value.trim();
-    var itemPath = catalogByLabel[typed];
-    if (!itemPath) {
-      clearHighlight();
-      resultBox.style.display = "block";
-      summaryEl.textContent = typed ? "Pick an item from the list." : "";
-      listEl.innerHTML = "";
-      highlightToggle.style.display = "none";
-      lastResult = null;
-      return;
-    }
+  function runSearchFor(itemPath, label) {
     var filename = window.MapApp.currentFile;
     if (!filename) {
       return;
     }
-    summaryEl.textContent = "Searching...";
-    listEl.innerHTML = "";
-    resultBox.style.display = "block";
-    highlightToggle.style.display = "none";
+    openModal(label);
+    modalSummary.textContent = "Searching...";
+    modalList.innerHTML = "";
+    modalHighlightToggle.style.display = "none";
     fetch("/api/find-item?file=" + encodeURIComponent(filename) + "&item=" + encodeURIComponent(itemPath))
       .then(function(response) { return response.json(); })
       .then(function(result) {
         if (result.error) {
-          summaryEl.textContent = result.error;
+          modalSummary.textContent = result.error;
           return;
         }
         showResult(result);
       })
       .catch(function(error) {
-        summaryEl.textContent = "Search failed: " + error;
+        modalSummary.textContent = "Search failed: " + error;
       });
   }
 
-  findButton.addEventListener("click", runSearch);
-  input.addEventListener("keydown", function(e) {
-    if (e.key === "Enter") {
-      runSearch();
+  // ---- Spotlight-style suggestions dropdown -------------------------------
+
+  function itemIconUrl(label) {
+    return ITEM_ICON_BASE + encodeURIComponent(label + ".png");
+  }
+
+  function hideSuggestions() {
+    suggestionsEl.style.display = "none";
+    currentSuggestions = [];
+    activeIndex = -1;
+  }
+
+  function setActive(index) {
+    activeIndex = index;
+    var rows = suggestionsEl.children;
+    for (var i = 0; i < rows.length; i++) {
+      var isActive = i === index;
+      rows[i].classList.toggle("active", isActive);
+      if (isActive && rows[i].scrollIntoView) {
+        rows[i].scrollIntoView({ block: "nearest" });
+      }
+    }
+  }
+
+  function selectSuggestion(entry) {
+    searchInput.value = entry.label;
+    hideSuggestions();
+    runSearchFor(entry.itemPath, entry.label);
+  }
+
+  // Substring match, case-insensitive, with prefix matches sorted first so
+  // typing "iron" surfaces "Iron Plate"/"Iron Rod" ahead of "Reinforced Iron
+  // Plate". The catalog is already alphabetical, so a stable sort keeps ties
+  // in that order.
+  function renderSuggestions(query) {
+    var q = query.trim().toLowerCase();
+    if (!q) {
+      hideSuggestions();
+      return;
+    }
+    var matches = catalog.filter(function(entry) {
+      return entry.label.toLowerCase().indexOf(q) !== -1;
+    });
+    matches.sort(function(a, b) {
+      var aPrefix = a.label.toLowerCase().indexOf(q) === 0 ? 0 : 1;
+      var bPrefix = b.label.toLowerCase().indexOf(q) === 0 ? 0 : 1;
+      return aPrefix - bPrefix;
+    });
+    currentSuggestions = matches.slice(0, MAX_SUGGESTIONS);
+
+    suggestionsEl.innerHTML = "";
+    if (currentSuggestions.length === 0) {
+      suggestionsEl.appendChild(el("div", "searchSuggestionEmpty", "No matching item."));
+      suggestionsEl.style.display = "block";
+      activeIndex = -1;
+      return;
+    }
+    currentSuggestions.forEach(function(entry, index) {
+      var row = el("div", "searchSuggestionRow");
+      var img = document.createElement("img");
+      img.className = "searchSuggestionIcon";
+      img.src = itemIconUrl(entry.label);
+      img.alt = "";
+      img.addEventListener("error", function() { img.style.visibility = "hidden"; });
+      row.appendChild(img);
+      row.appendChild(el("span", "searchSuggestionLabel", entry.label));
+      // mousedown (not click) + preventDefault so selecting doesn't first
+      // blur the input and let the document-level outside-click handler race
+      // in and close the dropdown before the pick registers.
+      row.addEventListener("mousedown", function(e) {
+        e.preventDefault();
+        selectSuggestion(entry);
+      });
+      row.addEventListener("mouseenter", function() { setActive(index); });
+      suggestionsEl.appendChild(row);
+    });
+    activeIndex = 0;
+    setActive(0);
+    suggestionsEl.style.display = "block";
+  }
+
+  searchInput.addEventListener("input", function() {
+    renderSuggestions(searchInput.value);
+  });
+
+  searchInput.addEventListener("focus", function() {
+    if (searchInput.value.trim()) {
+      renderSuggestions(searchInput.value);
     }
   });
-  highlightToggle.addEventListener("click", function() {
+
+  searchInput.addEventListener("keydown", function(e) {
+    if (e.key === "ArrowDown" && currentSuggestions.length) {
+      e.preventDefault();
+      setActive((activeIndex + 1) % currentSuggestions.length);
+    } else if (e.key === "ArrowUp" && currentSuggestions.length) {
+      e.preventDefault();
+      setActive((activeIndex - 1 + currentSuggestions.length) % currentSuggestions.length);
+    } else if (e.key === "Enter") {
+      if (activeIndex >= 0 && currentSuggestions[activeIndex]) {
+        selectSuggestion(currentSuggestions[activeIndex]);
+      } else if (catalogByLabel.hasOwnProperty(searchInput.value.trim())) {
+        var label = searchInput.value.trim();
+        hideSuggestions();
+        runSearchFor(catalogByLabel[label], label);
+      }
+    } else if (e.key === "Escape") {
+      hideSuggestions();
+    }
+  });
+
+  // Clicking anywhere outside the search box dismisses the dropdown.
+  document.addEventListener("mousedown", function(e) {
+    if (!searchBox.contains(e.target)) {
+      hideSuggestions();
+    }
+  });
+
+  // "Show only these on map" -- apply the highlight, then get the modal out
+  // of the way so the highlighted results are actually visible/navigable.
+  // The floating banner (see below) takes over as the revert/reopen control.
+  // (If the modal was reopened via the banner's "Details" while already
+  // filtering, this button reads "Show all layers again" and reverts.)
+  modalHighlightToggle.addEventListener("click", function() {
     if (highlighting) {
       clearHighlight();
     } else if (lastResult) {
       showHighlight(lastResult);
+      modalHighlightToggle.textContent = "Show all layers again";
+      overlay.style.display = "none";
+      bannerLabel.textContent = "Showing only: " + lastResult.label;
+      banner.style.display = "flex";
     }
   });
 
-  depotButton.addEventListener("click", function() {
-    var showing = depotList.style.display !== "none";
-    depotList.style.display = showing ? "none" : "block";
+  // Banner "Show all" reverts the filter; "Details" reopens the full list
+  // (keeping the filter active -- closing that list returns to the banner).
+  bannerClear.addEventListener("click", clearHighlight);
+  bannerDetails.addEventListener("click", function() {
+    if (!lastResult) {
+      return;
+    }
+    fillModalFromResult(lastResult);
+    modalHighlightToggle.textContent = "Show all layers again";
+    banner.style.display = "none";
+    overlay.style.display = "flex";
   });
 
-  // Rebuilds the (save-independent) catalog, the Dimensional Depot's
-  // contents list, and resets any in-progress search/highlight -- called
-  // alongside Filters.build/Altitude.build on every load (see data.js),
-  // since a reload's fresh buckets shouldn't be silently hidden by a
-  // highlight the user set up against the old ones.
-  FindItem.build = function(payload) {
-    clearHighlight();
-    resultBox.style.display = "none";
-    input.value = "";
-    lastResult = null;
-
-    catalogByLabel = {};
-    catalogList.innerHTML = "";
-    (payload.itemCatalog || []).forEach(function(entry) {
-      catalogByLabel[entry.label] = entry.itemPath;
-      var option = document.createElement("option");
-      option.value = entry.label;
-      catalogList.appendChild(option);
-    });
-    panel.style.display = (payload.itemCatalog || []).length > 0 ? "block" : "none";
-
-    var depotItems = payload.dimensionalDepot || [];
-    depotList.style.display = "none";
-    renderLocationList(depotList, depotItems.map(function(entry) {
+  depotButton.addEventListener("click", function() {
+    var depotItems = window.MapApp.currentDepotItems || [];
+    openModal("Dimensional Depot");
+    modalHighlightToggle.style.display = "none";
+    if (depotItems.length === 0) {
+      modalSummary.textContent = "Empty (or no save loaded yet).";
+      modalList.innerHTML = "";
+      return;
+    }
+    var total = depotItems.reduce(function(s, entry) { return s + entry.count; }, 0);
+    modalSummary.textContent = total.toLocaleString() + " items across " + depotItems.length + " types.";
+    renderLocationList(modalList, depotItems.map(function(entry) {
       return [entry.label, entry.count.toLocaleString()];
     }));
-    depotPanel.style.display = depotItems.length > 0 ? "block" : "none";
+  });
+
+  // Rebuilds the (save-independent) item catalog and resets any in-progress
+  // search/highlight -- called alongside Filters.build/Altitude.build on
+  // every load (see data.js), since a reload's fresh buckets shouldn't be
+  // silently hidden by a highlight the user set up against the old ones.
+  FindItem.build = function(payload) {
+    // Hard reset -- Filters.build already cleared/rebuilt every bucket (so the
+    // old highlight bucket is gone and savedVisibility is stale), so just drop
+    // all find-item state rather than trying to "revert" against buckets that
+    // no longer exist.
+    overlay.style.display = "none";
+    banner.style.display = "none";
+    highlighting = false;
+    savedVisibility = null;
+    lastResult = null;
+    modalHighlightToggle.textContent = "Show only these on map";
+    searchInput.value = "";
+    hideSuggestions();
+
+    catalog = (payload.itemCatalog || []).slice();
+    catalogByLabel = {};
+    catalog.forEach(function(entry) {
+      catalogByLabel[entry.label] = entry.itemPath;
+    });
+
+    window.MapApp.currentDepotItems = payload.dimensionalDepot || [];
   };
 })();

@@ -1,0 +1,1142 @@
+{
+  "BP_EqDescZipLine_C": {
+    "description": "Provides faster traversal of factories by allowing pioneers to zip along Power lines.\r\nActivate the Zipline and aim at a nearby Power Line to connect to it.",
+    "displayName": "Zipline",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_EquipmentDescriptorCandyCane_C": {
+    "description": "Self-defense is now not only fun, but also delicious for the target! Do not lick or consume.",
+    "displayName": "Candy Cane Basher",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_EquipmentDescriptorGasmask_C": {
+    "description": "Allows pioneers to breathe normally in toxic gas-filled areas.\r\nConsumes Gas Filters from the pioneer's inventory when in use.",
+    "displayName": "Gas Mask",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_EquipmentDescriptorHazmatSuit_C": {
+    "description": "Shields pioneers from the adverse effects of radiation. \r\nConsumes Iodine-Infused Filters from the pioneer's inventory when worn in radioactive areas.",
+    "displayName": "Hazmat Suit",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_EquipmentDescriptorHoverPack_C": {
+    "description": "Power Consumption: 100 MW\r\n\r\nAllows pioneers to move vertically and hover in mid-air to improve building efficiency and factory traversal. Wirelessly connects to nearby power connections, such as Power Poles and Buildings, for power consumption.\r\n\r\nSlow-Fall: Hold {PlayerMovement_Jump} after losing connection mid-air.\r\nDisable Hoverpack: Double tap {PlayerMovement_Crouch} while hovering.",
+    "displayName": "Hoverpack",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_EquipmentDescriptorJetPack_C": {
+    "description": "Allows pioneers to travel through the air with increased control.\r\n\r\nFuel is automatically consumed from the pioneer's inventory to refill the Jetpack while on the ground.\r\nDifferent fuel types can be used and provide different levels of Jetpack efficiency. The preferred fuel type will be used if available, and can be set in the equipment inventory.",
+    "displayName": "Jetpack",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_EquipmentDescriptorJumpingStilts_C": {
+    "description": "An exoskeleton for the lower legs that assists movement, allowing pioneers to sprint faster and jump higher.\r\nAlso dampens the impact of landing.",
+    "displayName": "Blade Runners",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_EquipmentDescriptorNobeliskDetonator_C": {
+    "description": "A remote-control device used to handle and detonate Nobelisks.",
+    "displayName": "Nobelisk Detonator",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_EquipmentDescriptorObjectScanner_C": {
+    "description": "Scans the area for a selected item. Beeps at a rate proportional to proximity and direction.",
+    "displayName": "Object Scanner",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_EquipmentDescriptorRifle_C": {
+    "description": "A long-range, rapid-fire weapon. Specifically designed to deliver adequate performance within the designated work area.",
+    "displayName": "Rifle",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_EquipmentDescriptorShockShank_C": {
+    "description": "A standard issue self-defense electroshock melee weapon.",
+    "displayName": "Xeno-Zapper",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_EquipmentDescriptorStunSpear_C": {
+    "description": "A heavy self-defense electroshock melee weapon.",
+    "displayName": "Xeno-Basher",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "BP_ItemDescriptorPortableMiner_C": {
+    "description": "Automatically extracts a resource when placed on a resource node.\r\nNote: Has limited storage space.",
+    "displayName": "Portable Miner",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_AlienDNACapsule_C": {
+    "description": "Translates organic chemicals into readable alien genetic information.\r\nUsed for researching alien organisms.\r\n\r\nGo the extra kilometer! Knowledge is power, and power is just efficiency with fewer steps. Depositing Alien DNA Capsules in the AWESOME Sink provides FICSIT with knowledge, and pioneers with Coupons.",
+    "displayName": "Alien DNA Capsule",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_AlienPowerFuel_C": {
+    "description": "This intricate condensed-matter matrix is used to enhance the output of the Alien Power Augmenter.\r\n\r\nInitially developed in efforts to create a human-made Somersloop, the Alien Power Matrix cannot sustain the extra-dimensional energy connection on its own. However, it can effectively stabilize the energy stream of the Somersloop.",
+    "displayName": "Alien Power Matrix",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_AlienProtein_C": {
+    "description": "Ground-up Alien Remains in a neat little package.\r\nUsed for medical purposes and to research alien organisms.",
+    "displayName": "Alien Protein",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_AluminaSolution_C": {
+    "description": "Dissolved Alumina, extracted from Bauxite. Can be further refined into Aluminum Scrap for Aluminum Ingot production.",
+    "displayName": "Alumina Solution",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_AluminumCasing_C": {
+    "description": "A versatile container cast from Aluminum Ingots.",
+    "displayName": "Aluminum Casing",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_AluminumIngot_C": {
+    "description": "Smelted from Aluminum Scrap, which is refined from Alumina Solution.\r\nUsed to produce specialized aluminum-based parts.",
+    "displayName": "Aluminum Ingot",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_AluminumPlateReinforced_C": {
+    "description": "Used to dissipate heat faster.",
+    "displayName": "Heat Sink",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_AluminumPlate_C": {
+    "description": "Used to make products that require high heat conduction or a high specific strength. Thin, lightweight, and highly durable.",
+    "displayName": "Alclad Aluminum Sheet",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_AluminumScrap_C": {
+    "description": "Refined from Alumina. Can be smelted into Aluminum Ingots for industrial usage.",
+    "displayName": "Aluminum Scrap",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_Battery_C": {
+    "description": "Primarily used as fuel for Drones and vehicles.",
+    "displayName": "Battery",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_Berry_C": {
+    "description": "Consumable\r\n\r\nEat to restore 1 health segment.",
+    "displayName": "Paleberry",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Biofuel_C": {
+    "description": "The most energy-efficient form of solid Biomass. Can be used as fuel for the Chainsaw.",
+    "displayName": "Solid Biofuel",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_Cable_C": {
+    "description": "Used for crafting.\r\nPrimarily used to build Power Lines.",
+    "displayName": "Cable",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_CandyCane_C": {
+    "description": "A delicious Candy Cane to be enjoyed during the FICSMAS Holidays.\r\n*Disclaimer: Not for human consumption...",
+    "displayName": "Candy Cane",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_CartridgeChaos_C": {
+    "description": "Lightweight, compact, and volatile. These rounds provide extreme capacity and rate of fire at the cost of accuracy.",
+    "displayName": "Turbo Rifle Ammo",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_CartridgeSmartProjectile_C": {
+    "description": "The bullet guidance system built into this ammunition allows it to accurately hit any target within the reticle area.\r\nEspecially useful when dealing with agile threats, or for pioneers who can't be bothered to aim properly.",
+    "displayName": "Homing Rifle Ammo",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_CartridgeStandard_C": {
+    "description": "Standard issue Rifle ammunition, useful for establishing dominance.",
+    "displayName": "Rifle Ammo",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_Cement_C": {
+    "description": "Used for building.\r\nGood for stable Foundations.",
+    "displayName": "Concrete",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_Chainsaw_C": {
+    "description": "Clears an area of flora that is too difficult to remove by hand.\r\n\r\nFuel: Biofuel",
+    "displayName": "Chainsaw",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_CircuitBoardHighSpeed_C": {
+    "description": "Controls AIs and keeps them from evolving in malicious ways. Super advanced electronics.",
+    "displayName": "AI Limiter",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_CircuitBoard_C": {
+    "description": "Advanced electronics that have a plethora of different uses.",
+    "displayName": "Circuit Board",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_CompactedCoal_C": {
+    "description": "A much more efficient alternative to Coal. Used as fuel for vehicles and Coal-Powered Generators.",
+    "displayName": "Compacted Coal",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_ComputerSuper_C": {
+    "description": "The next-gen version of a Computer.",
+    "displayName": "Supercomputer",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Computer_C": {
+    "description": "A complex logic machine that is used to control advanced behavior in other machines.",
+    "displayName": "Computer",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_CoolingSystem_C": {
+    "description": "Keeps advanced parts and buildings from exceeding efficient temperature levels.",
+    "displayName": "Cooling System",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_CopperDust_C": {
+    "description": "Ground-up Copper Ingots.\r\nThe high natural density of Copper, combined with the granularity of the powder, makes this part perfect for producing Nuclear Pasta in the Particle Accelerator.",
+    "displayName": "Copper Powder",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_CopperIngot_C": {
+    "description": "Used for crafting the most basic parts.",
+    "displayName": "Copper Ingot",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_CopperSheet_C": {
+    "description": "Used for crafting.\r\nPrimarily used for Pipelines due to its high corrosion resistance.",
+    "displayName": "Copper Sheet",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_CrystalOscillator_C": {
+    "description": "An electronic oscillator circuit that uses the mechanical resonance of a vibrating crystal to create an electrical signal with a precise frequency.",
+    "displayName": "Crystal Oscillator",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_CrystalShard_C": {
+    "description": "Power Slug mucus compressed into a solid crystal-like shard. \r\nIt radiates a strange power.",
+    "displayName": "Power Shard",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Crystal_C": {
+    "description": "A strange slug radiating an unknown weak power.",
+    "displayName": "Blue Power Slug",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Crystal_mk2_C": {
+    "description": "A strange slug radiating an unknown power.",
+    "displayName": "Yellow Power Slug",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Crystal_mk3_C": {
+    "description": "A strange slug radiating a powerful unknown power.",
+    "displayName": "Purple Power Slug",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_CyberWagon_C": {
+    "description": "Absolutely indestructible.\r\nNeeds no further introduction.",
+    "displayName": "Cyber Wagon",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_DarkEnergy_C": {
+    "description": "Produced as a by-product of Quantum Encoding processes and alternatively generated in the Converter.\r\n\r\nVarious fields of science are still debating the nature and properties of Dark Matter. Meanwhile, FICSIT has found several applications for it in space-time manipulation.",
+    "displayName": "Dark Matter Residue",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_DarkMatter_C": {
+    "description": "Concentrated Dark Matter Residue that is isolated within a crystalline vessel. This form of containment allows for utilising Dark Matter reliably in other production processes.\r\n\r\nPower Usage: 500-1500 MW (1000 MW average).",
+    "displayName": "Dark Matter Crystal",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_Diamond_C": {
+    "description": "Synthetic Diamonds produced by exposing Coal to extreme heat and pressure.\r\n\r\nUsed in the production of Time Crystals and Dark Matter Crystals.\r\n\r\nPower Usage: 250-750 MW (500 MW average).",
+    "displayName": "Diamonds",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_DissolvedSilica_C": {
+    "description": "Silica dissolved in Water, produced as part of the alternative refinement of Raw Quartz.\r\nThe Silica can be extracted from the Water to complete the refinement process.",
+    "displayName": "Dissolved Silica",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_DroneTransport_C": {
+    "description": "Transports available input back and forth between its home Port and destination Ports. Drone Status and other details can be viewed at a Drone's home Port.\r\nMust be built on a Drone Port.\r\n\r\nHas 9 inventory slots.\r\n\r\nCan use any fuel type.\r\nRefuels at any of its connected Ports if possible.",
+    "displayName": "Drone",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_ElectromagneticControlRod_C": {
+    "description": "Regulates power output via electromagnetism.",
+    "displayName": "Electromagnetic Control Rod",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Explorer_C": {
+    "description": "Traverses rough terrain, including near-vertical surfaces. A fast and nimble exploration vehicle.\r\n\r\nHas 12 inventory slots and a built-in Crafting Bench.\r\n\r\nFuel: Any fuel type",
+    "displayName": "Explorer",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_Fabric_C": {
+    "description": "Used to craft equipment.\r\nFlexible but durable fabric.",
+    "displayName": "Fabric",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_FicsiteIngot_C": {
+    "description": "Produced by reconstructing other metals on a molecular level using Strange Alien Matter.\r\n\r\nSynthesized by FICSIT to be the perfect construction material, and used in the most high-end processes.",
+    "displayName": "Ficsite Ingot",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_FicsiteMesh_C": {
+    "description": "The Ficsite Trigon, made from Ficsite Ingots, is perfectly shaped for all construction challenges. Its performance is so exceptional, it basically solved structural engineering.",
+    "displayName": "Ficsite Trigon",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_FicsoniumFuelRod_C": {
+    "description": "Used as fuel for Nuclear Power Plants.\r\nThe power source that put FICSIT on the map. Literally. The crater is still there.\r\n\r\nCaution: Moderately Radioactive.",
+    "displayName": "Ficsonium Fuel Rod",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Ficsonium_C": {
+    "description": "Usage and production of this material is strictly prohibited. On Earth, that is. There are no rules in space, only efficiency. \r\n\r\nPower Usage: 500-1500 MW (1000 MW average).\r\nCaution: Moderately Radioactive.",
+    "displayName": "Ficsonium",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Filter_C": {
+    "description": "Filters out toxins and pollutants from the air when used with a Gas Mask.",
+    "displayName": "Gas Filter",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Fireworks_Projectile_01_C": {
+    "description": "Has the minimum safety requirements.",
+    "displayName": "Sweet Fireworks",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Fireworks_Projectile_02_C": {
+    "description": "Poses acceptable amount of risk to pioneers.",
+    "displayName": "Fancy Fireworks",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Fireworks_Projectile_03_C": {
+    "description": "Keep away from easily distracted pioneers.",
+    "displayName": "Sparkly Fireworks",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_FluidCanister_C": {
+    "description": "Used to package fluids for transportation.",
+    "displayName": "Empty Canister",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_FluidTruck_C": {
+    "description": "Picks up and delivers liquids at Fluid Truck Stations. This process can be automated. Nicknamed 'The Soda Can' by FICSIT pioneers because of its bi-cylindrical frame.\r\n\r\nHas a capacity of 3200 m³ for fluid storage.\r\n\r\nFuel: Any fuel type",
+    "displayName": "Fluid Truck",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_FreightWagon_C": {
+    "description": "Attaches to an Electric Locomotive or other Freight Car to transport resources. Must be built on a Railway.\r\nResources are loaded and unloaded at Freight Platforms.\r\nHas a 1600 m³ or 32-slot capacity, depending on whether resources are liquid or solid.",
+    "displayName": "Freight Car",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Fuel_C": {
+    "description": "Fuel, packaged for alternative transport. Can be used as fuel for vehicles and the Jetpack.",
+    "displayName": "Packaged Fuel",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_GasTank_C": {
+    "description": "Used to package gases and volatile liquids for transportation.",
+    "displayName": "Empty Fluid Tank",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_GenericBiomass_C": {
+    "description": "Primarily used as fuel.\r\nBiomass Burners and vehicles can use it for power.\r\nBiomass is much more energy-efficient than raw biological matter.",
+    "displayName": "Biomass",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_Gift_C": {
+    "description": "Gifts that have inexplicably fallen from the sky or spawned from a FICSMAS Gift Tree.\r\n\r\nDon’t question it—they’re used to produce FICSMAS buildings and parts.\r\n\r\nThese Gifts are part of the FICSMAS Event, like the calendar in the HUB.",
+    "displayName": "FICSMAS Gift",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_GoldIngot_C": {
+    "description": "Smelted from Caterium Ore. Primarily used for advanced electronics.",
+    "displayName": "Caterium Ingot",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_GolfCartGold_C": {
+    "description": "The one and only Golden FICSIT Factory Cart™\r\n\r\nYou have now officially ascended. \r\nGo forth now, Master of Spaghetti, God of the Factory, Sinker of Cups, Employee of the Planet... travel in STYLE!",
+    "displayName": "Golden Factory Cart™",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_GolfCart_C": {
+    "description": "The one and only FICSIT Factory Cart™.\r\nNow with special FICSIT-Foundation-only Grip Wheels, for an even smoother and faster factory floor experience!",
+    "displayName": "Factory Cart™",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_GunpowderMK2_C": {
+    "description": "An explosive powder that is commonly used to produce modern firearms.",
+    "displayName": "Smokeless Powder",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Gunpowder_C": {
+    "description": "An explosive powder that is commonly used to produce simple explosives.",
+    "displayName": "Black Powder",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_HatcherParts_C": {
+    "description": "The shell-like remains of an alien... thing.\r\nUsed for MAM research.",
+    "displayName": "Hatcher Remains",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_HazmatFilter_C": {
+    "description": "Absorbs radioactive particles when used with the Hazmat Suit.",
+    "displayName": "Iodine-Infused Filter",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_HeavyOilResidue_C": {
+    "description": "A by-product of Plastic and Rubber production. Can be further refined into Fuel and Petroleum Coke.",
+    "displayName": "Heavy Oil Residue",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_HighSpeedConnector_C": {
+    "description": "Connects multiple cables and wires in a very efficient way. Uses a standard pattern, so it has many varied applications.",
+    "displayName": "High-Speed Connector",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_HighSpeedWire_C": {
+    "description": "Caterium's high conductivity and resistance to corrosion make it ideal for small, advanced electronics.",
+    "displayName": "Quickwire",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_HogParts_C": {
+    "description": "The carapace of an alien Hog creature.\r\nUsed for MAM research.",
+    "displayName": "Hog Remains",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_IonizedFuel_C": {
+    "description": "Fuel that has been ionized, allowing it to deliver incredible output.\r\nCan be used as-is to power Fuel-Powered Generators, or packaged to be used as fuel for vehicles or the Jetpack.",
+    "displayName": "Ionized Fuel",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_IronIngot_C": {
+    "description": "Used for crafting the most basic parts.",
+    "displayName": "Iron Ingot",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_IronPlateReinforced_C": {
+    "description": "Used for crafting.\r\nA sturdier and more durable Iron Plate.",
+    "displayName": "Reinforced Iron Plate",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_IronPlate_C": {
+    "description": "Used for crafting.\r\nOne of the most basic parts.",
+    "displayName": "Iron Plate",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_IronRod_C": {
+    "description": "Used for crafting.\r\nOne of the most basic parts.",
+    "displayName": "Iron Rod",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_IronScrew_C": {
+    "description": "Used for crafting.\r\nOne of the most basic parts.",
+    "displayName": "Screws",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_Leaves_C": {
+    "description": "Primarily used as fuel.\r\nBiomass Burners and vehicles can use Leaves for power.",
+    "displayName": "Leaves",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_LiquidBiofuel_C": {
+    "description": "Liquid Biofuel can be used as-is to generate power, or packaged to be used as fuel for vehicles.",
+    "displayName": "Liquid Biofuel",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_LiquidFuel_C": {
+    "description": "Can be used as-is to generate power, or packaged to be used as fuel for vehicles or the Jetpack.",
+    "displayName": "Fuel",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_LiquidTurboFuel_C": {
+    "description": "A more efficient alternative to Fuel. Can be used as-is to generate power, or packaged to be used as fuel for vehicles.",
+    "displayName": "Turbofuel",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_Locomotive_C": {
+    "description": "Moves Freight Cars from station to station.\r\nRequires between 25-110 MW of power to move. \r\nMust be built on a Railway.\r\n\r\nNicknamed 'Leif' by FICSIT pioneers because of its reliability.",
+    "displayName": "Electric Locomotive",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_Medkit_C": {
+    "description": "Fully restores health when used.\r\n\r\nThe FICSIT Medicinal Inhaler can be produced from a variety of different ingredients.",
+    "displayName": "Medicinal Inhaler",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_ModularFrameFused_C": {
+    "description": "A corrosion-resistant, nitride-hardened, highly-robust-yet-lightweight modular frame.",
+    "displayName": "Fused Modular Frame",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_ModularFrameHeavy_C": {
+    "description": "A more robust multipurpose frame.",
+    "displayName": "Heavy Modular Frame",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_ModularFrameLightweight_C": {
+    "description": "Enhances and directs radio signals.",
+    "displayName": "Radio Control Unit",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_ModularFrame_C": {
+    "description": "Used for crafting.\r\nA multipurpose building block.",
+    "displayName": "Modular Frame",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_MotorLightweight_C": {
+    "description": "A more complex and powerful version of the regular Motor.",
+    "displayName": "Turbo Motor",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Motor_C": {
+    "description": "Creates a mechanical force that is used to move things from machines to vehicles.",
+    "displayName": "Motor",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Mycelia_C": {
+    "description": "Used for crafting.\r\nBiomass Burners and vehicles can also use Mycelia for power.",
+    "displayName": "Mycelia",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_NitricAcid_C": {
+    "description": "Produced when Nitrogen Gas reacts with Water. Its high corrosiveness and oxidizing properties make it an excellent choice for refinement and fuel production processes.",
+    "displayName": "Nitric Acid",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_NobeliskCluster_C": {
+    "description": "Detonates into multiple smaller explosions. Practical for clearing out large areas of vegetation and other inconveniences.",
+    "displayName": "Cluster Nobelisk",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_NobeliskExplosive_C": {
+    "description": "A simple explosive, useful for clearing boulders, vegetation, and other obstacles.",
+    "displayName": "Nobelisk",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_NobeliskGas_C": {
+    "description": "Creates a deadly gas cloud instead of a regular explosion.",
+    "displayName": "Gas Nobelisk",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_NobeliskNuke_C": {
+    "description": "Uses a nuclear fission reaction to generate a massive explosion.\r\nWARNING: Ensure all FICSIT property is clear of the blast zone before detonation.\r\n",
+    "displayName": "Nuke Nobelisk",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_NobeliskShockwave_C": {
+    "description": "Generates a powerful shockwave instead of a regular explosion.",
+    "displayName": "Pulse Nobelisk",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_NonFissibleUranium_C": {
+    "description": "The Uranium-238 isotope is non-fissile, meaning it cannot be used for nuclear fission. It can, however, be converted into fissile Plutonium in the Particle Accelerator.\r\n\r\nCaution: Mildly Radioactive.",
+    "displayName": "Non-Fissile Uranium",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_NuclearFuelRod_C": {
+    "description": "Used as fuel for Nuclear Power Plants.\r\n\r\nCaution: Produces radioactive Uranium Waste when consumed.\r\nCaution: Moderately Radioactive.",
+    "displayName": "Uranium Fuel Rod",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_NuclearWaste_C": {
+    "description": "The by-product of consuming Uranium Fuel Rods in a Nuclear Power Plant.\r\nNon-Fissile Uranium can be extracted. Handle with caution.\r\n\r\nCaution: HIGHLY Radioactive.",
+    "displayName": "Uranium Waste",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_Nut_C": {
+    "description": "Consumable\r\n\r\nEat to restore half a health segment.",
+    "displayName": "Beryl Nut",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_PackagedAlumina_C": {
+    "description": "Alumina Solution, packaged for alternative transport.",
+    "displayName": "Packaged Alumina Solution",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_PackagedBiofuel_C": {
+    "description": "Liquid Biofuel, packaged for alternative transport. Can be used as fuel for vehicles and the Jetpack.",
+    "displayName": "Packaged Liquid Biofuel",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_PackagedIonizedFuel_C": {
+    "description": "Ionized Fuel, packaged for alternative transport. Can be used as fuel for vehicles and the Jetpack.",
+    "displayName": "Packaged Ionized Fuel",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_PackagedNitricAcid_C": {
+    "description": "Nitric Acid, packaged for alternative transport.",
+    "displayName": "Packaged Nitric Acid",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_PackagedNitrogenGas_C": {
+    "description": "Nitrogen Gas, packaged for alternative transport.",
+    "displayName": "Packaged Nitrogen Gas",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_PackagedOilResidue_C": {
+    "description": "Heavy Oil Residue, packaged for alternative transport. Can be used as fuel for vehicles.",
+    "displayName": "Packaged Heavy Oil Residue",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_PackagedOil_C": {
+    "description": "Crude Oil, packaged for alternative transport. Can be used as fuel for vehicles.",
+    "displayName": "Packaged Oil",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_PackagedRocketFuel_C": {
+    "description": "Rocket Fuel, packaged for alternative transport. Can be used as fuel for vehicles and the Jetpack.",
+    "displayName": "Packaged Rocket Fuel",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_PackagedSulfuricAcid_C": {
+    "description": "Sulfuric Acid, packaged for alternative transport.",
+    "displayName": "Packaged Sulfuric Acid",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_PackagedWater_C": {
+    "description": "Water, packaged for alternative transport.",
+    "displayName": "Packaged Water",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Parachute_C": {
+    "description": "Slows down your fall when activated in mid-air.",
+    "displayName": "Parachute",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_PetroleumCoke_C": {
+    "description": "Used for crafting.\r\nA carbon-rich material distilled from Heavy Oil Residue. \r\nUsed as a less efficient Coal replacement.",
+    "displayName": "Petroleum Coke",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_Plastic_C": {
+    "description": "Versatile and easy to manufacture, this material has a wide range of uses.",
+    "displayName": "Plastic",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_PlutoniumCell_C": {
+    "description": "Plutonium Pellets encased in concrete.\r\nUsed to produce Plutonium Fuel Rods for Nuclear Power production.\r\n\r\nPower Usage: 250-750 MW (500 MW average).\r\n﻿Caution: Moderately Radioactive.",
+    "displayName": "Encased Plutonium Cell",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_PlutoniumFuelRod_C": {
+    "description": "Used as fuel for Nuclear Power Plants.\r\n\r\nCaution: Produces radioactive Plutonium Waste when consumed.\r\nCaution: HIGHLY Radioactive.",
+    "displayName": "Plutonium Fuel Rod",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_PlutoniumPellet_C": {
+    "description": "Produced in the Particle Accelerator through conversion of Non-fissile Uranium.\r\nUsed to produce Encased Plutonium Cells for Plutonium Fuel Rods.\r\n\r\nPower Usage: 250-750 MW (500 MW average).\r\nCaution: Moderately Radioactive.",
+    "displayName": "Plutonium Pellet",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_PlutoniumWaste_C": {
+    "description": "The by-product of consuming Plutonium Fuel Rods in a Nuclear Power Plant.\r\nMust be stored in a safe location. Handle with caution.\r\n\r\nCaution: EXTREMELY Radioactive.",
+    "displayName": "Plutonium Waste",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_PolymerResin_C": {
+    "description": "A by-product of Crude Oil refinement into Fuel. Commonly used to manufacture Plastic and Rubber.",
+    "displayName": "Polymer Resin",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_PressureConversionCube_C": {
+    "description": "Converts outgoing force into internal pressure. Required to contain unstable, high-energy matter.",
+    "displayName": "Pressure Conversion Cube",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_QuantumEnergy_C": {
+    "description": "Excited Photonic Matter is essential for all production processes in the Quantum Encoder.\r\n\r\nFormed in the Converter by inducing intense photon interactions through exposure to SAM in a high-energy environment.",
+    "displayName": "Excited Photonic Matter",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_QuantumOscillator_C": {
+    "description": "An oscillator circuit that uses the mechanical resonance of a vibrating crystal to create a string vibration with a precise frequency. Often used in teleportation technology and dimensional manipulation.",
+    "displayName": "Superposition Oscillator",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_QuartzCrystal_C": {
+    "description": "Derived from Raw Quartz. Used in the production of advanced radar technology and high-quality display screens.",
+    "displayName": "Quartz Crystal",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_RebarGunProjectile_C": {
+    "description": "An improvised ranged weapon for self-defense. Has to be reloaded after each use.",
+    "displayName": "Rebar Gun",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_Rebar_Explosive_C": {
+    "description": "Explodes on impact, dealing heavy damage.",
+    "displayName": "Explosive Rebar",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Rebar_Spreadshot_C": {
+    "description": "Fractures when shot, launching deadly debris with wide spread but limited range.",
+    "displayName": "Shatter Rebar",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Rebar_Stunshot_C": {
+    "description": "Electrocutes the target on impact, stunning it for a short time.\r\n\r\nStun Duration: 5 seconds",
+    "displayName": "Stun Rebar",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_RocketFuel_C": {
+    "description": "A high-impulse compressed gas fuel.\r\nCan be used as-is to power Fuel-Powered Generators, or packaged to be used as fuel for vehicles or the Jetpack.",
+    "displayName": "Rocket Fuel",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_Rotor_C": {
+    "description": "Used for crafting.\r\nThe moving parts of a motor.",
+    "displayName": "Rotor",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Rubber_C": {
+    "description": "A very flexible material that has a lot of friction.",
+    "displayName": "Rubber",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_SAMFluctuator_C": {
+    "description": "The SAM Fluctuator is able to regulate and direct the behavior of Reanimated SAM through the application of electric charges with varying frequencies.\r\nThis control facilitates technologies such as matter-to-energy conversion and spatiotemporal matter manipulation.",
+    "displayName": "SAM Fluctuator",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_SAMIngot_C": {
+    "description": "The active and contained form of the Strange Alien Matter.\r\n\r\nProper electromagnetic containment is required, as it appears to be able to manipulate the atomic bonds of any matter it comes into contact with.",
+    "displayName": "Reanimated SAM",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_Shroom_C": {
+    "description": "Consumable\r\n\r\nEat to restore 2 health segments.",
+    "displayName": "Bacon Agaric",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Silica_C": {
+    "description": "Derived from Raw Quartz. Commonly used to create glass structures, in advanced refinement processes, and for alternative production of electronics.",
+    "displayName": "Silica",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_SingularityCell_C": {
+    "description": "Used to break down space and time. Required to power Portals.",
+    "displayName": "Singularity Cell",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Snow_C": {
+    "description": "This Actual Snow is made from several chemical elements and experiences 100% like naturally occuring snow after extensive user testing.",
+    "displayName": "FICSMAS Actual Snow",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_SnowballProjectile_C": {
+    "description": "Compressed dihydrogen monoxide crystals for weaponized fun!",
+    "displayName": "Snowball",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_SpaceElevatorPart_10_C": {
+    "description": "Project Part #10. Ship via the Space Elevator to complete phases of Project Assembly.\r\n\r\nYears ahead of the competition, this top-of-the-line 3D printer is used for the production of synthetic biological resources.",
+    "displayName": "Biochemical Sculptor",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpaceElevatorPart_11_C": {
+    "description": "Project Part #11. Ship via the Space Elevator to complete phases of Project Assembly.\r\n\r\nA large amount of force is required for the Warp Drives to activate, so sticking them to rockets was the logical next step. Additionally, results improved immensely when the observers were further removed from the Warp Drives upon activation.",
+    "displayName": "Ballistic Warp Drive",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpaceElevatorPart_12_C": {
+    "description": "Project Part #12. Ship via the Space Elevator to complete phases of Project Assembly.\r\nPower Usage: 0-2000 MW (1000 MW average).\r\n\r\nGrowth is the metric by which we measure success.",
+    "displayName": "AI Expansion Server",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpaceElevatorPart_1_C": {
+    "description": "Project Part #1. Ship via the Space Elevator to complete phases of Project Assembly.",
+    "displayName": "Smart Plating",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpaceElevatorPart_2_C": {
+    "description": "Project Part #2. Ship via the Space Elevator to complete phases of Project Assembly.",
+    "displayName": "Versatile Framework",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpaceElevatorPart_3_C": {
+    "description": "Project Part #3. Ship via the Space Elevator to complete phases of Project Assembly.",
+    "displayName": "Automated Wiring",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpaceElevatorPart_4_C": {
+    "description": "Project Part #4. Ship via the Space Elevator to complete phases of Project Assembly.",
+    "displayName": "Modular Engine",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpaceElevatorPart_5_C": {
+    "description": "Project Part #5. Ship via the Space Elevator to complete phases of Project Assembly.",
+    "displayName": "Adaptive Control Unit",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpaceElevatorPart_6_C": {
+    "description": "Project Part #7. Ship via the Space Elevator to complete phases of Project Assembly.\r\n\r\nThese modular generators use superconducting magnets and vast amounts of electricity to produce a powerful and easily expandable magnetic field.",
+    "displayName": "Magnetic Field Generator",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpaceElevatorPart_7_C": {
+    "description": "Project Part #6. Ship via the Space Elevator to complete phases of Project Assembly.\r\n\r\nThis extremely fast and precise computing system is specifically designed to direct the Project Assembly: Assembly Phase.",
+    "displayName": "Assembly Director System",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpaceElevatorPart_8_C": {
+    "description": "Project Part #8. Ship via the Space Elevator to complete phases of Project Assembly.\r\n\r\nUses extreme heat to produce the high-pressure plasma required to get Project Assembly into motion.",
+    "displayName": "Thermal Propulsion Rocket",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpaceElevatorPart_9_C": {
+    "description": "Project Part #9. Ship via the Space Elevator to complete phases of Project Assembly.\r\nPower Usage: 500-1500 MW (1000 MW average).\r\n\r\nNuclear Pasta is extremely dense degenerate matter, formed when extreme pressure forces protons and electrons together into neutrons. It is theorized to exist naturally within the crust of neutron stars.",
+    "displayName": "Nuclear Pasta",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SpikedRebar_C": {
+    "description": "Can be shot using the Rebar Gun for self-defense purposes.",
+    "displayName": "Iron Rebar",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_SpitterParts_C": {
+    "description": "The remains of a plasma-spitting alien creature.\r\nUsed for MAM research.",
+    "displayName": "Spitter Remains",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Stator_C": {
+    "description": "Used for crafting.\r\nThe static parts of a motor.",
+    "displayName": "Stator",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_SteelIngot_C": {
+    "description": "Smelted from a combination of Iron Ore and Coal. Can be made into several parts used in building construction.",
+    "displayName": "Steel Ingot",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_SteelPipe_C": {
+    "description": "Primarily used when constructing slightly more advanced buildings.",
+    "displayName": "Steel Pipe",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_SteelPlateReinforced_C": {
+    "description": "Simultaneously utilizes the compressive strength of concrete and the tensile strength of steel.\r\nMostly used as a stable base for constructing buildings.",
+    "displayName": "Encased Industrial Beam",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_SteelPlate_C": {
+    "description": "Primarily used when constructing slightly more advanced buildings.",
+    "displayName": "Steel Beam",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_StingerParts_C": {
+    "description": "The remains of whatever that creepy thing was.\r\nUsed for MAM research.",
+    "displayName": "Stinger Remains",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_SulfuricAcid_C": {
+    "description": "Produced by combining Sulfur and Water in a complex reaction. Primarily used in refinement processes and Battery production.",
+    "displayName": "Sulfuric Acid",
+    "stackSize": "SS_FLUID",
+    "stackSizeCount": 50000
+  },
+  "Desc_TemporalProcessor_C": {
+    "description": "The Neural-Quantum Processor utilizes a combination of neural network architecture and quantum computing techniques to achieve unprecedented performance. This technology has enabled some of FICSIT's biggest advancements in artificial intelligence and relativistic engineering.",
+    "displayName": "Neural-Quantum Processor",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_TimeCrystal_C": {
+    "description": "Time Crystals are Diamonds that have been reconfigured on a sub-atomic level in the Converter to retain a time-periodic self-organizing structure. This allows them to be used in the development of quantum processing and storage technologies.",
+    "displayName": "Time Crystal",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_Tractor_C": {
+    "description": "Picks up and delivers resources at Truck Stations. This process can be automated. Nicknamed 'Sugarcube' by FICSIT pioneers with the justification “It’s pretty sweet, y’know”.\r\n\r\nHas 25 inventory slots and a built-in Crafting Bench.\r\n\r\nFuel: Any fuel type",
+    "displayName": "Tractor",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_Truck_C": {
+    "description": "Picks up and delivers resources at Truck Stations. This process can be automated. Nicknamed 'The Unit' by FICSIT pioneers because of its massive frame.\r\n\r\nHas 48 inventory slots and a built-in Crafting Bench.\r\n\r\nFuel: Any fuel type",
+    "displayName": "Truck",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_TurboFuel_C": {
+    "description": "Turbofuel, packaged for alternative transport. Can be used as fuel for vehicles and the Jetpack.",
+    "displayName": "Packaged Turbofuel",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_UraniumCell_C": {
+    "description": "Used to produce Uranium Fuel Rods for Nuclear Power production. Made from Uranium Ore.\r\n\r\nCaution: Mildly Radioactive.",
+    "displayName": "Encased Uranium Cell",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_WAT1_C": {
+    "description": "An odd alien object with a mind-bending, yet somehow familiar shape. It emits an unsettling energy.",
+    "displayName": "Somersloop",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_WAT2_C": {
+    "description": "A weird alien phenomenon. While the sphere appears liquid, it behaves like a solid and does not have any detectable mass. It seems to somehow interact with and have awareness of its environment.",
+    "displayName": "Mercer Sphere",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_Wire_C": {
+    "description": "Used for crafting.\r\nOne of the most basic parts.",
+    "displayName": "Wire",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_Wood_C": {
+    "description": "Primarily used as fuel.\r\nBiomass Burners and vehicles can use Wood for power.",
+    "displayName": "Wood",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_XmasBall1_C": {
+    "description": "An ornament for making FICSMAS Decorations. An acceptable red.",
+    "displayName": "Red FICSMAS Ornament",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_XmasBall2_C": {
+    "description": "An ornament for making FICSMAS Decorations. A mildly pleasing blue.",
+    "displayName": "Blue FICSMAS Ornament",
+    "stackSize": "SS_BIG",
+    "stackSizeCount": 200
+  },
+  "Desc_XmasBall3_C": {
+    "description": "An ornament for making FICSMAS Decorations. A slightly dignified copper.",
+    "displayName": "Copper FICSMAS Ornament",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_XmasBall4_C": {
+    "description": "An ornament for making FICSMAS Decorations. An okay iron.",
+    "displayName": "Iron FICSMAS Ornament",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_XmasBallCluster_C": {
+    "description": "A collection of FICSMAS ornaments and also an eyesore.",
+    "displayName": "FICSMAS Ornament Bundle",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_XmasBow_C": {
+    "description": "A fancy bow. Not for wearing, eating, admiring, Lizard Doggos, humans, aliens, or anything not related to FICSMAS factory production.",
+    "displayName": "FICSMAS Bow",
+    "stackSize": "SS_MEDIUM",
+    "stackSizeCount": 100
+  },
+  "Desc_XmasBranch_C": {
+    "description": "This FICSMAS Tree Branch is very different from regular tree branches: it's used to produce parts and buildings during the FICSMAS event, rather than for combustion.",
+    "displayName": "FICSMAS Tree Branch",
+    "stackSize": "SS_HUGE",
+    "stackSizeCount": 500
+  },
+  "Desc_XmasDataCartridge1_C": {
+    "description": "FICSMAS Data Cartridge Day 1, used to progress FICSMAS MAM research.",
+    "displayName": "FICSMAS Data Cartridge Day 1",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_XmasDataCartridge2_C": {
+    "description": "FICSMAS Data Cartridge Day 4, used to progress FICSMAS MAM research.",
+    "displayName": "FICSMAS Data Cartridge Day 4",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_XmasDataCartridge3_C": {
+    "description": "FICSMAS Data Cartridge Day 8, used to progress FICSMAS MAM research.",
+    "displayName": "FICSMAS Data Cartridge Day 8",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_XmasDataCartridge4_C": {
+    "description": "FICSMAS Data Cartridge Day 14, used to progress FICSMAS MAM research.",
+    "displayName": "FICSMAS Data Cartridge Day 14",
+    "stackSize": "SS_ONE",
+    "stackSizeCount": 1
+  },
+  "Desc_XmasStar_C": {
+    "description": "A symbol of appreciation for all the hard work FICSIT has done for its employees. It seems to have an aura of gratitude. Seeing this also means the seasonal event is nearly done, and we can finally get back to Saving The Day.",
+    "displayName": "FICSMAS Wonder Star",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  },
+  "Desc_XmasWreath_C": {
+    "description": "FICSIT's newest holiday innovation: decorations that can be turned into decorations! Efficiency and waste-conscious design at its best.",
+    "displayName": "FICSMAS Wreath",
+    "stackSize": "SS_SMALL",
+    "stackSizeCount": 50
+  }
+}

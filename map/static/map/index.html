@@ -6,55 +6,56 @@
 <link rel="stylesheet" href="vendor/leaflet.css">
 <link rel="stylesheet" href="map.css">
 </head>
-<body>
-<div id="sidebar">
-  <div id="sidebarTop">
-    <div id="sidebarHeader">
-      <h1>Satisfactory Save Map</h1>
-      <button id="changeModeBtn" title="Back to mode selection">&#8592; Change mode</button>
-    </div>
-
-    <div id="loadPanel">
-      <label for="saveSelect">Save file</label>
-      <select id="saveSelect"></select>
-      <button id="loadButton">Load</button>
-      <div id="loadStatus"></div>
-      <div id="loadProgressBar"><div id="loadProgressFill"></div></div>
-      <div id="totalObjectCount"></div>
-    </div>
-
-    <div id="sftpPanel" style="display:none"></div>
-
-    <div id="gameSettingsPanel" style="display:none"></div>
-
-    <div id="findItemPanel" style="display:none">
-      <div class="findItemTitle">Find Item</div>
-      <div class="findItemRow">
-        <input type="text" id="findItemInput" list="findItemCatalog" placeholder="Search item...">
-        <datalist id="findItemCatalog"></datalist>
-        <button id="findItemButton">Find</button>
-      </div>
-      <div id="findItemResult" style="display:none">
-        <div id="findItemSummary"></div>
-        <div id="findItemList" class="itemLocationList"></div>
-        <button id="findItemHighlightToggle">Show only these on map</button>
-      </div>
-    </div>
-
-    <div id="dimensionalDepotPanel" style="display:none">
-      <button id="dimensionalDepotButton">Dimensional Depot Contents</button>
-      <div id="dimensionalDepotList" class="itemLocationList" style="display:none"></div>
+<body class="no-category-selected">
+<div id="topBar">
+  <button id="logoButton" title="Back to mode selection">Satisfactory<br>Save Map</button>
+  <div id="mainSearchWrap">
+    <div id="searchBox">
+      <svg id="searchIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18">
+        <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/>
+        <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <input type="text" id="mainSearchInput" placeholder="Search for an item&hellip;" autocomplete="off" spellcheck="false">
+      <div id="searchSuggestions" style="display:none"></div>
     </div>
   </div>
+  <button id="depotIconButton" title="Dimensional Depot contents">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22">
+      <path d="M12 3 L20 8 L20 16 L12 21 L4 16 L4 8 Z" fill="none" stroke="#8ab4f8" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M12 8 V16 M12 8 L8 6 M12 8 L16 6" stroke="#8ab4f8" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+    </svg>
+  </button>
+</div>
 
-  <div id="sidebarScroll">
-    <div id="filterPanelHeader">
-      <span id="filterPanelTitle">Map Layers</span>
+<div id="sidebar">
+  <div id="categoryNavPanel">
+    <div id="categoryNavHeader">
+      <button id="checkAllButton" title="Show everything on the map">Check all</button>
       <button id="uncheckAllButton" title="Hide everything on the map">Uncheck all</button>
     </div>
-    <div id="filterPanel"></div>
+    <div id="categoryNavColumn"></div>
+
+    <div id="sidebarFooter">
+      <div id="loadPanel">
+        <label for="saveSelect">Save file</label>
+        <select id="saveSelect"></select>
+        <button id="loadButton">Load</button>
+        <div id="loadStatus"></div>
+        <div id="loadProgressBar"><div id="loadProgressFill"></div></div>
+        <div id="totalObjectCount"></div>
+      </div>
+
+      <div id="sftpPanel" style="display:none"></div>
+
+      <div id="gameSettingsPanel" style="display:none"></div>
+    </div>
+  </div>
+
+  <div id="categoryDetailColumn">
+    <div id="categoryDetailPane"></div>
   </div>
 </div>
+
 <div id="map"></div>
 
 <div id="altitudePanel" style="display:none">
@@ -70,12 +71,58 @@
   <button id="altitudeResetButton">Reset</button>
 </div>
 
+<div id="activeFilterBanner" style="display:none">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15">
+    <circle cx="11" cy="11" r="7" fill="none" stroke="#ff9ec2" stroke-width="2"/>
+    <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="#ff9ec2" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+  <span id="activeFilterLabel"></span>
+  <button id="activeFilterDetails" title="Show the full list again">Details</button>
+  <button id="activeFilterClear" title="Show all layers again">Show all</button>
+</div>
+
+<div id="itemModalOverlay" style="display:none">
+  <div id="itemModal">
+    <div id="itemModalHeader">
+      <span id="itemModalTitle"></span>
+      <button id="itemModalClose" title="Close">&times;</button>
+    </div>
+    <div id="itemModalSummary"></div>
+    <div id="itemModalList" class="itemLocationList"></div>
+    <button id="itemModalHighlightToggle">Show only these on map</button>
+  </div>
+</div>
+
+<!-- Right-drag rectangle selection (see selection.js). -->
+<div id="selectionRect" style="display:none"></div>
+
+<div id="selectionPanel" style="display:none">
+  <span id="selectionCount"></span>
+  <div id="selectionPanelButtons">
+    <button id="selectionObjectsBtn">List objects</button>
+    <button id="selectionInventoryBtn">Total inventory</button>
+    <button id="selectionClearBtn" title="Clear selection">&times;</button>
+  </div>
+</div>
+
+<div id="selectionModalOverlay" style="display:none">
+  <div id="selectionModal">
+    <div id="selectionModalHeader">
+      <span id="selectionModalTitle"></span>
+      <button id="selectionModalClose" title="Close">&times;</button>
+    </div>
+    <div id="selectionModalSummary"></div>
+    <div id="selectionModalList" class="itemLocationList"></div>
+  </div>
+</div>
+
 <script src="vendor/leaflet.js"></script>
 <script src="map.js"></script>
 <script src="filters.js"></script>
 <script src="altitude.js"></script>
 <script src="tooltip.js"></script>
 <script src="finditem.js"></script>
+<script src="selection.js"></script>
 <script src="data.js"></script>
 </body>
 </html>

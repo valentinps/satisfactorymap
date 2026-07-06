@@ -4,27 +4,31 @@
 // bucket with enough metadata (ids + tooltip info) for Tooltip.js to resolve
 // a click into either a quick local description or a server-side detail fetch.
 //
-// Sidebar structure: top-level sections (Resource Nodes, Production,
-// Logistics, Power, Storage, Construction, Vehicles, Other, Collectables,
-// Hard Drives) are each a collapsible renderGroup with a master checkbox.
-// Logistics additionally nests one more level (Fluids/Items/Train Tracks/
-// Hypertube/Vehicles & Transport) before reaching individual building/line
-// types. renderGroup() supports this nesting generically (see its doc comment).
+// Sidebar structure: top-level sections are each a collapsible renderGroup
+// with a master checkbox. The building categories (Organisation/Walls/
+// Production/Power/Logistics/Special, plus the catch-all Unknown) and their
+// one level of subcategory come straight from docs/generated/buildingCategories.json
+// + docs/categoryLabels.json via payload.menuOrder -- see
+// buildBuildingCategorySections. Resource Nodes, HUB, Entities, Collectables
+// and Hard Drives are their own separate sections. renderGroup() supports the
+// subcategory nesting generically (see its doc comment).
 
 var Filters = {};
 
 (function() {
   "use strict";
 
+  // Keyed by the build-menu category display names from docs/categoryLabels.json
+  // (see sav_map_data.BUILD_MENU_ORDER). "Unknown" is the catch-all for any
+  // placed buildable whose class isn't in buildingCategories.json.
   var BUILDING_CATEGORY_COLORS = {
-    Extraction: "#a0522d",
+    Special: "#e84393",
     Production: "#e67e22",
-    Logistics: "#3498db",
     Power: "#f1c40f",
-    Storage: "#9b59b6",
-    Construction: "#7f8c8d",
-    Vehicles: "#1abc9c",
-    Other: "#e74c3c",
+    Logistics: "#3498db",
+    Organisation: "#1abc9c",
+    Walls: "#95a5a6",
+    Unknown: "#e74c3c",
   };
 
   // Generic icon color for sections that span a mix of types with no single
@@ -159,24 +163,23 @@ var Filters = {};
     vehiclePaths: "Vehicle Path",
   };
 
-  // Top-level section order (per the user's explicit choice).
-  var TOP_LEVEL_CATEGORY_ORDER = ["Extraction", "Production", "Logistics", "Power", "Storage", "Construction", "Vehicles", "Other"];
-  var LOGISTICS_SUBCATEGORY_ORDER = ["Fluids", "Items", "Hypertube"];
-  var VEHICLE_SUBCATEGORY_ORDER = ["Trains", "Trucks", "Drones"];
-  var CONSTRUCTION_SUBCATEGORY_ORDER = ["Foundations", "Ramps", "Walls", "Beams & Pillars", "Catwalks", "Railings & Fences", "Stairs", "Doors & Windows", "Roofs", "Other"];
+  // Category/subcategory order comes from the payload (payload.menuOrder,
+  // built from docs/generated/buildingCategories.json) -- see buildBuildingCategorySections.
 
   // Lightweight buildables (foundations/walls/ramps/beams) come in several
   // material skins per shape -- e.g. "Foundation 4m", "Foundation 4m
   // (Asphalt)", "Foundation 4m (Concrete)", "Foundation 4m (Metal)",
   // "Foundation 4m (Polished Concrete)" are all the exact same shape/size,
-  // just different paint, and used to show up as 5 separate sidebar rows.
-  // Only suffixes confirmed to be pure material/skin are stripped here --
-  // other parenthetical suffixes seen in the readable-name data (e.g.
+  // just different paint, and would otherwise show up as 5 separate sidebar
+  // rows. Only suffixes confirmed to be pure material/skin are stripped here
+  // -- other parenthetical suffixes seen in the readable-name data (e.g.
   // "(Window)", "(No Indicator)", "(1 m)") indicate a genuinely different
-  // shape or size and must NOT be merged away.
+  // shape or size and must NOT be merged away. Applied across every building
+  // category (not just Foundations/Walls/Architecture) since it's a no-op for
+  // any label that never carries one of these suffixes.
   var MATERIAL_LABEL_SUFFIXES = [" (Asphalt)", " (Concrete)", " (Polished Concrete)", " (Metal)"];
 
-  function mergedConstructionLabel(label) {
+  function mergedMaterialLabel(label) {
     for (var i = 0; i < MATERIAL_LABEL_SUFFIXES.length; i++) {
       var suffix = MATERIAL_LABEL_SUFFIXES[i];
       if (label.slice(-suffix.length) === suffix) {
@@ -190,7 +193,7 @@ var Filters = {};
     return Math.floor(points.length / stride);
   }
 
-  // Bucket keys (e.g. "building:Desc_ConstructorMk1_C", "node:...", "line:belts")
+  // Bucket keys (e.g. "building:Desc_ConstructorMk1_C", "node:...", "line:belt:Mk.6")
   // are stable identifiers for a *kind* of thing, not a specific save's data --
   // so a visibility choice made here survives both a same-file auto-refresh
   // (see data.js's checkForNewerSave) and switching to an entirely different
@@ -313,6 +316,38 @@ var Filters = {};
     }
   }
 
+  // Appends one leaf .filterRow (toggle + icon + label + count) to childrenDiv
+  // and returns its checkbox. `row.displayLabel` overrides the shown text
+  // (e.g. a compact "Mk.6" under a "Conveyor Belts" group) while the bucket
+  // keeps its full, unambiguous label for tooltips/selection. Shared by
+  // renderGroup's flat-array path and the nested-group builder below.
+  function appendLeafRow(childrenDiv, row, renderType, swatchColor) {
+    var rowDiv = el("div", "filterRow");
+    var rowToggle = makeToggle();
+    var checkbox = rowToggle.checkbox;
+    // A row's checkbox can control several buckets at once, so restoring falls
+    // back to "visible" unless a previous visit explicitly recorded otherwise
+    // for one of them; in practice they're always toggled together.
+    var restoredVisible = row.buckets.reduce(function(acc, bucket) {
+      return savedVisibility.hasOwnProperty(bucket.key) ? savedVisibility[bucket.key] : acc;
+    }, true);
+    checkbox.checked = restoredVisible;
+    row.buckets.forEach(function(bucket) { bucket.visible = restoredVisible; });
+    checkbox.addEventListener("change", function() {
+      row.buckets.forEach(function(bucket) {
+        bucket.visible = checkbox.checked;
+        savedVisibility[bucket.key] = checkbox.checked;
+      });
+      MapApp.layer.requestRedraw();
+    });
+    rowDiv.appendChild(rowToggle.wrapper);
+    rowDiv.appendChild(makeIcon(row.renderType || renderType, row.color || swatchColor, row.iconUrl));
+    rowDiv.appendChild(el("label", null, row.displayLabel || row.label));
+    rowDiv.appendChild(el("span", "count", String(row.count)));
+    childrenDiv.appendChild(rowDiv);
+    return checkbox;
+  }
+
   // Renders one collapsible group with a master checkbox (toggling it
   // flips every checkbox inside, recursively) and an expand/collapse toggle.
   // `content` is either:
@@ -326,8 +361,17 @@ var Filters = {};
     var group = el("div", "filterGroup");
     var titleRow = el("div", "groupTitle");
 
-    var expandToggle = el("span", "expandToggle", options.startCollapsed ? "▸" : "▾");
-    titleRow.appendChild(expandToggle);
+    // Top-level categories (see renderTopLevelCategory) own their content's
+    // visibility entirely through nav-column selection instead -- without
+    // this, the titleRow (physically relocated into the nav column, but
+    // still the very same DOM node with this listener attached) would keep
+    // reacting to clicks by toggling childrenDiv's inline display itself,
+    // fighting with the "active" class that actually controls it there.
+    var expandToggle = null;
+    if (!options.noExpandToggle) {
+      expandToggle = el("span", "expandToggle", options.startCollapsed ? "▸" : "▾");
+      titleRow.appendChild(expandToggle);
+    }
 
     var parentToggle = makeToggle();
     var parentCheckbox = parentToggle.checkbox;
@@ -352,31 +396,7 @@ var Filters = {};
       childCheckboxes = nested.checkboxes;
     } else {
       content.forEach(function(row) {
-        var rowDiv = el("div", "filterRow");
-        var rowToggle = makeToggle();
-        var checkbox = rowToggle.checkbox;
-        // A row's checkbox can control several buckets at once (e.g.
-        // Construction merges same-shape/different-material buckets into one
-        // row -- see buildConstructionSection), so restoring falls back to
-        // "visible" unless a previous visit explicitly recorded otherwise for
-        // one of them; in practice they're always toggled together.
-        var restoredVisible = row.buckets.reduce(function(acc, bucket) {
-          return savedVisibility.hasOwnProperty(bucket.key) ? savedVisibility[bucket.key] : acc;
-        }, true);
-        checkbox.checked = restoredVisible;
-        row.buckets.forEach(function(bucket) { bucket.visible = restoredVisible; });
-        checkbox.addEventListener("change", function() {
-          row.buckets.forEach(function(bucket) {
-            bucket.visible = checkbox.checked;
-            savedVisibility[bucket.key] = checkbox.checked;
-          });
-          MapApp.layer.requestRedraw();
-        });
-        rowDiv.appendChild(rowToggle.wrapper);
-        rowDiv.appendChild(makeIcon(row.renderType || renderType, row.color || swatchColor, row.iconUrl));
-        rowDiv.appendChild(el("label", null, row.label));
-        rowDiv.appendChild(el("span", "count", String(row.count)));
-        childrenDiv.appendChild(rowDiv);
+        var checkbox = appendLeafRow(childrenDiv, row, renderType, swatchColor);
         childCheckboxes.push(checkbox);
         allBuckets = allBuckets.concat(row.buckets);
       });
@@ -399,12 +419,14 @@ var Filters = {};
     // listener before, so clicking anywhere else in the row (a few pixels
     // either side) silently did nothing. The toggle switch is excluded so
     // clicking it flips visibility only, without also collapsing the group.
-    titleRow.addEventListener("click", function(e) {
-      if (e.target.closest(".toggleSwitch")) {
-        return;
-      }
-      setCollapsed(childrenDiv.style.display !== "none");
-    });
+    if (expandToggle) {
+      titleRow.addEventListener("click", function(e) {
+        if (e.target.closest(".toggleSwitch")) {
+          return;
+        }
+        setCollapsed(childrenDiv.style.display !== "none");
+      });
+    }
 
     parentCheckbox.addEventListener("change", function() {
       var checked = parentCheckbox.checked;
@@ -422,6 +444,109 @@ var Filters = {};
     });
 
     return { buckets: allBuckets, checkbox: parentCheckbox };
+  }
+
+  // Every top-level category (Resource Nodes, Extraction, ..., Entities,
+  // Collectables, Hard Drives) shows a single row in the narrow left nav
+  // column and its full content in the wider right detail pane, only one of
+  // which is visible at a time (see selectCategory) -- this is what
+  // Filters.build calls instead of renderGroup directly for those ~14 top-
+  // level sections. Reuses renderGroup itself, built into a detached
+  // <div> purely to get its title-row/children-div construction and
+  // checkbox-cascade wiring for free, then splits the two pieces into their
+  // new homes; renderGroup's own behavior is completely unchanged, and every
+  // *nested* renderGroup call (subcategories, resource types, ...) still
+  // works exactly as before since those live inside the relocated children
+  // div, untouched.
+  var categoryEntries = [];
+
+  // Leaflet doesn't notice its container resized just because a CSS
+  // width/left value changed -- invalidateSize() is the real API for that,
+  // and it's what actually fires the "resize" event BucketedCanvasLayer
+  // already listens for (see map.js's onAdd), so the canvas/tiles catch up
+  // to the map filling (or giving back) the space the detail column just
+  // vacated.
+  function notifyMapResized() {
+    if (window.MapApp && MapApp.map) {
+      MapApp.map.invalidateSize();
+    }
+  }
+
+  // Sizes the nav panel to fit the widest category card instead of a fixed
+  // guess, so it wastes no horizontal space (and the map gets the rest).
+  // Measured by momentarily letting the list size to its content -- each
+  // card's label has flex:1, so at max-content it collapses to the label's
+  // natural (un-stretched) width, making the column exactly as wide as its
+  // longest row. Clamped so the save dropdown / Check-Uncheck header stay
+  // usable at the low end and the map never loses an absurd amount at the
+  // high end. Writes the result to --nav-col-width (which #map/#sidebar/
+  // #categoryNavPanel all derive from) and pokes Leaflet to catch the resize.
+  function autoSizeNavPanel() {
+    var navColumn = document.getElementById("categoryNavColumn");
+    if (!navColumn || navColumn.children.length === 0) {
+      return;
+    }
+    var previous = navColumn.style.width;
+    navColumn.style.width = "max-content";
+    var natural = navColumn.offsetWidth;
+    navColumn.style.width = previous;
+    var width = Math.max(232, Math.min(natural + 8, 380));
+    document.documentElement.style.setProperty("--nav-col-width", width + "px");
+    notifyMapResized();
+  }
+
+  function deselectAllCategories() {
+    categoryEntries.forEach(function(entry) {
+      entry.navRow.classList.remove("active");
+      entry.detailGroup.classList.remove("active");
+    });
+    document.body.classList.add("no-category-selected");
+    notifyMapResized();
+  }
+
+  function selectCategory(navRow, detailGroup) {
+    categoryEntries.forEach(function(entry) {
+      var isThis = entry.navRow === navRow;
+      entry.navRow.classList.toggle("active", isThis);
+      entry.detailGroup.classList.toggle("active", isThis);
+    });
+    document.body.classList.remove("no-category-selected");
+    notifyMapResized();
+  }
+
+  function renderTopLevelCategory(navList, detailPane, title, renderType, swatchColor, content, options) {
+    options = options || {};
+    var staging = el("div");
+    // noExpandToggle: selecting the row in the nav column is what reveals
+    // its content now, so renderGroup's own arrow/collapse-click machinery
+    // (which would otherwise keep fighting the "active" class below, since
+    // titleRow gets physically relocated but keeps whatever listeners
+    // renderGroup attached to it) is skipped entirely for this level.
+    var result = renderGroup(staging, title, renderType, swatchColor, content, { iconUrl: options.iconUrl, noExpandToggle: true });
+    var group = staging.firstChild;
+    var titleRow = group.firstElementChild; // Appended first inside renderGroup.
+    var childrenDiv = group.lastElementChild; // Appended second inside renderGroup.
+
+    titleRow.classList.add("categoryNavRow");
+    navList.appendChild(titleRow);
+
+    var detailGroup = el("div", "categoryDetailGroup");
+    detailGroup.appendChild(childrenDiv);
+    detailPane.appendChild(detailGroup);
+
+    titleRow.addEventListener("click", function(e) {
+      if (e.target.closest(".toggleSwitch")) {
+        return; // The switch still just toggles visibility, independent of selection.
+      }
+      if (titleRow.classList.contains("active")) {
+        deselectAllCategories(); // Clicking the already-selected category again closes the detail panel.
+      } else {
+        selectCategory(titleRow, detailGroup);
+      }
+    });
+
+    categoryEntries.push({ navRow: titleRow, detailGroup: detailGroup });
+    return { buckets: result.buckets, checkbox: result.checkbox };
   }
 
   // ---- Resource Nodes / Resource Wells ---------------------------------
@@ -509,12 +634,12 @@ var Filters = {};
     return total;
   }
 
-  function buildResourceEntrySection(container, title, resourceEntries) {
+  function buildResourceEntrySection(navList, detailPane, title, resourceEntries) {
     if (resourceEntries.length === 0) {
       return;
     }
     var total = resourceEntriesTotal(resourceEntries);
-    renderGroup(container, title + " (" + total + ")", "circle", NEUTRAL_COLOR, function(childrenDiv) {
+    renderTopLevelCategory(navList, detailPane, title + " (" + total + ")", "circle", NEUTRAL_COLOR, function(childrenDiv) {
       var checkboxes = [];
       var allBuckets = [];
       resourceEntries.forEach(function(resourceEntry) {
@@ -523,18 +648,18 @@ var Filters = {};
         allBuckets = allBuckets.concat(result.buckets);
       });
       return { buckets: allBuckets, checkboxes: checkboxes };
-    }, { startCollapsed: true });
+    });
   }
 
-  function buildResourceNodeSection(container, payload) {
+  function buildResourceNodeSection(navList, detailPane, payload) {
     var byResourceType = payload.resourceNodes.byResourceType;
-    buildResourceEntrySection(container, "Resource Nodes", byResourceType.filter(function(e) { return !e.isWell; }));
-    buildResourceEntrySection(container, "Resource Wells", byResourceType.filter(function(e) { return e.isWell; }));
+    buildResourceEntrySection(navList, detailPane, "Resource Nodes", byResourceType.filter(function(e) { return !e.isWell; }));
+    buildResourceEntrySection(navList, detailPane, "Resource Wells", byResourceType.filter(function(e) { return e.isWell; }));
   }
 
   // ---- Collectables -----------------------------------------------------
 
-  function buildCollectablesSection(container, payload) {
+  function buildCollectablesSection(navList, detailPane, payload) {
     var collectables = payload.collectables;
     var kinds = [
       { key: "slugsBlue", label: "Blue Power Slug", color: SLUG_COLORS.slugsBlue },
@@ -547,7 +672,7 @@ var Filters = {};
       var data = collectables[kind.key];
       return sum + pointCount(data.remaining, 3) + pointCount(data.collected, 3);
     }, 0);
-    renderGroup(container, "Collectables (" + total + ")", "circle", NEUTRAL_COLOR, function(childrenDiv) {
+    renderTopLevelCategory(navList, detailPane, "Collectables (" + total + ")", "circle", NEUTRAL_COLOR, function(childrenDiv) {
       var checkboxes = [];
       var allBuckets = [];
       kinds.forEach(function(kind) {
@@ -587,7 +712,7 @@ var Filters = {};
         allBuckets = allBuckets.concat(result.buckets);
       });
       return { buckets: allBuckets, checkboxes: checkboxes };
-    }, { startCollapsed: true });
+    });
   }
 
   // ---- Hard Drives -------------------------------------------------------
@@ -599,7 +724,7 @@ var Filters = {};
     hasDrive: 1, empty: COLLECTED_ICON_OPACITY, dismantled: COLLECTED_ICON_OPACITY,
   };
 
-  function buildHardDrivesSection(container, payload) {
+  function buildHardDrivesSection(navList, detailPane, payload) {
     var hardDrives = payload.hardDrives;
     var stateKeys = ["hasDrive", "empty", "dismantled"];
     var url = iconUrl("hardDrive");
@@ -635,15 +760,15 @@ var Filters = {};
       return { label: HARD_DRIVE_LABELS[stateKey], count: pointCount(points, 3), color: color, buckets: [bucket], iconUrl: url };
     });
     var total = rows.reduce(function(s, r) { return s + r.count; }, 0);
-    renderGroup(container, "Hard Drives (" + total + ")", "icon", HARD_DRIVE_COLORS.hasDrive, rows, { startCollapsed: true, iconUrl: url });
+    renderTopLevelCategory(navList, detailPane, "Hard Drives (" + total + ")", "icon", HARD_DRIVE_COLORS.hasDrive, rows, { iconUrl: url });
   }
 
   // ---- HUB ------------------------------------------------------------------
 
   // The HUB is a one-of-a-kind landmark (excluded from collectBuildings --
   // see sav_map_data.HUB_TYPE_PATH) rather than an ordinary building, so it
-  // gets its own section/icon instead of showing up under "Other".
-  function buildHubSection(container, payload) {
+  // gets its own section/icon instead of showing up under "Unknown".
+  function buildHubSection(navList, detailPane, payload) {
     var hub = payload.hub;
     var count = pointCount(hub.points, 3);
     if (count === 0) {
@@ -651,7 +776,7 @@ var Filters = {};
     }
     var bucket = makeIconBucket("hub", "HUB", HUB_COLOR, hub.points, hub.ids, "server", null, HUB_ICON_URL, 1);
     var rows = [{ label: "HUB", count: count, color: HUB_COLOR, buckets: [bucket], iconUrl: HUB_ICON_URL }];
-    renderGroup(container, "HUB", "icon", HUB_COLOR, rows, { startCollapsed: false, iconUrl: HUB_ICON_URL });
+    renderTopLevelCategory(navList, detailPane, "HUB", "icon", HUB_COLOR, rows, { iconUrl: HUB_ICON_URL });
   }
 
   // ---- Entities (Players + wildlife/enemy creatures) ----------------------
@@ -663,7 +788,7 @@ var Filters = {};
   // have anything like that to fetch (no inventory/name), so their tooltip
   // is resolved entirely client-side from the species label already in the
   // payload -- see sav_map_data.collectCreatures.
-  function buildEntitiesSection(container, payload) {
+  function buildEntitiesSection(navList, detailPane, payload) {
     var rows = [];
 
     var players = payload.players;
@@ -688,10 +813,10 @@ var Filters = {};
       return;
     }
     var total = rows.reduce(function(s, r) { return s + r.count; }, 0);
-    renderGroup(container, "Entities (" + total + ")", "icon", PLAYER_COLOR, rows, { startCollapsed: false, iconUrl: PLAYER_ICON_URL });
+    renderTopLevelCategory(navList, detailPane, "Entities (" + total + ")", "icon", PLAYER_COLOR, rows, { iconUrl: PLAYER_ICON_URL });
   }
 
-  // ---- Building categories (Production/Power/Storage/Construction/Vehicles/Other) ----
+  // ---- Building categories (from docs/generated/buildingCategories.json, plus Unknown) ----
 
   function buildingRow(typeEntry, color, drawPriority) {
     var bucket = makePointBucket(
@@ -700,11 +825,19 @@ var Filters = {};
     return { label: typeEntry.label, count: pointCount(typeEntry.points, 4), color: color, renderType: typeEntry.renderType, buckets: [bucket] };
   }
 
-  // Foundations/walls/ramps/beams sit at ground level under everything else
-  // in practice -- drawn first (see makePointBucket's drawPriority) so
-  // machines built on top of them paint over them regardless of where
-  // "Construction" happens to fall in the sidebar's category order.
-  var DRAW_PRIORITY_BY_CATEGORY = { Construction: -1 };
+  // Same-shape/different-material typeEntries (see mergedMaterialLabel) merged
+  // into a single row controlling all of their buckets at once.
+  function mergedBuildingRow(mergedLabel, typeEntries, color, drawPriority) {
+    var buckets = typeEntries.map(function(typeEntry) { return buildingRow(typeEntry, color, drawPriority).buckets[0]; });
+    var count = typeEntries.reduce(function(s, t) { return s + pointCount(t.points, 4); }, 0);
+    return { label: mergedLabel, count: count, color: color, renderType: typeEntries[0].renderType, buckets: buckets };
+  }
+
+  // Foundations/frames/walls (Organisation/Walls categories) sit at ground
+  // level under everything else in practice -- drawn first (see
+  // makePointBucket's drawPriority) so machines built on top of them paint
+  // over them regardless of where these categories fall in the sidebar's order.
+  var DRAW_PRIORITY_BY_CATEGORY = { Organisation: -1, Walls: -1 };
 
   function lineRow(key, lines) {
     var lineData = lines[key];
@@ -712,131 +845,152 @@ var Filters = {};
     return { label: LINE_LABELS[key], count: lineData.polylines.length, color: LINE_COLORS[key], renderType: "line", buckets: [bucket] };
   }
 
-  function buildSimpleCategorySection(container, category, typeEntries, extraRows) {
-    var color = BUILDING_CATEGORY_COLORS[category] || BUILDING_CATEGORY_COLORS.Other;
-    var drawPriority = DRAW_PRIORITY_BY_CATEGORY[category] || 0;
-    var rows = typeEntries.map(function(typeEntry) { return buildingRow(typeEntry, color, drawPriority); });
-    if (extraRows) {
-      rows = rows.concat(extraRows);
+  // A leaf row from an already-collected line group (per-mark belts/pipes --
+  // see collectSplinePathGroups). The bucket keeps the full label
+  // (tooltips/selection); displayLabel is the compact "Mk.N" shown in the
+  // sidebar under the "Conveyor Belts"/"Pipes" group.
+  function lineRowFromData(key, fullLabel, displayLabel, color, lineData) {
+    var bucket = makeLineBucket(key, fullLabel, color, lineData.polylines, lineData.ids, "server", null, lineData.pointStride);
+    return { label: fullLabel, displayLabel: displayLabel, count: lineData.polylines.length, color: color, renderType: "line", buckets: [bucket] };
+  }
+
+  // A belt/pipe group (a per-mark line bucket from collectSplinePathGroups) as
+  // a leaf row; the caller places it into the group's build-menu
+  // category/subcategory. Keeps the full label ("Conveyor Belt Mk.3") rather
+  // than a bare "Mk.3", since it now sits among unrelated leaf rows.
+  function beltPipeRow(keyPrefix, color, group) {
+    return lineRowFromData(keyPrefix + group.mark, group.label, null, color, group);
+  }
+
+  function byCountDesc(a, b) { return b.count - a.count; }
+
+  // Renders one top-level category from a { subOrder, subs, loose } bundle of
+  // rows (see buildBuildingCategorySections). A category with any populated
+  // subcategory renders as collapsible sub-groups (with any loose,
+  // no-subcategory rows as leaves underneath); a category with only loose rows
+  // renders as a flat list. Empty categories render nothing.
+  function renderCategorySection(navList, detailPane, category, data) {
+    var color = BUILDING_CATEGORY_COLORS[category] || BUILDING_CATEGORY_COLORS.Unknown;
+    var usedSubs = data.subOrder.filter(function(sub) { return data.subs[sub].length > 0; });
+    var looseRows = data.loose.slice().sort(byCountDesc);
+
+    var total = looseRows.reduce(function(s, r) { return s + r.count; }, 0);
+    usedSubs.forEach(function(sub) { data.subs[sub].forEach(function(r) { total += r.count; }); });
+    if (total === 0) {
+      return;
     }
-    rows.sort(function(a, b) { return b.count - a.count; });
-    var total = rows.reduce(function(s, r) { return s + r.count; }, 0);
-    renderGroup(container, category + " (" + total + ")", "rect", color, rows, { startCollapsed: true });
-  }
 
-  // Shared by Logistics (Fluids/Items/Hypertube) and Vehicles (Trains/Trucks/
-  // Drones) -- both are "category with subcategories, some of which also pull
-  // in a line bucket" in exactly the same shape.
-  function buildSubcategorizedSection(container, category, typeEntries, lines, subcategoryOrder, lineKeyBySubcategory) {
-    var color = BUILDING_CATEGORY_COLORS[category];
-    var bySubcategory = {};
-    typeEntries.forEach(function(typeEntry) {
-      var subcategory = typeEntry.subcategory || subcategoryOrder[subcategoryOrder.length - 1];
-      (bySubcategory[subcategory] = bySubcategory[subcategory] || []).push(typeEntry);
-    });
+    if (usedSubs.length === 0) {
+      renderTopLevelCategory(navList, detailPane, category + " (" + total + ")", "rect", color, looseRows);
+      return;
+    }
 
-    var totalCount = 0;
-    typeEntries.forEach(function(t) { totalCount += pointCount(t.points, 4); });
-    Object.keys(lineKeyBySubcategory).forEach(function(subcategory) {
-      totalCount += lines[lineKeyBySubcategory[subcategory]].polylines.length;
-    });
-
-    renderGroup(container, category + " (" + totalCount + ")", "rect", color, function(childrenDiv) {
+    renderTopLevelCategory(navList, detailPane, category + " (" + total + ")", "rect", color, function(childrenDiv) {
       var checkboxes = [];
       var allBuckets = [];
-      subcategoryOrder.forEach(function(subcategory) {
-        var entries = bySubcategory[subcategory] || [];
-        var rows = entries.map(function(typeEntry) { return buildingRow(typeEntry, color); });
-        var lineKey = lineKeyBySubcategory[subcategory];
-        if (lineKey) {
-          rows.push(lineRow(lineKey, lines));
-        }
-        if (rows.length === 0) {
-          return;
-        }
-        rows.sort(function(a, b) { return b.count - a.count; });
+      usedSubs.forEach(function(sub) {
+        var rows = data.subs[sub].slice().sort(byCountDesc);
         var subTotal = rows.reduce(function(s, r) { return s + r.count; }, 0);
-        var result = renderGroup(childrenDiv, subcategory + " (" + subTotal + ")", "rect", color, rows, { startCollapsed: true });
+        var result = renderGroup(childrenDiv, sub + " (" + subTotal + ")", "rect", color, rows, { startCollapsed: true });
         checkboxes.push(result.checkbox);
         allBuckets = allBuckets.concat(result.buckets);
       });
-      return { buckets: allBuckets, checkboxes: checkboxes };
-    }, { startCollapsed: true });
-  }
-
-  // Construction needs both subcategories (Foundations/Ramps/Walls/...) and,
-  // within each, merging same-shape-different-material rows into one --
-  // neither of which buildSimpleCategorySection/buildSubcategorizedSection
-  // do (the latter is for Logistics/Vehicles' "also pull in a line bucket"
-  // shape, which Construction doesn't need).
-  function buildConstructionSection(container, category, typeEntries) {
-    var color = BUILDING_CATEGORY_COLORS[category];
-    var bySubcategory = {};
-    typeEntries.forEach(function(typeEntry) {
-      var subcategory = typeEntry.subcategory || "Other";
-      (bySubcategory[subcategory] = bySubcategory[subcategory] || []).push(typeEntry);
-    });
-
-    var totalCount = 0;
-    typeEntries.forEach(function(t) { totalCount += pointCount(t.points, 4); });
-
-    renderGroup(container, category + " (" + totalCount + ")", "rect", color, function(childrenDiv) {
-      var checkboxes = [];
-      var allBuckets = [];
-      CONSTRUCTION_SUBCATEGORY_ORDER.forEach(function(subcategory) {
-        var entries = bySubcategory[subcategory] || [];
-        if (entries.length === 0) {
-          return;
-        }
-        var byMergedLabel = {};
-        var mergedOrder = [];
-        entries.forEach(function(typeEntry) {
-          var mergedLabel = mergedConstructionLabel(typeEntry.label);
-          if (!byMergedLabel[mergedLabel]) {
-            byMergedLabel[mergedLabel] = [];
-            mergedOrder.push(mergedLabel);
-          }
-          byMergedLabel[mergedLabel].push(typeEntry);
-        });
-        var rows = mergedOrder.map(function(mergedLabel) {
-          var group = byMergedLabel[mergedLabel];
-          var buckets = group.map(function(typeEntry) { return buildingRow(typeEntry, color, DRAW_PRIORITY_BY_CATEGORY[category] || 0).buckets[0]; });
-          var count = group.reduce(function(s, t) { return s + pointCount(t.points, 4); }, 0);
-          return { label: mergedLabel, count: count, color: color, renderType: group[0].renderType, buckets: buckets };
-        });
-        rows.sort(function(a, b) { return b.count - a.count; });
-        var subTotal = rows.reduce(function(s, r) { return s + r.count; }, 0);
-        var result = renderGroup(childrenDiv, subcategory + " (" + subTotal + ")", "rect", color, rows, { startCollapsed: true });
-        checkboxes.push(result.checkbox);
-        allBuckets = allBuckets.concat(result.buckets);
+      // Rows whose typePath carried no subcategory sit directly under the
+      // category, after the named subcategories.
+      looseRows.forEach(function(row) {
+        checkboxes.push(appendLeafRow(childrenDiv, row, "rect", color));
+        allBuckets = allBuckets.concat(row.buckets);
       });
       return { buckets: allBuckets, checkboxes: checkboxes };
-    }, { startCollapsed: true });
+    });
   }
 
-  function buildBuildingCategorySections(container, payload) {
-    var byCategory = {};
-    payload.buildingCategories.forEach(function(categoryEntry) {
-      byCategory[categoryEntry.category] = categoryEntry.types;
-    });
-
-    TOP_LEVEL_CATEGORY_ORDER.forEach(function(category) {
-      var typeEntries = byCategory[category] || [];
-      if (category === "Logistics") {
-        buildSubcategorizedSection(container, category, typeEntries, payload.lines, LOGISTICS_SUBCATEGORY_ORDER,
-          { Fluids: "pipelines", Items: "belts", Hypertube: "hypertubes" });
-      } else if (category === "Vehicles") {
-        buildSubcategorizedSection(container, category, typeEntries, payload.lines, VEHICLE_SUBCATEGORY_ORDER,
-          { Trains: "railroads", Trucks: "vehiclePaths" });
-      } else if (category === "Power") {
-        buildSimpleCategorySection(container, category, typeEntries, [lineRow("powerLines", payload.lines)]);
-      } else if (category === "Construction") {
-        if (typeEntries.length > 0) {
-          buildConstructionSection(container, category, typeEntries);
-        }
-      } else if (typeEntries.length > 0) {
-        buildSimpleCategorySection(container, category, typeEntries, null);
+  // The whole filter tree of placed buildables, grouped by the build-menu
+  // category/subcategory each typePath maps to (order from payload.menuOrder,
+  // built from docs/generated/buildingCategories.json). Point/rect buildings,
+  // per-mark belts/pipes, and the whole-line kinds (power lines/railroads/
+  // hypertubes/vehicle paths) are all folded into one category -> subcategory
+  // -> rows structure; any typePath not in the build menu lands in "Unknown".
+  function buildBuildingCategorySections(navList, detailPane, payload) {
+    // catData[category] = { subOrder: [subName,...], subSeen: {}, subs: {subName: [rows]}, loose: [rows] }
+    var catData = {};
+    var catOrder = [];
+    function ensureCat(category) {
+      if (!catData[category]) {
+        catData[category] = { subOrder: [], subSeen: {}, subs: {}, loose: [] };
+        catOrder.push(category);
       }
+      return catData[category];
+    }
+    function ensureSub(category, sub) {
+      var data = ensureCat(category);
+      if (!data.subSeen[sub]) {
+        data.subSeen[sub] = true;
+        data.subOrder.push(sub);
+        data.subs[sub] = [];
+      }
+      return data.subs[sub];
+    }
+    // Seed the category/subcategory order from the build menu so the sidebar
+    // reads in the same order as the in-game build menu. "Unknown" isn't in
+    // the menu, so it's created on demand below and therefore always sorts last.
+    (payload.menuOrder || []).forEach(function(entry) {
+      ensureCat(entry.category);
+      (entry.subcategories || []).forEach(function(sub) { ensureSub(entry.category, sub); });
+    });
+
+    function addRow(category, sub, row) {
+      if (sub) {
+        ensureSub(category, sub).push(row);
+      } else {
+        ensureCat(category).loose.push(row);
+      }
+    }
+
+    payload.buildingCategories.forEach(function(categoryEntry) {
+      var category = categoryEntry.category;
+      var color = BUILDING_CATEGORY_COLORS[category] || BUILDING_CATEGORY_COLORS.Unknown;
+      var drawPriority = DRAW_PRIORITY_BY_CATEGORY[category] || 0;
+      // Group by (subcategory, merged label) first so same-shape/different-
+      // material typeEntries (see mergedMaterialLabel) collapse into one row
+      // instead of one row per material skin.
+      var mergedGroups = {};
+      var mergedOrder = [];
+      categoryEntry.types.forEach(function(typeEntry) {
+        var mergedLabel = mergedMaterialLabel(typeEntry.label);
+        var key = typeEntry.subcategory + " " + mergedLabel;
+        if (!mergedGroups[key]) {
+          mergedGroups[key] = { subcategory: typeEntry.subcategory, mergedLabel: mergedLabel, entries: [] };
+          mergedOrder.push(key);
+        }
+        mergedGroups[key].entries.push(typeEntry);
+      });
+      mergedOrder.forEach(function(key) {
+        var g = mergedGroups[key];
+        addRow(category, g.subcategory, mergedBuildingRow(g.mergedLabel, g.entries, color, drawPriority));
+      });
+    });
+
+    // Per-mark belts/pipes (line buckets), placed by the category/subcategory
+    // sav_map_data attached to each group.
+    (payload.belts || []).forEach(function(group) {
+      addRow(group.category || "Unknown", group.subcategory, beltPipeRow("line:belt:", LINE_COLORS.belts, group));
+    });
+    (payload.pipes || []).forEach(function(group) {
+      addRow(group.category || "Unknown", group.subcategory, beltPipeRow("line:pipe:", LINE_COLORS.pipelines, group));
+    });
+
+    // Whole-line kinds (power lines, railroads, hypertubes, vehicle paths).
+    ["powerLines", "railroads", "hypertubes", "vehiclePaths"].forEach(function(key) {
+      var lineData = payload.lines[key];
+      if (!lineData || lineData.polylines.length === 0) {
+        return;
+      }
+      addRow(lineData.category || "Unknown", lineData.subcategory, lineRow(key, payload.lines));
+    });
+
+    catOrder.forEach(function(category) {
+      renderCategorySection(navList, detailPane, category, catData[category]);
     });
   }
 
@@ -867,20 +1021,33 @@ var Filters = {};
     Object.keys(payload.lines).forEach(function(key) {
       total += payload.lines[key].polylines.length;
     });
+    (payload.belts || []).forEach(function(group) { total += group.polylines.length; });
+    (payload.pipes || []).forEach(function(group) { total += group.polylines.length; });
     return total;
   }
 
   Filters.build = function(payload) {
-    var container = document.getElementById("filterPanel");
-    container.innerHTML = "";
+    var navList = document.getElementById("categoryNavColumn");
+    var detailPane = document.getElementById("categoryDetailPane");
+    navList.innerHTML = "";
+    detailPane.innerHTML = "";
+    categoryEntries = [];
     MapApp.layer.clearBuckets();
 
-    buildResourceNodeSection(container, payload);
-    buildBuildingCategorySections(container, payload);
-    buildHubSection(container, payload);
-    buildEntitiesSection(container, payload);
-    buildCollectablesSection(container, payload);
-    buildHardDrivesSection(container, payload);
+    buildResourceNodeSection(navList, detailPane, payload);
+    buildBuildingCategorySections(navList, detailPane, payload);
+    buildHubSection(navList, detailPane, payload);
+    buildEntitiesSection(navList, detailPane, payload);
+    buildCollectablesSection(navList, detailPane, payload);
+    buildHardDrivesSection(navList, detailPane, payload);
+
+    // Fit the nav panel to the category labels now that they all exist.
+    autoSizeNavPanel();
+
+    // Nothing selected on a fresh load -- the whole detail column stays
+    // hidden (see deselectAllCategories) until the user actually clicks a
+    // category in the nav column.
+    deselectAllCategories();
 
     var totalEl = document.getElementById("totalObjectCount");
     if (totalEl) {
@@ -890,25 +1057,37 @@ var Filters = {};
     MapApp.layer.requestRedraw();
   };
 
-  // "Uncheck all" -- every checkbox at every nesting level (top-level
-  // sections, subcategories, and leaf rows) is a real DOM checkbox somewhere
-  // under #filterPanel, so unchecking all of them plus every bucket covers
-  // the whole tree in one pass without needing to walk the group structure
-  // itself. Recorded into savedVisibility too, same as any other toggle (see
-  // the row/parent checkbox handlers above), so it survives a reload.
+  // "Check all" / "Uncheck all" -- every checkbox at every nesting level
+  // (top-level sections, subcategories, and leaf rows) is a real DOM
+  // checkbox somewhere under #sidebar (nav column rows + every category's
+  // detail content, selected or not), so setting all of them plus every
+  // bucket covers the whole tree in one pass without needing to walk the
+  // group structure itself. Recorded into savedVisibility too, same as any
+  // other toggle (see the row/parent checkbox handlers above), so it
+  // survives a reload. Both live in the nav column's header (not the detail
+  // pane) since they act globally, across every category -- not just
+  // whichever one happens to be selected. Excludes the save-file <select>
+  // etc. in the footer, which have no checkboxes, so scoping to #sidebar is
+  // safe even though the footer now lives inside the nav panel.
+  function setAllVisibility(checked) {
+    var sidebar = document.getElementById("sidebar");
+    var checkboxes = sidebar.querySelectorAll("input[type=checkbox]");
+    for (var i = 0; i < checkboxes.length; i++) {
+      checkboxes[i].checked = checked;
+    }
+    MapApp.layer.buckets.forEach(function(bucket) {
+      bucket.visible = checked;
+      savedVisibility[bucket.key] = checked;
+    });
+    MapApp.layer.requestRedraw();
+  }
+
+  var checkAllButton = document.getElementById("checkAllButton");
+  if (checkAllButton) {
+    checkAllButton.addEventListener("click", function() { setAllVisibility(true); });
+  }
   var uncheckAllButton = document.getElementById("uncheckAllButton");
   if (uncheckAllButton) {
-    uncheckAllButton.addEventListener("click", function() {
-      var filterPanel = document.getElementById("filterPanel");
-      var checkboxes = filterPanel.querySelectorAll("input[type=checkbox]");
-      for (var i = 0; i < checkboxes.length; i++) {
-        checkboxes[i].checked = false;
-      }
-      MapApp.layer.buckets.forEach(function(bucket) {
-        bucket.visible = false;
-        savedVisibility[bucket.key] = false;
-      });
-      MapApp.layer.requestRedraw();
-    });
+    uncheckAllButton.addEventListener("click", function() { setAllVisibility(false); });
   }
 })();

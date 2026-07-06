@@ -1,3 +1,11 @@
+:root {
+  --top-bar-height: 56px;
+  --nav-col-width: clamp(240px, 19vw, 340px);
+  --detail-col-width: 280px;
+  --altitude-width: 64px;
+  --logo-width: 128px;
+}
+
 html, body {
   margin: 0;
   height: 100%;
@@ -7,65 +15,378 @@ html, body {
   background: #000;
 }
 
-#map {
+/* ---- Top bar: logo/mode button, the item search bar, Dimensional Depot
+   icon button -- spans the full page width, above the sidebar/map/altitude
+   panel, all of which sit below it (see their own top: var(--top-bar-height)
+   rules further down). */
+#topBar {
   position: absolute;
   top: 0;
-  left: 300px;
-  right: 64px;
+  left: 0;
+  right: 0;
+  height: var(--top-bar-height);
+  background: #17181c;
+  border-bottom: 1px solid #333;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  z-index: 10;
+}
+
+#logoButton {
+  flex: none;
+  width: var(--logo-width);
+  height: 40px;
+  background: #23262c;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  color: #ddd;
+  font-weight: bold;
+  font-size: 11px;
+  line-height: 1.3;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+#logoButton:hover {
+  border-color: #666;
+  color: #fff;
+}
+
+/* Spotlight-style search: a constrained-width box centered in the top bar
+   (not stretched edge-to-edge), with a search glyph inside it and a custom
+   suggestions dropdown (see #searchSuggestions) anchored directly beneath --
+   replacing the native <datalist>, whose dropdown the browser positioned and
+   styled itself (badly, and with no room for item icons). */
+#mainSearchWrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+}
+
+#searchBox {
+  position: relative;
+  width: 100%;
+  max-width: 540px;
+  display: flex;
+  align-items: center;
+}
+
+#searchIcon {
+  position: absolute;
+  left: 15px;
+  color: #888;
+  pointer-events: none;
+}
+
+#mainSearchInput {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 16px;
+  padding: 9px 16px 9px 42px;
+  border-radius: 999px;
+  border: 1px solid #3a3a3a;
+  background: #23262c;
+  color: #eee;
+}
+
+#mainSearchInput:focus {
+  outline: none;
+  border-color: #5ba3e0;
+  background: #262a31;
+}
+
+#mainSearchInput::placeholder {
+  color: #888;
+}
+
+/* Custom suggestions dropdown -- anchored to #searchBox (position:relative),
+   so it always matches the search field's width and sits just below it. */
+#searchSuggestions {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: min(70vh, 440px);
+  overflow-y: auto;
+  background: #21242b;
+  border: 1px solid #3a3f4a;
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  padding: 6px;
+  z-index: 20;
+}
+
+.searchSuggestionRow {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.searchSuggestionRow.active {
+  background: #2f6bd8;
+}
+
+.searchSuggestionIcon {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  object-fit: contain;
+}
+
+.searchSuggestionLabel {
+  font-size: 14px;
+  color: #eee;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.searchSuggestionEmpty {
+  padding: 10px 12px;
+  color: #888;
+  font-style: italic;
+  font-size: 13px;
+}
+
+#depotIconButton {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #23262c;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#depotIconButton:hover {
+  border-color: #666;
+}
+
+#map {
+  position: absolute;
+  top: var(--top-bar-height);
+  left: calc(var(--nav-col-width) + var(--detail-col-width));
+  right: var(--altitude-width);
   bottom: 0;
   background: #000;
+  /* Contain Leaflet's internal stacking -- its panes/zoom controls use
+     z-index values up to ~1000, which would otherwise live in the root
+     stacking context and paint over the top bar's search-suggestions
+     dropdown (z-index 20 inside #topBar's z-index:10). isolate keeps all of
+     that self-contained so #topBar (and thus the dropdown) sits cleanly
+     above the map. */
+  isolation: isolate;
+}
+
+/* No level-1 category selected -- the whole detail column (content pane)
+   collapses away entirely rather than sitting there empty, and the map
+   expands to fill the freed space. Toggled on <body> by filters.js's
+   selectCategory/deselectAllCategories, which also calls
+   MapApp.map.invalidateSize() right after so Leaflet actually notices its
+   container resized (a plain CSS width/left change doesn't fire that on
+   its own). <body> ships WITH this class already set (see index.html) so
+   the empty detail column never flashes on screen during the initial load
+   before filters.js runs -- nothing is ever selected until a save is
+   loaded and the user clicks a category anyway. */
+body.no-category-selected #categoryDetailColumn {
+  display: none;
+}
+
+body.no-category-selected #sidebar {
+  width: var(--nav-col-width);
+}
+
+body.no-category-selected #map {
+  left: var(--nav-col-width);
 }
 
 .leaflet-container {
   background: #000;
 }
 
-/* Split into a fixed top section (load/SFTP/game-settings controls, which
-   you always want visible) and a separately-scrolling filter list below it
-   -- previously the whole sidebar was one scroll region, so scrolling down
-   through a long filter list pushed the save-file controls out of view too,
-   and getting back to them meant scrolling all the way back up. */
+/* ---- Sidebar: a two-column browser -- the fixed-width nav panel (level-1
+   category list, plus the save-loading footer at its bottom) alongside the
+   detail pane (shown only when a category is selected). A flex ROW so the
+   two columns sit side by side and each runs full height; the footer lives
+   INSIDE the nav panel (not spanning the whole sidebar), so it stays at the
+   nav panel's width and doesn't stretch when the detail pane appears. */
 #sidebar {
   position: absolute;
-  top: 0;
+  top: var(--top-bar-height);
   left: 0;
-  width: 300px;
+  width: calc(var(--nav-col-width) + var(--detail-col-width));
   bottom: 0;
   background: #1c1c1c;
   color: #ddd;
   box-sizing: border-box;
   display: flex;
+  flex-direction: row;
+  overflow: hidden;
+}
+
+/* Level-1 categories -- a plain list of names (see filters.js's
+   renderTopLevelCategory), each with its own visibility toggle switch.
+   Clicking a row (anywhere but the switch) selects it as the one shown in
+   categoryDetailPane; the switch works independently of selection. Laid out
+   as a column: the Check/Uncheck-all header, then the scrollable category
+   list, then the save-loading footer pinned at the bottom. Its width is set
+   by filters.js's autoSizeNavPanel (--nav-col-width) to fit the widest
+   category label instead of a fixed guess, so no horizontal space is
+   wasted. */
+#categoryNavPanel {
+  flex: none;
+  width: var(--nav-col-width);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid #333;
+}
+
+#categoryNavHeader {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid #333;
+}
+
+#categoryNavHeader button {
+  flex: 1 1 50%;
+  font-size: 12px;
+  padding: 7px 0;
+}
+
+#categoryNavColumn {
+  flex: 1 1 auto;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow-y: auto;
+  padding: 8px 6px;
+}
+
+#categoryDetailColumn {
+  flex: none;
+  width: var(--detail-col-width);
+  min-width: 0;
+  display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-#sidebarTop {
-  flex: none;
-  padding: 10px 10px 0 10px;
-  box-sizing: border-box;
-}
-
-#sidebarScroll {
+#categoryDetailPane {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 10px 10px 10px;
+  padding: 6px 8px;
   box-sizing: border-box;
 }
 
-#sidebarHeader {
+/* One row per top-level category in the nav column -- reuses .groupTitle's
+   existing flex/toggle/icon/label layout (see filters.js's
+   renderTopLevelCategory, which relocates a real .groupTitle element here
+   rather than rebuilding an equivalent one from scratch) with a few
+   nav-specific overrides layered on top. Laid out as a self-contained card
+   ([icon] label ............ [switch]) -- the colored icon and name sit on
+   the left, the visibility switch is pushed to the far right (see the
+   margin-left:auto below), so the row's full width is actually used
+   instead of everything crowding the left edge. */
+.categoryNavRow {
+  /* Explicit flex here because the base "display:flex" only lives on
+     ".filterGroup > .groupTitle", and renderTopLevelCategory relocates this
+     row OUT of its .filterGroup -- so that selector no longer matches and
+     the row would otherwise fall back to plain inline flow (which is why the
+     order/margin-left tricks below need this to take effect). */
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
+  cursor: pointer;
+  user-select: none;
+  padding: 11px 14px !important;
+  margin-bottom: 6px;
+  border-radius: 9px;
+  background: #23262c;
+  font-size: 14.5px !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  gap: 11px !important;
 }
 
-#sidebar h1 {
-  font-size: 15px;
-  margin: 0;
+.categoryNavRow .groupLabel {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
-#changeModeBtn {
+.categoryNavRow:hover {
+  background: #2b2f36;
+}
+
+.categoryNavRow.active {
+  background: #2a3d54;
+  color: #8ab4f8;
+  box-shadow: inset 3px 0 0 #5ba3e0;
+}
+
+/* Bigger than the default .toggleSwitch (used everywhere else -- the
+   detail pane's own rows, subcategories, etc.) -- these are the single
+   biggest interactive control on this panel, so they get to be easy
+   targets, not an afterthought next to the label. Pushed to the far right
+   edge of the row (margin-left:auto) after the flex-growing label. */
+.categoryNavRow .toggleSwitch {
+  width: 40px;
+  height: 22px;
+  /* The switch is the first child in DOM order (see renderGroup), so
+     order:2 moves it visually after the flex-growing label, and the label's
+     flex-grow then pushes it to the row's far-right edge. */
+  order: 2;
+  flex: none;
+}
+
+.categoryNavRow .toggleSlider::before {
+  width: 16px;
+  height: 16px;
+  top: 3px;
+  left: 3px;
+}
+
+.categoryNavRow .toggleSwitch input:checked + .toggleSlider::before {
+  transform: translateX(18px);
+}
+
+/* A slightly larger, rounded-square color chip reads more like a category
+   badge than the tiny dot the detail-pane rows use. */
+.categoryNavRow .icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px !important;
+}
+
+.categoryNavRow .icon-circle {
+  border-radius: 50% !important;
+}
+
+.categoryDetailGroup {
+  display: none;
+}
+
+.categoryDetailGroup.active {
+  display: block;
+}
+
+#checkAllButton, #uncheckAllButton {
   font-size: 10px;
   padding: 2px 7px;
   background: none;
@@ -74,18 +395,24 @@ html, body {
   color: #666;
   cursor: pointer;
   white-space: nowrap;
-  flex: none;
 }
 
-#changeModeBtn:hover {
+#checkAllButton:hover, #uncheckAllButton:hover {
   color: #aaa;
   border-color: #666;
 }
 
-#loadPanel {
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #444;
+/* ---- Sidebar footer: save file picker, SFTP sync, game settings --
+   everything only touched around load time, tucked below the category
+   browser instead of pinned above it. */
+#sidebarFooter {
+  flex: none;
+  max-height: 46%;
+  overflow-y: auto;
+  padding: 10px 10px 8px 10px;
+  box-sizing: border-box;
+  border-top: 1px solid #444;
+  background: #1a1a1a;
 }
 
 #loadPanel select, #loadPanel button {
@@ -124,11 +451,11 @@ html, body {
 }
 
 /* SFTP sync panel -- shown only when sftp_config.json is present on the
-   server side. Sits above the game-settings panel in the sidebar. */
+   server side. Sits below the load panel in the sidebar footer. */
 #sftpPanel {
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #444;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #444;
   font-size: 12px;
 }
 
@@ -178,9 +505,9 @@ html, body {
    Randomization) -- see data.js's showGameSettings(). Hidden via inline
    display:none until a save with at least one of these set is loaded. */
 #gameSettingsPanel {
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #444;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #444;
   font-size: 12px;
 }
 
@@ -200,61 +527,13 @@ html, body {
   font-weight: 500;
 }
 
-/* "Find Item" search -- see finditem.js. Hidden via inline display:none
-   until a save with a non-empty item catalog is loaded (always, in
-   practice, but matches gameSettingsPanel/sftpPanel's own guard). */
-#findItemPanel {
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #444;
-  font-size: 12px;
-}
-
-.findItemTitle {
-  font-weight: bold;
-  color: #ddd;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-bottom: 4px;
-}
-
-.findItemRow {
-  display: flex;
-  gap: 4px;
-}
-
-#findItemInput {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-#findItemButton {
-  flex: none;
-}
-
-#findItemResult {
-  margin-top: 6px;
-}
-
-#findItemSummary {
-  color: #bbb;
-  margin-bottom: 4px;
-}
-
-#findItemHighlightToggle {
-  width: 100%;
-}
-
-/* Shared by the Find Item results list and the Dimensional Depot contents
-   list (see finditem.js's renderLocationList) -- a scrollable, bordered
-   list of label/count rows, capped in height so a result spanning dozens of
-   buildings (or the depot's full item roster) doesn't push the rest of the
-   sidebar's fixed controls off-screen. */
+/* Shared by the item-search modal's results list and the Dimensional Depot
+   contents list (see finditem.js's renderLocationList) -- a scrollable,
+   bordered list of label/count rows. */
 .itemLocationList {
-  max-height: 160px;
+  max-height: 40vh;
   overflow-y: auto;
-  margin-bottom: 6px;
+  margin-bottom: 10px;
   border: 1px solid #3a3a3a;
   border-radius: 4px;
 }
@@ -263,7 +542,7 @@ html, body {
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  padding: 3px 6px;
+  padding: 5px 8px;
   border-bottom: 1px solid #2c2f37;
 }
 
@@ -284,18 +563,210 @@ html, body {
   flex: none;
 }
 
-/* "Dimensional Depot" contents -- see finditem.js. Hidden via inline
-   display:none until a save whose FGCentralStorageSubsystem actually holds
-   items is loaded. */
-#dimensionalDepotPanel {
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #444;
-  font-size: 12px;
+/* ---- Item search / Dimensional Depot results modal -- a single shared
+   dialog (see finditem.js's openModal), centered over the map, used for
+   both the search bar's results and the depot-icon button's contents. */
+#itemModalOverlay, #selectionModalOverlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1500;
 }
 
-#dimensionalDepotButton {
+#itemModal, #selectionModal {
+  width: 480px;
+  max-width: 90vw;
+  max-height: 80vh;
+  background: #20232a;
+  border: 1px solid #3a3f4a;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  padding: 16px 18px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  color: #ddd;
+}
+
+#itemModalHeader, #selectionModalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #3a3f4a;
+  flex: none;
+}
+
+#itemModalTitle, #selectionModalTitle {
+  font-weight: bold;
+  font-size: 17px;
+  color: #fff;
+}
+
+#itemModalClose, #selectionModalClose {
+  background: none;
+  border: none;
+  color: #999;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+#itemModalClose:hover, #selectionModalClose:hover {
+  color: #fff;
+}
+
+#itemModalSummary, #selectionModalSummary {
+  color: #bbb;
+  margin-bottom: 8px;
+  flex: none;
+}
+
+#itemModalHighlightToggle {
+  flex: none;
   width: 100%;
+}
+
+/* ---- Rectangle selection (right-drag) -- see selection.js. -------------- */
+
+/* The drag rectangle itself: a fixed-position box tracking the pointer while
+   the right button is held. */
+#selectionRect {
+  position: fixed;
+  z-index: 1400;
+  border: 1.5px solid #5ba3e0;
+  background: rgba(91, 163, 224, 0.15);
+  pointer-events: none;
+}
+
+/* Floating panel shown after a selection is made -- object count plus the
+   "List objects" / "Total inventory" actions. Bottom-centre of the map so it
+   never sits under the top bar or the just-drawn rectangle. */
+#selectionPanel {
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 600;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 10px 10px 16px;
+  background: #20232a;
+  border: 1px solid #3a3f4a;
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+  color: #eee;
+  font-size: 13px;
+}
+
+#selectionCount {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#selectionPanelButtons {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+#selectionPanelButtons button {
+  flex: none;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid #3a5070;
+  background: #2a3545;
+  color: #8ab4f8;
+}
+
+#selectionPanelButtons button:hover {
+  background: #33435a;
+  color: #fff;
+}
+
+#selectionClearBtn {
+  padding: 4px 10px !important;
+  font-size: 16px !important;
+  line-height: 1;
+  color: #999 !important;
+  background: none !important;
+  border-color: #3a3f4a !important;
+}
+
+#selectionClearBtn:hover {
+  color: #fff !important;
+  background: #2a2e36 !important;
+}
+
+/* Floating "a find-item filter is active" banner -- shown over the map (the
+   modal is dismissed so the highlighted results are actually visible, see
+   finditem.js) once "Show only these on map" is clicked. Lets the user
+   navigate the filtered map and revert ("Show all") or reopen the list
+   ("Details") without the modal covering everything. Centered near the top
+   of the map, above it (isolation:isolate on #map keeps its Leaflet z-index
+   contained, so a plain z-index here sits cleanly on top). */
+#activeFilterBanner {
+  position: absolute;
+  top: calc(var(--top-bar-height) + 14px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 90vw;
+  padding: 8px 8px 8px 14px;
+  background: #20232a;
+  border: 1px solid #ff3b81;
+  border-radius: 999px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  color: #eee;
+  font-size: 13px;
+}
+
+#activeFilterLabel {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#activeFilterBanner button {
+  flex: none;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  border: 1px solid #3a3f4a;
+  background: #2a2e36;
+  color: #ddd;
+}
+
+#activeFilterBanner button:hover {
+  border-color: #666;
+  color: #fff;
+}
+
+#activeFilterClear {
+  border-color: #ff3b81 !important;
+  background: #3a2330 !important;
+  color: #ff9ec2 !important;
+}
+
+#activeFilterClear:hover {
+  background: #4a2a3c !important;
+  color: #fff !important;
 }
 
 /* Vertical altitude filter, docked to the right edge of the screen --
@@ -303,10 +774,10 @@ html, body {
    horizontal slider would in the same sidebar width. */
 #altitudePanel {
   position: absolute;
-  top: 0;
+  top: var(--top-bar-height);
   right: 0;
   bottom: 0;
-  width: 64px;
+  width: var(--altitude-width);
   background: #1c1c1c;
   color: #ddd;
   box-sizing: border-box;
@@ -447,78 +918,6 @@ html, body {
   flex: none;
 }
 
-/* Sticky so "Uncheck all" and the section label stay reachable without
-   scrolling back to the top of a long, mostly-expanded filter list. */
-#filterPanelHeader {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  background: #1c1c1c;
-  padding-bottom: 6px;
-  margin-bottom: 6px;
-  border-bottom: 1px solid #333;
-}
-
-#filterPanelTitle {
-  font-size: 11px;
-  font-weight: bold;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #888;
-}
-
-#uncheckAllButton {
-  font-size: 10px;
-  padding: 2px 7px;
-  background: none;
-  border: 1px solid #3a3a3a;
-  border-radius: 3px;
-  color: #666;
-  cursor: pointer;
-  white-space: nowrap;
-  flex: none;
-}
-
-#uncheckAllButton:hover {
-  color: #aaa;
-  border-color: #666;
-}
-
-/* Top-level sections (Resource Nodes, Production, Logistics, ...) are direct
-   children of #filterPanel -- each rendered as a self-contained card (own
-   background/rounding) so a long, mostly-collapsed list of them reads as
-   distinct rows to scan rather than a continuous wall of nested text. Nested
-   groups (subcategories, resource types, individual building lists) are not
-   direct children (they live inside a parent's .filterChildren), so this
-   card treatment doesn't apply to them -- see the plain .filterGroup rule
-   further down for those.  Collapsed by default (see filters.js's
-   startCollapsed) precisely so this compact card list -- not a fully
-   expanded tree -- is what you see first. */
-#filterPanel > .filterGroup {
-  background: #23262c;
-  border-radius: 6px;
-  margin-bottom: 5px;
-  overflow: hidden;
-}
-
-#filterPanel > .filterGroup > .groupTitle {
-  font-size: 12.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: #ddd;
-  padding: 7px 8px;
-}
-
-#filterPanel > .filterGroup > .filterChildren {
-  margin-left: 0;
-  padding: 2px 8px 6px 8px;
-  border-left: none;
-}
-
 .filterGroup {
   margin-bottom: 2px;
 }
@@ -656,6 +1055,83 @@ html, body {
   margin-left: auto;
   padding-left: 4px;
   flex: none;
+}
+
+/* ---- Detail-pane rows: same clean feel as the nav column's category
+   cards, at a smaller scale -- roomier rows and the visibility switch
+   pushed to the far-right edge (instead of crammed on the left next to
+   the label), so the pane reads as a proper list that actually uses its
+   width. Scoped to #categoryDetailPane so the nav column's own
+   .categoryNavRow overrides and the modal/tooltip toggles are untouched. */
+#categoryDetailPane .filterGroup > .groupTitle {
+  padding: 7px 9px;
+  border-radius: 6px;
+  font-size: 13.5px;
+  gap: 9px;
+}
+
+#categoryDetailPane .filterRow {
+  padding: 6px 9px;
+  border-radius: 6px;
+  gap: 9px;
+  font-size: 13.5px;
+}
+
+/* The label grows to fill so whatever comes after it (the switch, and for
+   leaf rows the count) is pushed to the right edge; order:5 on the switch
+   moves it past the icon/label/count despite being first in DOM order (see
+   renderGroup's append order). NB: a leaf row's text label is a bare
+   <label>, but the toggle switch is ALSO a <label> (class toggleSwitch, see
+   makeToggle) -- so :not(.toggleSwitch) is essential here, otherwise the
+   flex-grow would land on the switch and stretch it into a wide pill. */
+#categoryDetailPane .groupTitle .groupLabel,
+#categoryDetailPane .filterRow > label:not(.toggleSwitch) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#categoryDetailPane .toggleSwitch {
+  order: 5;
+  flex: none;
+  width: 34px;
+  height: 19px;
+}
+
+#categoryDetailPane .toggleSlider::before {
+  width: 13px;
+  height: 13px;
+  top: 3px;
+  left: 3px;
+}
+
+#categoryDetailPane .toggleSwitch input:checked + .toggleSlider::before {
+  transform: translateX(15px);
+}
+
+/* Count sits just before the switch at the right edge (order:4, one less
+   than the switch) rather than tight against the label -- with the label
+   flex-growing above, both end up right-aligned as a "1069  [switch]" pair. */
+#categoryDetailPane .filterRow .count {
+  order: 4;
+  margin-left: 0;
+}
+
+/* :not(.icon-line) -- line icons (belts/power lines) are a zero-height
+   element with just a top border, so forcing a height would break them. */
+#categoryDetailPane .icon:not(.icon-line) {
+  width: 13px;
+  height: 13px;
+}
+
+/* The detail pane's top-level content IS a .filterChildren (the childrenDiv
+   renderGroup built, relocated here by renderTopLevelCategory) -- but at the
+   top level its nesting-guide border-left/indent is just a stray vertical
+   line down the left edge of the panel. Strip it here; genuinely nested
+   .filterChildren (subcategories, resource mined/unmined, etc.) keep theirs. */
+#categoryDetailPane > .categoryDetailGroup > .filterChildren {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: none;
 }
 
 /* Hover tooltip -- a plain fixed-position div that follows the cursor (see

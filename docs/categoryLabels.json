@@ -1,0 +1,68 @@
+{
+  "_comment": "Hand-curated display names for the internal Sub_*/SC_* names in buildingCategories.json. Not derived from Docs.json (no display name exists there) -- guessed from the in-game build menu, expect corrections.",
+  "topCategories": {
+    "Sub_Organisation": "Organisation",
+    "Sub_Power": "Power",
+    "Sub_Production": "Production",
+    "Sub_Special": "Special",
+    "Sub_Transport": "Logistics",
+    "Sub_Walls": "Walls"
+  },
+  "subCategories": {
+    "SC_Attach": "Attachments",
+    "SC_Beams": "Beams",
+    "SC_Catwalks": "Catwalks",
+    "SC_Floors": "Floors",
+    "SC_Frames": "Frames",
+    "SC_Inverted": "Inverted Ramps",
+    "SC_Lights": "Lights",
+    "SC_Pillars": "Pillars",
+    "SC_QuatPipes": "Quarter Pipes",
+    "SC_Ramps": "Ramps",
+    "SC_Roofs": "Roofs",
+    "SC_Signs": "Signs",
+    "SC_Storage": "Storage",
+    "SC_Towers": "Towers",
+    "SC_Utility": "Utility",
+    "SC_Walkways": "Walkways",
+
+    "SC_Generators": "Generators",
+    "SC_PowerPoles": "Power Poles",
+    "SC_WallPoles": "Wall Power Poles",
+
+    "SC_JumpPads": "Jump Pads",
+    "SC_Manufacturers": "Manufacturers",
+    "SC_Miners": "Miners",
+    "SC_OilProduction": "Oil Production",
+    "SC_Smelters": "Smelters",
+    "SC_Workstations": "Workstations",
+
+    "SC_AWESOME": "AWESOME Shop",
+    "SC_BlueprintDesigners": "Blueprint Designers",
+    "SC_Event": "Event",
+    "SC_Progression": "Progression",
+
+    "SC_ConverPole": "Conveyor Poles",
+    "SC_ConveyLift": "Conveyor Lifts",
+    "SC_ConveyorAttachments": "Conveyor Attachments",
+    "SC_ConveyorBelts": "Conveyor Belts",
+    "SC_Elevators": "Elevators",
+    "SC_HyperTubes": "Hypertubes",
+    "SC_Monitoring": "Monitoring",
+    "SC_PipeSupport": "Pipe Supports",
+    "SC_Pipes": "Pipelines",
+    "SC_Portal": "Portal",
+    "SC_Trains": "Trains",
+    "SC_VehiclePaths": "Vehicle Paths",
+    "SC_Vehicles": "Vehicles",
+
+    "SC_AngularWalls": "Angular Walls",
+    "SC_ConveyorConnections": "Conveyor Wall Connections",
+    "SC_DiagonalWalls": "Diagonal Walls",
+    "SC_Doors": "Doors",
+    "SC_UpperDiagonalWalls": "Upper Diagonal Walls",
+    "SC_Walls": "Walls",
+    "SC_WindowFrames": "Window Frames",
+    "SC_Windows": "Windows"
+  }
+}

@@ -79,79 +79,88 @@ VEHICLE_PATH_SEGMENTS = tuple(
    for tier in ("Explorer", "FactoryCart", "Tractor", "Truck", "Universal")
 )
 
-CATEGORY_RULES = (
-   # (category, tuple-of-substrings-any-of-which-match)
-   # Train/truck/drone infrastructure (stations, platforms, signals) lives
-   # here alongside the actual vehicles, so everything train/truck/drone
-   # related ends up consolidated under Vehicles instead of split with
-   # Logistics -- see VEHICLE_SUBCATEGORY_RULES below.
-   ("Vehicles",     ("/Buildable/Vehicle/", "Train", "Railroad", "Drone", "Truck", "TruckStation")),
-   ("Power",        ("PowerLine", "Generator", "PowerPole", "PowerTower", "PowerStorage", "PowerSwitch", "XmassLightsLine", "AlienPowerBuilding")),
-   ("Logistics",    ("Conveyor", "Pipeline", "PipelineJunction", "PipelinePump", "PipelineSupport",
-                      "Valve", "PipeHyper", "Splitter", "Merger", "StorageTeleporter")),
-   ("Extraction",   ("MinerMk", "OilPump", "WaterPump", "FrackingSmasher", "FrackingExtractor")),
-   ("Production",   ("Smelter", "Constructor", "Assembler", "Manufacturer", "Foundry", "Refinery",
-                      "Blender", "HadronCollider", "QuantumEncoder", "Converter", "Packager",
-                      "GeneratorGeoThermal")),
-   ("Storage",      ("Storage", "Container", "FluidBuffer")),
-   ("Construction",  ("Foundation", "Wall", "Stair", "Ramp", "Beam", "Pillar", "Walkway", "Roof",
-                      "Catwalk", "Door", "Window", "Frame", "Railing")),
-)
+# --- Build-menu categories --------------------------------------------------
+# The map's building category tree is driven by two generated/hand-curated
+# files under docs/ (see docs/extract_docs_json.py and docs/categoryLabels.json):
+#   - docs/generated/buildingCategories.json: ClassName (short, e.g.
+#     "Build_ConstructorMk1_C") -> {topCategory, subCategory, menuPriority},
+#     extracted straight from the game's Docs.json.
+#   - docs/categoryLabels.json: hand-guessed display names for the internal
+#     Sub_*/SC_* names above (Docs.json has no display string for either).
+# Any placed buildable whose class isn't in buildingCategories.json (new game
+# content Docs.json hasn't caught up to yet, or one of the handful of stale
+# descriptors that don't resolve to a real buildable) falls into the catch-all
+# "Unknown" category. Resource nodes, collectables, hard drives and entities
+# are surfaced by their own collectors and are intentionally not part of this.
+OTHER_CATEGORY = "Unknown"
 
-# Sub-grouping within the Logistics category only. "Items" is the fallback
-# for anything not matched here (belts, splitters/mergers, storage teleporter).
-LOGISTICS_SUBCATEGORY_RULES = (
-   ("Fluids", ("Pipeline", "Valve")),
-   ("Hypertube", ("PipeHyper",)),
-)
-DEFAULT_LOGISTICS_SUBCATEGORY = "Items"
+# Docs.json/buildingCategories.json don't record the in-game top-tab order,
+# only per-building sort priority *within* a subcategory -- this ordering is
+# a guess (matches how a new player unlocks/uses these groups), not extracted
+# data. Correct freely if it doesn't match the real build menu.
+TOP_CATEGORY_ORDER_GUESS = ("Sub_Organisation", "Sub_Walls", "Sub_Production", "Sub_Power", "Sub_Transport", "Sub_Special")
 
-# Sub-grouping within the Vehicles category only. "Trucks" is the fallback
-# for every other vehicle (Explorer, Tractor, Cyber Wagon, Golf Cart, the
-# Truck itself, etc.) -- per the user, anything that isn't a train or a drone
-# counts as a truck for this purpose.
-VEHICLE_SUBCATEGORY_RULES = (
-   ("Trains", ("Train", "Railroad")),
-   ("Drones", ("Drone",)),
-)
-DEFAULT_VEHICLE_SUBCATEGORY = "Trucks"
+def _shortClassName(typePath: str) -> str:
+   if not typePath:
+      return None
+   pos = typePath.rfind(".")
+   return typePath[pos+1:] if pos != -1 else typePath
 
-# Sub-grouping within the Construction category only -- this is the category
-# that exploded in size once lightweight buildables (foundations/walls/ramps/
-# beams, see _findLightweightBuildableGroups) started being surfaced as real
-# buildings, since every material skin of every shape is its own typePath.
-# "Ramp" is checked before "Railings & Fences" so ramp-shaped fence/catwalk
-# pieces (FenceRamp/CatwalkRamp) land with the other ramps, not the railings.
-CONSTRUCTION_SUBCATEGORY_RULES = (
-   ("Foundations", ("Foundation",)),
-   ("Ramps", ("Ramp",)),
-   ("Walls", ("Wall",)),
-   ("Beams & Pillars", ("Beam", "Pillar")),
-   ("Catwalks", ("Catwalk",)),
-   ("Railings & Fences", ("Railing", "Fence")),
-   ("Stairs", ("Stair",)),
-   # Checked before "Doors & Windows": some roof tiles have a skylight cutout
-   # and are literally named "Build_Roof_Window_01_C" -- still a roof piece,
-   # not a door/window building element.
-   ("Roofs", ("Roof", "Walkway")),
-   ("Doors & Windows", ("Door", "Window")),
-)
-DEFAULT_CONSTRUCTION_SUBCATEGORY = "Other"
+def _loadBuildMenuCategories():
+   # Returns (classNameToCatSub, menuOrder) where classNameToCatSub maps a
+   # short ClassName -> (category, subcategory) display-label pair, and
+   # menuOrder is the ordered [{"category", "subcategories": [...]}] the
+   # frontend renders the tree in.
+   categoriesPath = os.path.join(_REPO_ROOT, "docs", "generated", "buildingCategories.json")
+   labelsPath = os.path.join(_REPO_ROOT, "docs", "categoryLabels.json")
+   classNameToCatSub: dict[str, tuple] = {}
+   menuOrder = []
+   try:
+      with open(categoriesPath, encoding="utf-8") as handle:
+         buildingCategories = json.load(handle)
+      with open(labelsPath, encoding="utf-8") as handle:
+         labels = json.load(handle)
+   except (OSError, ValueError):
+      return (classNameToCatSub, menuOrder)
+
+   topLabels = labels.get("topCategories", {})
+   subLabels = labels.get("subCategories", {})
+
+   # internal subcategory name -> (internal top category, display label, best/lowest menuPriority seen)
+   subcategoryInfo: dict[str, tuple] = {}
+   for className, entry in buildingCategories.items():
+      topInternal = entry.get("topCategory")
+      subInternal = entry.get("subCategory")
+      topLabel = topLabels.get(topInternal, topInternal)
+      subLabel = subLabels.get(subInternal, subInternal)
+      classNameToCatSub[className] = (topLabel, subLabel)
+      priority = entry.get("menuPriority")
+      if priority is None:
+         priority = 0.0
+      existing = subcategoryInfo.get(subInternal)
+      if existing is None or priority < existing[2]:
+         subcategoryInfo[subInternal] = (topInternal, subLabel, priority)
+
+   topOrder = list(TOP_CATEGORY_ORDER_GUESS) + sorted(set(topLabels) - set(TOP_CATEGORY_ORDER_GUESS))
+   subsByTop: dict[str, list] = {}
+   for (topInternal, subLabel, priority) in subcategoryInfo.values():
+      subsByTop.setdefault(topInternal, []).append((priority, subLabel))
+   for topInternal in topOrder:
+      subs = subsByTop.get(topInternal)
+      if not subs:
+         continue
+      subs.sort(key=lambda item: (item[0], item[1]))
+      menuOrder.append({
+         "category": topLabels.get(topInternal, topInternal),
+         "subcategories": [label for (_, label) in subs],
+      })
+   return (classNameToCatSub, menuOrder)
+
+CLASSNAME_TO_CATSUB, BUILD_MENU_ORDER = _loadBuildMenuCategories()
 
 def categorizeSubcategory(category: str, typePath: str) -> str:
-   if category == "Logistics":
-      rules, default = (LOGISTICS_SUBCATEGORY_RULES, DEFAULT_LOGISTICS_SUBCATEGORY)
-   elif category == "Vehicles":
-      rules, default = (VEHICLE_SUBCATEGORY_RULES, DEFAULT_VEHICLE_SUBCATEGORY)
-   elif category == "Construction":
-      rules, default = (CONSTRUCTION_SUBCATEGORY_RULES, DEFAULT_CONSTRUCTION_SUBCATEGORY)
-   else:
-      return None
-   for (subcategory, substrings) in rules:
-      for substring in substrings:
-         if substring in typePath:
-            return subcategory
-   return default
+   entry = CLASSNAME_TO_CATSUB.get(_shortClassName(typePath))
+   return entry[1] if entry is not None else None
 
 
 def readableLabel(pathName: str) -> str:
@@ -167,11 +176,8 @@ def readableLabel(pathName: str) -> str:
    return label
 
 def categorizeTypePath(typePath: str) -> str:
-   for (category, substrings) in CATEGORY_RULES:
-      for substring in substrings:
-         if substring in typePath:
-            return category
-   return "Other"
+   entry = CLASSNAME_TO_CATSUB.get(_shortClassName(typePath))
+   return entry[0] if entry is not None else OTHER_CATEGORY
 
 MAP_SIZE = 5000 # map_highres.png dimensions; must match buildMapPayload()'s "mapSize".
 
@@ -253,7 +259,7 @@ FALLBACK_FOOTPRINTS_METERS = (
    # Deliberately does NOT match Build_GeneratorIntegratedBiomass_C (the one
    # built into the HUB, which isn't a real placed building and should stay
    # a point).
-   ("GeneratorBiomass_Automated", (7.84, 7.546)),
+   ("GeneratorBiomass_Automated", (8.0, 8.0)),
    ("TrainDockingStation", (16.0, 34.0)), # Freight Platform (solid and liquid)
    ("TrainPlatformEmpty", (16.0, 34.0)),
    # Foundations/ramps come in many material skins (Asphalt/Concrete/
@@ -279,8 +285,8 @@ FALLBACK_FOOTPRINTS_METERS = (
    # variants of every splitter/merger) aren't in the SCIM dataset, but share
    # the same physical attachment footprint in-game as the plain
    # Splitter/Merger, which is -- measured from that same dataset.
-   ("CA_Splitter", (4.3, 4.6)),
-   ("CA_Merger", (4.3, 4.0)),
+   ("CA_Splitter", (4.0, 4.0)),
+   ("CA_Merger", (4.0, 4.0)),
 )
 
 def _loadScimFootprintsByTypePath() -> dict:
@@ -366,7 +372,7 @@ EXCLUDED_BUILDING_TYPE_PATHS = {
 # The HUB (Build_TradingPost_C) isn't in the SCIM footprint dataset and is a
 # one-of-a-kind landmark rather than an ordinary building, so it gets its own
 # house icon marker (see collectHub below) instead of rendering as a plain
-# point in the catch-all "Other" category.
+# point in the catch-all "Unknown" category.
 HUB_TYPE_PATH = "/Game/FactoryGame/Buildable/Factory/TradingPost/Build_TradingPost.Build_TradingPost_C"
 
 LIGHTWEIGHT_BUILDABLE_SUBSYSTEM_TYPE_PATH = "/Script/FactoryGame.FGLightweightBuildableSubsystem"
@@ -492,7 +498,6 @@ def collectSplinePaths(levels, typePaths, splinePropertyName="mSplineData") -> d
                actorTransforms[actorOrComponentObjectHeader.instanceName] = (
                   actorOrComponentObjectHeader.position, actorOrComponentObjectHeader.rotation)
 
-   ZERO_VECTOR = [0.0, 0.0, 0.0]
    polylines = []
    ids = []
    for level in levels:
@@ -501,34 +506,102 @@ def collectSplinePaths(levels, typePaths, splinePropertyName="mSplineData") -> d
          if transform is None:
             continue
          (position, rotation) = transform
-         localPoints = [] # (location, arriveTangent, leaveTangent) triples, actor-local.
-
-         splineData = sav_parse.getPropertyValue(object.properties, splinePropertyName)
-         if splineData is not None:
-            for splinePoint in splineData:
-               location = sav_parse.getPropertyValue(splinePoint[0], "Location")
-               if location is not None:
-                  arriveTangent = sav_parse.getPropertyValue(splinePoint[0], "ArriveTangent") or ZERO_VECTOR
-                  leaveTangent = sav_parse.getPropertyValue(splinePoint[0], "LeaveTangent") or ZERO_VECTOR
-                  localPoints.append((location, arriveTangent, leaveTangent))
-         else:
-            topTransform = sav_parse.getPropertyValue(object.properties, "mTopTransform")
-            if topTransform is not None:
-               translation = sav_parse.getPropertyValue(topTransform[0], "Translation")
-               if translation is not None:
-                  localPoints = [(ZERO_VECTOR, ZERO_VECTOR, ZERO_VECTOR), (translation, ZERO_VECTOR, ZERO_VECTOR)]
-
-         flatPoints = []
-         for (location, arriveTangent, leaveTangent) in localPoints:
-            worldOffset = rotateVectorByQuaternion(rotation, location)
-            (px, py) = projectXY([position[0] + worldOffset[0], position[1] + worldOffset[1]])
-            (arriveX, arriveY) = projectVectorXY(rotateVectorByQuaternion(rotation, arriveTangent))
-            (leaveX, leaveY) = projectVectorXY(rotateVectorByQuaternion(rotation, leaveTangent))
-            flatPoints.extend([px, py, arriveX, arriveY, leaveX, leaveY, worldZToMeters(position[2] + worldOffset[2])])
-         if len(flatPoints) >= 14:
+         flatPoints = _splineSegmentPolyline(object, position, rotation, splinePropertyName)
+         if flatPoints is not None:
             polylines.append(flatPoints)
             ids.append(object.instanceName)
    return {"polylines": polylines, "ids": ids, "pointStride": 7}
+
+# Shared per-segment geometry for collectSplinePaths / collectSplinePathGroups:
+# turns one belt/pipe/rail/hypertube/vehicle-path segment object into its flat
+# [x, y, arriveTanX, arriveTanY, leaveTanX, leaveTanY, z, ...] vertex list (see
+# collectSplinePaths's doc comment), or None if it has too few points to draw.
+def _splineSegmentPolyline(object, position, rotation, splinePropertyName):
+   ZERO_VECTOR = [0.0, 0.0, 0.0]
+   localPoints = [] # (location, arriveTangent, leaveTangent) triples, actor-local.
+   splineData = sav_parse.getPropertyValue(object.properties, splinePropertyName)
+   if splineData is not None:
+      for splinePoint in splineData:
+         location = sav_parse.getPropertyValue(splinePoint[0], "Location")
+         if location is not None:
+            arriveTangent = sav_parse.getPropertyValue(splinePoint[0], "ArriveTangent") or ZERO_VECTOR
+            leaveTangent = sav_parse.getPropertyValue(splinePoint[0], "LeaveTangent") or ZERO_VECTOR
+            localPoints.append((location, arriveTangent, leaveTangent))
+   else:
+      topTransform = sav_parse.getPropertyValue(object.properties, "mTopTransform")
+      if topTransform is not None:
+         translation = sav_parse.getPropertyValue(topTransform[0], "Translation")
+         if translation is not None:
+            localPoints = [(ZERO_VECTOR, ZERO_VECTOR, ZERO_VECTOR), (translation, ZERO_VECTOR, ZERO_VECTOR)]
+
+   flatPoints = []
+   for (location, arriveTangent, leaveTangent) in localPoints:
+      worldOffset = rotateVectorByQuaternion(rotation, location)
+      (px, py) = projectXY([position[0] + worldOffset[0], position[1] + worldOffset[1]])
+      (arriveX, arriveY) = projectVectorXY(rotateVectorByQuaternion(rotation, arriveTangent))
+      (leaveX, leaveY) = projectVectorXY(rotateVectorByQuaternion(rotation, leaveTangent))
+      flatPoints.extend([px, py, arriveX, arriveY, leaveX, leaveY, worldZToMeters(position[2] + worldOffset[2])])
+   return flatPoints if len(flatPoints) >= 14 else None
+
+# One line-bucket per "mark" (Belts Mk.1..Mk.6, Pipes Mk.1/Mk.2), so the
+# frontend can toggle each mark independently. typePaths sharing a readable
+# label are merged (e.g. Pipeline / Pipeline_NoIndicator both = "Pipeline
+# Mk.1"); the row label is shortened to just the "Mk.N" tail since it sits
+# under a "Belts"/"Pipes" group. Single pass over the levels (grouping by
+# typePath as it goes) rather than one collectSplinePaths call per mark.
+# Returns [{"label", "polylines", "ids", "pointStride"}, ...], empties dropped.
+def collectSplinePathGroups(levels, typePaths, splinePropertyName="mSplineData") -> list:
+   labelByTypePath = {typePath: readableLabel(typePath) for typePath in typePaths}
+   # A representative typePath per readable label -- typePaths that share a label
+   # (e.g. Pipeline / Pipeline_NoIndicator both "Pipeline Mk.1") also share a
+   # build-menu category/subcategory, so the first one is enough to look it up.
+   typePathByLabel: dict[str, str] = {}
+   for typePath in typePaths:
+      typePathByLabel.setdefault(labelByTypePath[typePath], typePath)
+
+   actorInfo: dict[str, tuple] = {} # instanceName -> (position, rotation, groupLabel)
+   for level in levels:
+      for header in level.actorAndComponentObjectHeaders:
+         if isinstance(header, sav_parse.ActorHeader) and header.typePath in labelByTypePath:
+            actorInfo[header.instanceName] = (header.position, header.rotation, labelByTypePath[header.typePath])
+
+   byLabel: dict[str, dict] = {}
+   order = []
+   for level in levels:
+      for object in level.objects:
+         info = actorInfo.get(object.instanceName)
+         if info is None:
+            continue
+         (position, rotation, groupLabel) = info
+         flatPoints = _splineSegmentPolyline(object, position, rotation, splinePropertyName)
+         if flatPoints is None:
+            continue
+         if groupLabel not in byLabel:
+            byLabel[groupLabel] = {"polylines": [], "ids": []}
+            order.append(groupLabel)
+         byLabel[groupLabel]["polylines"].append(flatPoints)
+         byLabel[groupLabel]["ids"].append(object.instanceName)
+
+   groups = []
+   for label in order:
+      match = re.search(r"Mk\.?\s*\d+", label)
+      representativeTypePath = typePathByLabel.get(label)
+      groups.append({
+         # "label" stays the full, unambiguous name (kept on the map bucket
+         # for tooltips/selection); "mark" is the compact tail shown in the
+         # sidebar under the "Conveyor Belts"/"Pipes" group. category/subcategory
+         # place the group in the build-menu tree (see buildBuildingCategorySections).
+         "label": label,
+         "mark": match.group(0) if match else label,
+         "typePath": representativeTypePath,
+         "category": categorizeTypePath(representativeTypePath) if representativeTypePath else OTHER_CATEGORY,
+         "subcategory": categorizeSubcategory(None, representativeTypePath) if representativeTypePath else None,
+         "polylines": byLabel[label]["polylines"],
+         "ids": byLabel[label]["ids"],
+         "pointStride": 7,
+      })
+   groups.sort(key=lambda group: group["mark"])
+   return groups
 
 def collectPowerLines(levels) -> dict:
    # Mirrors sav_to_html.py's wireLines logic (lines 251-252, 344-349): each
@@ -1306,6 +1379,97 @@ def listSearchableItems() -> list:
    items.sort(key=lambda entry: entry["label"])
    return items
 
+def aggregateSelectionInventory(saveIndex: dict, instanceNames: list) -> list:
+   # Sums everything held across the given selected instances (the
+   # rectangle-selection "total inventory" -- see the frontend's
+   # selection.js): building/player inventories, plus belt in-transit items
+   # and pipe fluid. Instances with no object (lightweight foundations/walls,
+   # resource nodes, etc.) or nothing stored simply contribute nothing.
+   # Returns [{"item":, "label":, "count":, "isFluid":}, ...] sorted by count
+   # descending. Solids are keyed/summed by short class name; fluids are
+   # merged by readable label (so the same fluid from a tank inventory and a
+   # pipe lands on one row) and all carry raw 1000x-m3 amounts until the final
+   # /1000 -- see _inventoryContents / the mFluidBox unit.
+   objects = saveIndex["objects"]
+   pipeNetworkIdToFluid = saveIndex.get("pipeNetworkIdToFluid", {})
+   solidCountByShortName: dict[str, float] = {}
+   fluidRawByLabel: dict[str, float] = {}
+
+   def addItem(shortName, amount):
+      if _isFluidItemPath(shortName):
+         label = readableLabel(shortName)
+         fluidRawByLabel[label] = fluidRawByLabel.get(label, 0) + amount
+      else:
+         solidCountByShortName[shortName] = solidCountByShortName.get(shortName, 0) + amount
+
+   seenInstances = set() # A building can appear once per selection; guard against dupes in the id list.
+   seenChains = set()    # One conveyor chain spans many belt segments -- count its items only once.
+   for instanceName in instanceNames:
+      if instanceName in seenInstances:
+         continue
+      seenInstances.add(instanceName)
+      object = objects.get(instanceName)
+      if object is None:
+         continue
+      properties = object.properties
+
+      # Building/player inventories.
+      for propertyName in INVENTORY_PROPERTY_NAMES:
+         reference = sav_parse.getPropertyValue(properties, propertyName)
+         if reference is None or not hasattr(reference, "pathName"):
+            continue
+         componentObject = objects.get(reference.pathName)
+         if componentObject is None:
+            continue
+         stacks = sav_parse.getPropertyValue(componentObject.properties, "mInventoryStacks")
+         if stacks is None:
+            continue
+         for stack in stacks:
+            item = sav_parse.getPropertyValue(stack[0], "Item")
+            numItems = sav_parse.getPropertyValue(stack[0], "NumItems")
+            if not item or not numItems:
+               continue
+            itemPath = item[0] if isinstance(item, (list, tuple)) else item
+            if itemPath:
+               addItem(itemPath.rsplit(".", 1)[-1], numItems)
+
+      # Belt segments: in-transit items live on a shared FGConveyorChainActor
+      # (one chain spans many segments, so count each chain once). Per-segment
+      # granularity isn't available -- selecting any segment of a chain counts
+      # that whole chain's items -- see collectSplinePaths / describeInstance.
+      chainReference = sav_parse.getPropertyValue(properties, "mConveyorChainActor")
+      if chainReference is not None and getattr(chainReference, "pathName", None) and chainReference.pathName not in seenChains:
+         seenChains.add(chainReference.pathName)
+         chainActor = objects.get(chainReference.pathName)
+         if chainActor is not None and getattr(chainActor, "actorSpecificInfo", None):
+            for chainEntry in chainActor.actorSpecificInfo[2]:
+               itemPath = chainEntry[0]
+               if itemPath:
+                  addItem(itemPath.rsplit(".", 1)[-1], 1)
+
+      # Pipe segments: current fluid amount is a per-segment mFluidBox float
+      # (same 1000x-m3 unit as inventory fluids); its type comes from the
+      # segment's pipe network (see buildSaveIndex's pipeNetworkIdToFluid).
+      fluidAmount = sav_parse.getPropertyValue(properties, "mFluidBox")
+      if fluidAmount:
+         for connectorSuffix in (".PipelineConnection0", ".PipelineConnection1"):
+            connectorObject = objects.get(instanceName + connectorSuffix)
+            if connectorObject is None:
+               continue
+            networkId = sav_parse.getPropertyValue(connectorObject.properties, "mPipeNetworkID")
+            fluidLabel = pipeNetworkIdToFluid.get(networkId)
+            if fluidLabel is not None:
+               fluidRawByLabel[fluidLabel] = fluidRawByLabel.get(fluidLabel, 0) + fluidAmount
+               break
+
+   items = []
+   for (shortName, count) in solidCountByShortName.items():
+      items.append({"item": shortName, "label": readableLabel(shortName), "count": count, "isFluid": False})
+   for (label, raw) in fluidRawByLabel.items():
+      items.append({"item": label, "label": label, "count": round(raw / 1000, 1), "isFluid": True})
+   items.sort(key=lambda entry: entry["count"], reverse=True)
+   return items
+
 def describeInstance(saveIndex: dict, instanceName: str) -> dict:
    # Lightweight buildables (foundations/walls/ramps/beams/decorative pieces)
    # have no real ActorHeader/Object of their own -- see
@@ -1579,12 +1743,31 @@ def collectGameSettings(levels) -> dict:
             }
    return {}
 
+# The single canonical typePath used to place each whole-line kind in the
+# build-menu tree (they render as one merged line bucket, not per-typePath, so
+# they need one representative to look up their category/subcategory).
+_LINE_KIND_TYPEPATH = {
+   "powerLines": "/Game/FactoryGame/Buildable/Factory/PowerLine/Build_PowerLine.Build_PowerLine_C",
+   "railroads": "/Game/FactoryGame/Buildable/Factory/Train/Track/Build_RailroadTrack.Build_RailroadTrack_C",
+   "hypertubes": "/Game/FactoryGame/Buildable/Factory/PipeHyper/Build_PipeHyper.Build_PipeHyper_C",
+   "vehiclePaths": "/Game/FactoryGame/Buildable/Vehicle/VehiclePath/Build_VehiclePath_Universal.Build_VehiclePath_Universal_C",
+}
+
+def _annotateLineKinds(lines: dict) -> dict:
+   for (key, lineData) in lines.items():
+      typePath = _LINE_KIND_TYPEPATH.get(key)
+      lineData["category"] = categorizeTypePath(typePath) if typePath else OTHER_CATEGORY
+      lineData["subcategory"] = categorizeSubcategory(None, typePath) if typePath else None
+   return lines
+
 def buildMapPayload(parsedSave: sav_parse.ParsedSave) -> dict:
    return {
       "mapSize": MAP_SIZE,
       "sessionName": parsedSave.saveFileInfo.sessionName,
       "saveDatetime": parsedSave.saveFileInfo.saveDatetime.strftime("%Y-%m-%d %H:%M:%S"),
       "buildingCategories": collectBuildings(parsedSave.levels),
+      # Build-menu category/subcategory order for the frontend's filter tree.
+      "menuOrder": BUILD_MENU_ORDER,
       "resourceNodes": collectResourceNodes(parsedSave.levels),
       "collectables": collectCollectables(parsedSave.levels),
       "hardDrives": collectHardDrives(parsedSave.levels),
@@ -1594,12 +1777,14 @@ def buildMapPayload(parsedSave: sav_parse.ParsedSave) -> dict:
       "gameSettings": collectGameSettings(parsedSave.levels),
       "itemCatalog": listSearchableItems(),
       "dimensionalDepot": collectDimensionalDepotContents(parsedSave.levels),
-      "lines": {
+      "lines": _annotateLineKinds({
          "powerLines": collectPowerLines(parsedSave.levels),
-         "belts": collectSplinePaths(parsedSave.levels, CONVEYOR_BELT_ONLY_TYPE_PATHS),
-         "pipelines": collectSplinePaths(parsedSave.levels, PIPELINE_SEGMENTS),
          "railroads": collectSplinePaths(parsedSave.levels, RAILROAD_SEGMENTS),
          "hypertubes": collectSplinePaths(parsedSave.levels, HYPERTUBE_SEGMENTS),
          "vehiclePaths": collectSplinePaths(parsedSave.levels, VEHICLE_PATH_SEGMENTS, splinePropertyName="mSplinePoints"),
-      },
+      }),
+      # Belts and pipes are split per mark (Mk.1..Mk.6 / Mk.1-Mk.2) so each is
+      # independently toggleable -- see the frontend's Conveyor Belts/Pipelines groups.
+      "belts": collectSplinePathGroups(parsedSave.levels, CONVEYOR_BELT_ONLY_TYPE_PATHS),
+      "pipes": collectSplinePathGroups(parsedSave.levels, PIPELINE_SEGMENTS),
    }

@@ -88,6 +88,10 @@ var Altitude = {};
       var stride = payload.lines[key].pointStride || 3;
       payload.lines[key].polylines.forEach(function(line) { scanRange(line, stride, current); });
     });
+    (payload.belts || []).concat(payload.pipes || []).forEach(function(group) {
+      var stride = group.pointStride || 7;
+      group.polylines.forEach(function(line) { scanRange(line, stride, current); });
+    });
     if (current.min > current.max) {
       current = { min: 0, max: 0 };
     }

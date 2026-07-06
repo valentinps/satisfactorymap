@@ -247,6 +247,7 @@
         Filters.build(payload);
         Altitude.build(payload);
         FindItem.build(payload);
+        SelectionTool.reset();
         if (pinnedSelection) {
           restorePinnedSelection(pinnedSelection);
         }
@@ -294,10 +295,11 @@
     MapApp.init();
     loadButton.addEventListener("click", loadSelectedSave);
 
-    // "← Change mode" resets server-side mode and returns to the landing page.
-    var changeModeBtn = document.getElementById("changeModeBtn");
-    if (changeModeBtn) {
-      changeModeBtn.addEventListener("click", function() {
+    // The logo/title button doubles as "back to mode selection" -- resets
+    // server-side mode and returns to the landing page.
+    var logoButton = document.getElementById("logoButton");
+    if (logoButton) {
+      logoButton.addEventListener("click", function() {
         fetch("/api/reset-mode", { method: "POST" })
           .then(function() { window.location.href = "/"; })
           .catch(function() { window.location.href = "/"; });
