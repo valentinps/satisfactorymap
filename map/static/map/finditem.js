@@ -6,9 +6,13 @@
 //
 // Item search looks up one item across every inventory in the save (see
 // sav_map_data.findItemLocations / collectItemLocationIndex, queried via
-// /api/find-item) and lists every building that holds it -- names and
-// quantities, most first -- with an optional toggle to highlight (and hide
-// everything else) just those buildings on the map. The Depot button shows
+// /api/find-item) and lists everything that holds it, grouped by building
+// type (one expandable summed row per type, most first -- see
+// buildDisplayGroups/renderGroupedLocations), with an optional toggle to
+// highlight (and hide everything else) just those buildings on the map.
+// Hovering an individual location row -- or a highlighted pin on the map --
+// shows the same full instance tooltip as hovering the machine normally,
+// plus a highlighted "searched item quantity here" line. The Depot button shows
 // sav_map_data.collectDimensionalDepotContents's contents the same way,
 // minus the highlight toggle (the Depot is a single global inventory with no
 // map position of its own).
@@ -221,39 +225,178 @@ var FindItem = {};
     });
   }
 
-  // Real buildings each get their own row (their individual quantity/
-  // location is the useful part). Power Slugs/Somersloops/Mercer Spheres/
-  // Hard Drives still waiting to be collected, and the Dimensional Depot,
-  // are a different case: sav_map_data.findItemLocations returns one entry
-  // *per pickup* (each with count 1, so the map highlight can plot every
-  // one), which reads as hundreds of near-identical "Blue Power Slug: 1"
-  // rows here -- collapsed into a single summed row per label instead.
-  // Distinguished from real buildings by typePath being null (see
-  // findItemLocations -- only static/pseudo locations lack one); grouping
-  // the Dimensional Depot's own single row by label is a harmless no-op
-  // since there's only ever one of it. Every grouped pseudo-location is a
-  // pickup of the searched item itself, so itemPath (the one item this whole
-  // result is for) is the right icon for all of them.
-  function groupLocationsForDisplay(locations, itemPath) {
-    var buildingRows = [];
-    var groupedTotals = {};
-    var groupedOrder = [];
+  // ---- Grouped item-location list (the item search modal's body) ----------
+  //
+  // One group per location label -- i.e. per building type ("Storage
+  // Container", "Smelter", ...), and likewise per pickup kind ("Blue Power
+  // Slug", "Dropped on the ground") and the Dimensional Depot. A save can
+  // easily hold thousands of machines all containing the searched item;
+  // one row per machine made the list unreadable AND slow (thousands of DOM
+  // rows + icons built up front), so the list shows one summed row per type
+  // and expands to the individual locations on demand -- and even then only
+  // GROUP_CHUNK_SIZE children at a time, so expanding a 5000-machine group
+  // never builds 5000 rows in one go.
+  var GROUP_CHUNK_SIZE = 150;
+
+  var CHEVRON_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14">' +
+    '<polyline points="9 6 15 12 9 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '</svg>';
+
+  function buildDisplayGroups(locations, itemPath) {
+    var groupsByLabel = {};
+    var groups = [];
     locations.forEach(function(loc) {
-      if (loc.typePath) {
-        buildingRows.push({ label: loc.label, count: loc.count, iconKind: "building", iconClassName: loc.typePath });
+      var group = groupsByLabel[loc.label];
+      if (!group) {
+        group = groupsByLabel[loc.label] = { label: loc.label, iconKind: "item", iconClassName: itemPath, totalCount: 0, locations: [] };
+        groups.push(group);
+      }
+      // A group's icon: the building's own icon when this is a real placed
+      // building; the searched item's icon otherwise -- uncollected pickups
+      // and the Dimensional Depot aren't buildings (typePath null, see
+      // findItemLocations), and "Dropped on the ground" stacks are the item
+      // itself lying loose, even when a live pickup actor carries them.
+      // Grouping purely by label also merges live drops (typePath set) and
+      // catalog-only drops (typePath null) into the one "Dropped on the
+      // ground" group instead of two identically-named rows.
+      if (loc.typePath && group.iconKind !== "building" && loc.label !== "Dropped on the ground") {
+        group.iconKind = "building";
+        group.iconClassName = loc.typePath;
+      }
+      group.totalCount += loc.count;
+      group.locations.push(loc);
+    });
+    // Each group's own location list arrives already sorted by count
+    // descending (findItemLocations sorts server-side); only the groups
+    // themselves need ordering here.
+    groups.sort(function(a, b) { return b.totalCount - a.totalCount; });
+    return groups;
+  }
+
+  // Hovering an individual location row shows the exact same full tooltip
+  // as hovering that machine's pin on the map -- rich /api/instance detail
+  // for real buildings, plain position info for static pickups (no live
+  // actor to describe) -- with the searched item's quantity as the
+  // highlighted callout line (see tooltip.js's showFloating/renderSpec).
+  // The Dimensional Depot row has no position at all -- nothing to show.
+  function attachLocationHover(row, loc, unit, itemLabel) {
+    if (!loc.position) {
+      return;
+    }
+    function show(e) {
+      Tooltip.showFloating(e.clientX, e.clientY, {
+        key: "find-row:" + loc.instanceName,
+        title: loc.label,
+        staticRows: [],
+        z: loc.position[2],
+        worldPosition: loc.worldPosition,
+        extraRows: [[itemLabel + " here", loc.count.toLocaleString() + unit]],
+        instanceName: loc.typePath ? loc.instanceName : null,
+      });
+    }
+    row.addEventListener("mouseenter", show);
+    row.addEventListener("mousemove", show); // Same key -- renderSpec just repositions, no re-render/refetch.
+    row.addEventListener("mouseleave", function() { Tooltip.hide(); });
+  }
+
+  // In-game map coordinates (the same /100-scaled values the tooltip's copy
+  // button produces) plus altitude -- every machine in an expanded group is
+  // the same building type by construction, so its position is the only
+  // thing that tells the rows apart.
+  function locationChildLabel(loc) {
+    if (!loc.worldPosition) {
+      return loc.label;
+    }
+    var text = Math.round(loc.worldPosition[0] / 100).toLocaleString() + ", " + Math.round(loc.worldPosition[1] / 100).toLocaleString();
+    if (loc.position) {
+      text += "  ·  " + Math.round(loc.position[2]) + " m";
+    }
+    return text;
+  }
+
+  function groupIcon(group) {
+    var img = document.createElement("img");
+    img.className = "itemLocationIcon";
+    img.alt = "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    if (group.label === "Dimensional Depot") {
+      img.src = DEPOT_ICON_URL; // Neither an item nor a building -- no catalog icon to look up.
+    } else {
+      attachIconWithFallback(img, group.iconKind, group.iconClassName);
+    }
+    return img;
+  }
+
+  function childLocationRow(loc, unit, itemLabel) {
+    var row = el("div", "itemLocationRow itemLocationChildRow");
+    row.appendChild(el("span", "itemLocationLabel", locationChildLabel(loc)));
+    row.appendChild(el("span", "itemLocationCount", loc.count.toLocaleString() + unit));
+    attachLocationHover(row, loc, unit, itemLabel);
+    return row;
+  }
+
+  function renderGroupedLocations(container, groups, unit, itemLabel) {
+    container.innerHTML = "";
+    groups.forEach(function(group) {
+      if (group.locations.length === 1) {
+        var row = el("div", "itemLocationRow");
+        row.appendChild(groupIcon(group));
+        row.appendChild(el("span", "itemLocationLabel", group.label));
+        row.appendChild(el("span", "itemLocationCount", group.totalCount.toLocaleString() + unit));
+        attachLocationHover(row, group.locations[0], unit, itemLabel);
+        container.appendChild(row);
         return;
       }
-      if (!groupedTotals.hasOwnProperty(loc.label)) {
-        groupedTotals[loc.label] = 0;
-        groupedOrder.push(loc.label);
+
+      var header = el("div", "itemLocationRow itemLocationGroupHeader");
+      var chevron = el("span", "itemLocationChevron");
+      chevron.innerHTML = CHEVRON_SVG;
+      header.appendChild(chevron);
+      header.appendChild(groupIcon(group));
+      header.appendChild(el("span", "itemLocationLabel", group.label));
+      header.appendChild(el("span", "itemLocationGroupBadge", "× " + group.locations.length.toLocaleString()));
+      header.appendChild(el("span", "itemLocationCount", group.totalCount.toLocaleString() + unit));
+      container.appendChild(header);
+
+      var childrenWrap = el("div", "itemLocationChildren");
+      childrenWrap.style.display = "none";
+      container.appendChild(childrenWrap);
+
+      // Children are built lazily on first expand, GROUP_CHUNK_SIZE at a
+      // time -- a collapsed group costs two DOM nodes no matter whether it
+      // holds 2 machines or 5000.
+      var rendered = 0;
+      var showMore = null;
+      function renderChunk() {
+        if (showMore) {
+          childrenWrap.removeChild(showMore);
+          showMore = null;
+        }
+        var end = Math.min(rendered + GROUP_CHUNK_SIZE, group.locations.length);
+        for (; rendered < end; rendered++) {
+          childrenWrap.appendChild(childLocationRow(group.locations[rendered], unit, itemLabel));
+        }
+        var remaining = group.locations.length - rendered;
+        if (remaining > 0) {
+          showMore = el("button", "itemLocationShowMore",
+            "Show " + Math.min(GROUP_CHUNK_SIZE, remaining).toLocaleString() + " more (" + remaining.toLocaleString() + " remaining)");
+          showMore.type = "button";
+          showMore.addEventListener("click", renderChunk);
+          childrenWrap.appendChild(showMore);
+        }
       }
-      groupedTotals[loc.label] += loc.count;
+
+      header.addEventListener("click", function() {
+        var expand = childrenWrap.style.display === "none";
+        if (expand && rendered === 0) {
+          renderChunk();
+        }
+        childrenWrap.style.display = expand ? "block" : "none";
+        header.classList.toggle("expanded", expand);
+      });
     });
-    var rows = buildingRows.concat(groupedOrder.map(function(label) {
-      return { label: label, count: groupedTotals[label], iconKind: "item", iconClassName: itemPath };
-    }));
-    rows.sort(function(a, b) { return b.count - a.count; });
-    return rows;
   }
 
   // Removes the temporary highlight bucket (if any -- only the item-search
@@ -336,15 +479,31 @@ var FindItem = {};
       pointStride: 3,
       points: new Float32Array(points),
       ids: ids,
+      // Real buildings get the complete /api/instance detail tooltip
+      // (recipe, inventory, power, ... -- exactly what hovering the same
+      // building outside of a search shows) via tooltipServerId; static
+      // pickups (uncollected slugs, catalog-only drops -- no live actor in
+      // the save to describe, see sav_map_data._collectStaticItemLocations)
+      // keep the plain static tooltip. Both carry the searched item's
+      // quantity as the highlighted callout line (tooltipExtraRows), shown
+      // even while the rich detail is still loading.
       tooltipKind: "static",
       tooltipInfo: function(index) {
         var loc = byInstance[ids[index]];
-        var unit = result.isFluid ? " m³" : "";
         return {
           title: loc.label,
-          rows: [["Item", result.label], ["Quantity here", loc.count + unit]],
+          rows: [],
           position: loc.worldPosition,
         };
+      },
+      tooltipServerId: function(index) {
+        var loc = byInstance[ids[index]];
+        return loc.typePath ? loc.instanceName : null;
+      },
+      tooltipExtraRows: function(index) {
+        var loc = byInstance[ids[index]];
+        var unit = result.isFluid ? " m³" : "";
+        return [[result.label + " here", loc.count.toLocaleString() + unit]];
       },
       iconUrl: HIGHLIGHT_ICON_URL,
       iconOpacity: 1,
@@ -395,6 +554,7 @@ var FindItem = {};
   // there's nothing to keep, so lastResult is dropped.
   function closeItemModal() {
     overlay.style.display = "none";
+    Tooltip.hide(); // A row-hover tooltip (see attachLocationHover) shouldn't outlive the list it belongs to.
     if (highlighting) {
       banner.style.display = "flex";
     } else {
@@ -409,6 +569,11 @@ var FindItem = {};
       closeItemModal(); // Click on the backdrop, not the dialog itself.
     }
   });
+  // Wheel-scrolling the list slides a different row under the (unmoved)
+  // cursor without any mouseleave/mouseenter firing -- drop the tooltip
+  // rather than leave it showing a row that's no longer under the pointer;
+  // the next real mousemove re-shows the right one.
+  modalList.addEventListener("scroll", function() { Tooltip.hide(); }, { passive: true });
 
   // Fills the modal's title/summary/list from a search result WITHOUT
   // touching the highlight -- so it's reusable both for a fresh search
@@ -424,11 +589,13 @@ var FindItem = {};
       modalHighlightToggle.style.display = "none";
       return;
     }
-    modalSummary.textContent = result.totalCount.toLocaleString() + unit +
-      " across " + result.locations.length.toLocaleString() + " location" + (result.locations.length === 1 ? "" : "s") + ".";
-    renderLocationList(modalList, groupLocationsForDisplay(result.locations, result.itemPath).map(function(row) {
-      return [row.label, row.count.toLocaleString() + unit, row.iconKind, row.iconClassName];
-    }));
+    var groups = buildDisplayGroups(result.locations, result.itemPath);
+    var locationsText = result.locations.length.toLocaleString() + " location" + (result.locations.length === 1 ? "" : "s");
+    if (groups.length > 1 && groups.length !== result.locations.length) {
+      locationsText += " (" + groups.length + " types)";
+    }
+    modalSummary.textContent = result.totalCount.toLocaleString() + unit + " across " + locationsText + ".";
+    renderGroupedLocations(modalList, groups, unit, result.label);
     var hasPlottable = result.locations.some(function(loc) { return loc.position; });
     modalHighlightToggle.style.display = hasPlottable ? "block" : "none";
   }

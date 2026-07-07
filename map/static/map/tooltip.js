@@ -182,14 +182,42 @@ var Tooltip = {};
     return section;
   }
 
+  // The find-item highlight's "N of the searched item are in here" callout
+  // (see finditem.js) -- visually louder than a normal row so the one number
+  // the user searched for doesn't drown in the full instance detail below.
+  // Rendered directly under the title, before everything else, in every
+  // tooltip state (loading/detail/static/error) so the quantity is readable
+  // even while the rich detail is still being fetched.
+  function highlightSection(extraRows) {
+    if (!extraRows || extraRows.length === 0) {
+      return null;
+    }
+    var section = el("div", "tt-highlight");
+    extraRows.forEach(function(pair) {
+      var r = el("div", "tt-highlight-row");
+      r.appendChild(el("span", "tt-row-label", pair[0]));
+      r.appendChild(el("span", "tt-row-value", String(pair[1])));
+      section.appendChild(r);
+    });
+    return section;
+  }
+
+  function appendHighlight(root, extraRows) {
+    var section = highlightSection(extraRows);
+    if (section) {
+      root.appendChild(section);
+    }
+  }
+
   // "Details" rather than "Production" -- this same generic row list backs
   // resource nodes (Purity/Status), collectables (Status), and hard drives
   // (Status/Requirement), none of which are "production" in any sense, so a
   // fixed section title has to be one that fits all of them rather than the
   // machine-specific one buildDetailContent uses below.
-  function buildStaticContent(title, rows, z, worldPosition) {
+  function buildStaticContent(title, rows, z, worldPosition, extraRows) {
     var root = el("div", "tt-popup");
     root.appendChild(el("div", "tt-title", title));
+    appendHighlight(root, extraRows);
     root.appendChild(positionSection(z, worldPosition && worldPosition[0], worldPosition && worldPosition[1]));
     if (rows.length > 0) {
       var details = el("div", "tt-section");
@@ -200,17 +228,19 @@ var Tooltip = {};
     return root;
   }
 
-  function buildLoadingContent(title, z) {
+  function buildLoadingContent(title, z, extraRows) {
     var root = el("div", "tt-popup");
     root.appendChild(el("div", "tt-title", title));
+    appendHighlight(root, extraRows);
     root.appendChild(positionSection(z));
     root.appendChild(el("div", "tt-loading", "Loading details..."));
     return root;
   }
 
-  function buildErrorContent(title, message, z) {
+  function buildErrorContent(title, message, z, extraRows) {
     var root = el("div", "tt-popup");
     root.appendChild(el("div", "tt-title", title));
+    appendHighlight(root, extraRows);
     root.appendChild(positionSection(z));
     root.appendChild(el("div", "tt-error", message));
     return root;
@@ -231,9 +261,10 @@ var Tooltip = {};
     root.appendChild(section);
   }
 
-  function buildDetailContent(detail, z) {
+  function buildDetailContent(detail, z, extraRows) {
     var root = el("div", "tt-popup");
     root.appendChild(el("div", "tt-title", detail.label || detail.instanceName));
+    appendHighlight(root, extraRows);
     root.appendChild(positionSection(z, detail.position && detail.position[0], detail.position && detail.position[1]));
 
     // Split by topic instead of one blanket "Production" heading -- a
@@ -312,19 +343,80 @@ var Tooltip = {};
     return root;
   }
 
+  // The one tooltip renderer everything funnels through. spec:
+  //   key           -- identity for "same element, just follow the cursor"
+  //                    short-circuiting and for discarding stale fetches.
+  //   title         -- shown immediately (static content, or while loading).
+  //   staticRows    -- [label, value] pairs for the "Details" section when
+  //                    there's no server detail to fetch.
+  //   z, worldPosition -- the Position section (see positionSection).
+  //   extraRows     -- optional highlighted [label, value] callout rows,
+  //                    shown in EVERY state (see highlightSection).
+  //   instanceName  -- when set, fetch /api/instance for the full rich
+  //                    detail (recipe/inventory/power/...); when null the
+  //                    static content above is the whole tooltip.
+  function renderSpec(clientX, clientY, spec) {
+    if (spec.key === currentId) {
+      position(clientX, clientY); // Same element -- just follow the cursor (no-op once pinned).
+      return;
+    }
+    currentId = spec.key;
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      pendingTimer = null;
+    }
+
+    if (!spec.instanceName) {
+      setContent(buildStaticContent(spec.title, spec.staticRows || [], spec.z, spec.worldPosition, spec.extraRows));
+      position(clientX, clientY);
+      return;
+    }
+
+    setContent(buildLoadingContent(spec.title, spec.z, spec.extraRows));
+    position(clientX, clientY);
+
+    var filename = window.MapApp.currentFile;
+    if (!filename) {
+      setContent(buildErrorContent(spec.title, "No save currently loaded.", spec.z, spec.extraRows));
+      return;
+    }
+
+    var requestedId = spec.key;
+    pendingTimer = setTimeout(function() {
+      fetch("/api/instance?file=" + encodeURIComponent(filename) + "&instance=" + encodeURIComponent(spec.instanceName))
+        .then(function(response) { return response.json(); })
+        .then(function(detail) {
+          if (currentId !== requestedId) return; // Hovered/clicked away before this resolved.
+          if (detail.error) {
+            setContent(buildErrorContent(spec.title, detail.error, spec.z, spec.extraRows));
+            return;
+          }
+          setContent(buildDetailContent(detail, spec.z, spec.extraRows));
+          position(clientX, clientY);
+        })
+        .catch(function(error) {
+          if (currentId !== requestedId) return;
+          setContent(buildErrorContent(spec.title, "Failed to load: " + error, spec.z, spec.extraRows));
+        });
+    }, FETCH_DEBOUNCE_MS);
+  }
+
   // Shared by hover (show) and click (pin) -- only the pinned/pointer-events
-  // side effects differ between the two entry points below.
+  // side effects differ between the two entry points below. Adapts a map
+  // hit-test result into a renderSpec spec: "server" buckets fetch their
+  // hit's instance; "static" buckets show tooltipInfo()'s rows, EXCEPT when
+  // the bucket also defines tooltipServerId and it returns an instance for
+  // this particular point -- the find-item highlight bucket (finditem.js's
+  // showHighlight) mixes real buildings (full server detail available) and
+  // static pickups like uncollected slugs (no live actor to describe) in one
+  // bucket, so "static vs server" there is a per-point decision, not a
+  // per-bucket one.
   function renderHit(clientX, clientY, hit) {
     var bucket = hit.bucket;
 
     if (hit.id === currentId) {
-      position(clientX, clientY); // Same element -- just follow the cursor (no-op once pinned).
+      position(clientX, clientY);
       return;
-    }
-    currentId = hit.id;
-    if (pendingTimer) {
-      clearTimeout(pendingTimer);
-      pendingTimer = null;
     }
 
     if (bucket.tooltipKind === "static") {
@@ -335,38 +427,25 @@ var Tooltip = {};
       // entries, where a live /api/instance lookup would fail outright
       // (their actor is actually removed from the save once collected).
       var info = bucket.tooltipInfo(hit.index);
-      setContent(buildStaticContent(info.title, info.rows, hit.z, info.position));
-      position(clientX, clientY);
+      renderSpec(clientX, clientY, {
+        key: hit.id,
+        title: info.title,
+        staticRows: info.rows,
+        z: hit.z,
+        worldPosition: info.position,
+        extraRows: bucket.tooltipExtraRows ? bucket.tooltipExtraRows(hit.index) : null,
+        instanceName: bucket.tooltipServerId ? bucket.tooltipServerId(hit.index) : null,
+      });
       return;
     }
 
-    setContent(buildLoadingContent(bucket.label, hit.z));
-    position(clientX, clientY);
-
-    var filename = window.MapApp.currentFile;
-    if (!filename) {
-      setContent(buildErrorContent(bucket.label, "No save currently loaded.", hit.z));
-      return;
-    }
-
-    var requestedId = hit.id;
-    pendingTimer = setTimeout(function() {
-      fetch("/api/instance?file=" + encodeURIComponent(filename) + "&instance=" + encodeURIComponent(requestedId))
-        .then(function(response) { return response.json(); })
-        .then(function(detail) {
-          if (currentId !== requestedId) return; // Hovered/clicked away before this resolved.
-          if (detail.error) {
-            setContent(buildErrorContent(bucket.label, detail.error, hit.z));
-            return;
-          }
-          setContent(buildDetailContent(detail, hit.z));
-          position(clientX, clientY);
-        })
-        .catch(function(error) {
-          if (currentId !== requestedId) return;
-          setContent(buildErrorContent(bucket.label, "Failed to load: " + error, hit.z));
-        });
-    }, FETCH_DEBOUNCE_MS);
+    renderSpec(clientX, clientY, {
+      key: hit.id,
+      title: bucket.label,
+      z: hit.z,
+      extraRows: bucket.tooltipExtraRows ? bucket.tooltipExtraRows(hit.index) : null,
+      instanceName: hit.id,
+    });
   }
 
   Tooltip.isPinned = function() {
@@ -385,6 +464,7 @@ var Tooltip = {};
     if (tooltipEl) {
       tooltipEl.style.display = "none";
       tooltipEl.style.pointerEvents = "none";
+      tooltipEl.classList.remove("tt-above-modals");
     }
   };
 
@@ -402,7 +482,27 @@ var Tooltip = {};
   // Hover preview -- ignored entirely while a tooltip is pinned (see map.js's
   // mousemove handler, which checks isPinned() before calling this).
   Tooltip.show = function(clientX, clientY, hit) {
+    if (tooltipEl) {
+      tooltipEl.classList.remove("tt-above-modals"); // Back on the map -- drop any leftover over-modal lift (see showFloating).
+    }
     renderHit(clientX, clientY, hit);
+  };
+
+  // Same full tooltip, but anchored to an arbitrary DOM element instead of a
+  // map hit -- used by finditem.js's item-location list so hovering a machine
+  // row shows the exact same rich detail popup as hovering its map pin.
+  // Takes a renderSpec spec directly (see renderSpec for the fields).
+  // "tt-above-modals" lifts the tooltip over the modal overlay (z 1500,
+  // higher than the tooltip's usual 1000, which only ever had to beat the
+  // map); Tooltip.hide() removes it again so map hovers go back under.
+  Tooltip.showFloating = function(clientX, clientY, spec) {
+    var element = ensureElement();
+    element.classList.add("tt-above-modals");
+    element.style.pointerEvents = "none"; // Hover-only -- never interactive like a pinned tooltip.
+    pinned = false;
+    pinnedBucketKey = null;
+    pinnedId = null;
+    renderSpec(clientX, clientY, spec);
   };
 
   // Click-to-pin: freezes the tooltip in place and makes it interactive
@@ -412,7 +512,9 @@ var Tooltip = {};
     pinned = true;
     pinnedBucketKey = hit.bucket.key;
     pinnedId = hit.id;
-    ensureElement().style.pointerEvents = "auto";
+    var element = ensureElement();
+    element.style.pointerEvents = "auto";
+    element.classList.remove("tt-above-modals");
     renderHit(clientX, clientY, hit);
   };
 

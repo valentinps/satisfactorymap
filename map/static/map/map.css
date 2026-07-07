@@ -892,23 +892,30 @@ body.no-category-selected #map {
    contents list (see finditem.js's renderLocationList) -- a scrollable,
    bordered list of label/count rows. */
 .itemLocationList {
-  max-height: 40vh;
+  max-height: 56vh;
   overflow-y: auto;
   margin-bottom: 10px;
   border: 1px solid #3a3a3a;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 .itemLocationRow {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 5px 8px;
+  padding: 8px 12px;
+  font-size: 14px;
   border-bottom: 1px solid #2c2f37;
+  /* Long lists (a big group expanded, the Depot's hundreds of item types)
+     shouldn't pay layout/paint for rows far offscreen -- lets the browser
+     skip them entirely until scrolled near. The intrinsic-size hint keeps
+     the scrollbar length stable while skipped. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 40px;
 }
 
 .itemLocationRow:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .itemLocationRow:last-child {
@@ -919,8 +926,8 @@ body.no-category-selected #map {
    finditem.js's renderLocationList) -- keeps result lists scannable by
    shape, not just by reading every label. */
 .itemLocationIcon {
-  width: 20px;
-  height: 20px;
+  width: 26px;
+  height: 26px;
   flex: none;
   object-fit: contain;
 }
@@ -936,8 +943,84 @@ body.no-category-selected #map {
 
 .itemLocationCount {
   color: #8ab4f8;
-  font-weight: 500;
+  font-weight: 600;
+  font-size: 14px;
   flex: none;
+}
+
+/* ---- Grouped item-location list (see finditem.js's
+   renderGroupedLocations) -- one expandable header row per building type,
+   individual machines as indented child rows underneath. */
+.itemLocationGroupHeader {
+  cursor: pointer;
+  user-select: none;
+}
+
+.itemLocationGroupHeader:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.itemLocationChevron {
+  flex: none;
+  display: inline-flex;
+  color: #7a8190;
+  line-height: 0;
+}
+
+.itemLocationChevron svg {
+  transition: transform 0.12s ease-out;
+}
+
+.itemLocationGroupHeader.expanded .itemLocationChevron svg {
+  transform: rotate(90deg);
+}
+
+/* "× 1,234" -- how many individual machines this summed row stands for. */
+.itemLocationGroupBadge {
+  flex: none;
+  background: #262a31;
+  border: 1px solid #333844;
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 12px;
+  color: #9aa0ab;
+}
+
+.itemLocationChildren {
+  background: rgba(0, 0, 0, 0.18);
+  border-bottom: 1px solid #2c2f37;
+}
+
+/* Child rows show only position + count (the type is the header's job);
+   the extra left padding indents them under the header's label column. */
+.itemLocationChildRow {
+  padding-left: 48px;
+  font-size: 13px;
+}
+
+.itemLocationChildRow .itemLocationLabel {
+  color: #a7adb8;
+  font-family: "Consolas", "SF Mono", monospace;
+  font-size: 12.5px;
+}
+
+.itemLocationShowMore {
+  display: block;
+  width: 100%;
+  padding: 7px 0 7px 48px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid #2c2f37;
+  color: #8ab4f8;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.itemLocationShowMore:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #aecbfa;
 }
 
 /* ---- Item search / Dimensional Depot results modal -- a single shared
@@ -958,9 +1041,9 @@ body.no-category-selected #map {
 }
 
 #itemModal, #selectionModal {
-  width: 480px;
-  max-width: 90vw;
-  max-height: 80vh;
+  width: 640px;
+  max-width: 92vw;
+  max-height: 86vh;
   background: var(--surface-2);
   border: 1px solid var(--border-popup);
   border-radius: 12px;
@@ -992,8 +1075,8 @@ body.no-category-selected #map {
 /* Same framed-icon treatment as #buildingModalIcon, one size down -- the
    item modal's list rows are denser than the building modal's stat tiles. */
 #itemModalIcon {
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   flex: none;
   object-fit: contain;
   background: var(--inset);
@@ -1005,7 +1088,7 @@ body.no-category-selected #map {
 
 #itemModalTitle, #selectionModalTitle {
   font-weight: bold;
-  font-size: 17px;
+  font-size: 19px;
   color: #fff;
   flex: 1 1 auto;
   min-width: 0;
@@ -1030,6 +1113,7 @@ body.no-category-selected #map {
 
 #itemModalSummary, #selectionModalSummary {
   color: #bbb;
+  font-size: 14px;
   margin-bottom: 8px;
   flex: none;
 }
@@ -1060,9 +1144,9 @@ body.no-category-selected #map {
    inventory) has a richer shape than an item's plain location list, so it
    gets stat tiles and a small recipe bar chart instead of a single list. */
 #buildingModal {
-  width: 520px;
-  max-width: 90vw;
-  max-height: 82vh;
+  width: 600px;
+  max-width: 92vw;
+  max-height: 86vh;
   background: #20232a;
   border: 1px solid #3a3f4a;
   border-radius: 12px;
@@ -1869,6 +1953,46 @@ body.no-category-selected #map {
   margin-bottom: 8px;
   padding-bottom: 6px;
   border-bottom: 1px solid #3a3f4a;
+}
+
+/* Lifts the tooltip over the modal overlay (z 1500) when shown from a
+   modal's location list (see tooltip.js's Tooltip.showFloating) -- the
+   default 1000 only ever had to beat the map. Still under #contextMenu
+   (1700). */
+#tt-tooltip.tt-above-modals {
+  z-index: 1600;
+}
+
+/* The find-item "quantity in here" callout (see tooltip.js's
+   highlightSection) -- the one number the search was about, so it's louder
+   than every other row: the highlight bucket's pink, tinted background,
+   larger text. */
+.tt-highlight {
+  margin-top: 8px;
+}
+
+.tt-highlight-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255, 59, 129, 0.13);
+  border: 1px solid rgba(255, 59, 129, 0.4);
+  border-radius: 6px;
+  padding: 5px 9px;
+  margin-top: 4px;
+  font-size: 13.5px;
+}
+
+.tt-highlight-row .tt-row-label {
+  color: #ff9ec2;
+  font-weight: 600;
+}
+
+.tt-highlight-row .tt-row-value {
+  color: #fff;
+  font-weight: 700;
+  font-size: 14.5px;
 }
 
 .tt-row {
