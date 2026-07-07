@@ -319,7 +319,17 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   font-size: 13px;
 }
 
-#depotIconButton {
+/* The top bar's per-save status buttons (Dimensional Depot + the progression
+   views -- see index.html's #topBarStatusButtons). Each shows a real game
+   icon extracted by docs/copy_icons.py. */
+#topBarStatusButtons {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.topIconButton {
   flex: none;
   width: 40px;
   height: 40px;
@@ -332,9 +342,15 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   cursor: pointer;
 }
 
-#depotIconButton:hover {
+.topIconButton:hover {
   background: var(--raised-hover);
   border-color: var(--border-hover);
+}
+
+.topIconButton img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
 }
 
 #map {
@@ -927,7 +943,7 @@ body.no-category-selected #map {
 /* ---- Item search / Dimensional Depot results modal -- a single shared
    dialog (see finditem.js's openModal), centered over the map, used for
    both the search bar's results and the depot-icon button's contents. */
-#itemModalOverlay, #selectionModalOverlay, #buildingModalOverlay {
+#itemModalOverlay, #selectionModalOverlay, #buildingModalOverlay, #progressionModalOverlay {
   position: absolute;
   top: 0;
   left: 0;
@@ -1977,4 +1993,340 @@ body.no-category-selected #map {
   line-height: 1.4;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+/* ---- Progression modal (see progression.js) -- the shared dialog behind
+   the top bar's MAM / alternate recipes / AWESOME Shop / HUB milestones /
+   Space Elevator buttons. Same overlay as #itemModal (selector above);
+   the dialog itself is a bit wider and its body is one scroll area of
+   sections instead of a single flat list. */
+#progressionModal {
+  width: 540px;
+  max-width: 92vw;
+  max-height: 84vh;
+  background: var(--surface-2);
+  border: 1px solid var(--border-popup);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  padding: 16px 18px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  transform: scale(0.96);
+  opacity: 0;
+  animation: buildingModalIn 0.16s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #progressionModal { animation: none; transform: none; opacity: 1; }
+}
+
+#progressionModalHeader {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-popup);
+  flex: none;
+}
+
+#progressionModalIcon {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  object-fit: contain;
+  background: var(--inset);
+  border: 1px solid #2c2f37;
+  border-radius: 8px;
+  padding: 4px;
+  box-sizing: border-box;
+}
+
+#progressionModalTitle {
+  font-weight: bold;
+  font-size: 17px;
+  color: #fff;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#progressionModalClose {
+  background: none;
+  border: none;
+  color: #999;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+#progressionModalClose:hover {
+  color: #fff;
+}
+
+#progressionModalSummary {
+  color: #bbb;
+  margin-bottom: 8px;
+  flex: none;
+}
+
+#progressionModalBody {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.progressionSection {
+  margin-bottom: 12px;
+  /* Some views hold 500+ rows across their sections; skip layout/paint for
+     the offscreen ones or scrolling the modal visibly stutters. The
+     intrinsic-size fallback only matters before a section's real size has
+     been measured once. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
+.progressionSectionHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.progressionSectionTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: #eee;
+}
+
+/* Small "n / total" tally on a section header; turns green when complete. */
+.progressionSectionCount {
+  font-size: 12px;
+  color: #8a919e;
+  flex: none;
+  margin-left: auto;
+}
+
+.progressionSectionCount.complete {
+  color: #7fd18b;
+}
+
+/* e.g. the MAM's "not discovered yet" tag on a research tree the save has
+   never unlocked (tree header still listed so the gap is visible). */
+.progressionSectionTag {
+  font-size: 11px;
+  color: #b48a5a;
+  border: 1px solid #4a3b28;
+  background: rgba(180, 138, 90, 0.12);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+/* Thin per-section completion bar under the header. */
+.progressionBarTrack {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--inset);
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.progressionBarFill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.progressionBarFill.complete {
+  background: #58a565;
+}
+
+.progressionList {
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+}
+
+/* A row stacks its always-visible main line over an optional expandable
+   cost list (see .progressionCostList), so the row itself is a column and
+   .progressionRowMain is the flex line the icon/label/status sit on. */
+.progressionRow {
+  display: flex;
+  flex-direction: column;
+  padding: 5px 8px;
+  border-bottom: 1px solid #2c2f37;
+}
+
+.progressionRowMain {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.progressionRow:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.progressionRow:last-child {
+  border-bottom: none;
+}
+
+/* Entries the save hasn't unlocked/purchased yet -- kept in the list (seeing
+   what's missing is the point of a progression view) but visibly dimmed. */
+.progressionRow.locked {
+  opacity: 0.45;
+}
+
+.progressionRowIcon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  object-fit: contain;
+}
+
+.progressionRowLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #ddd;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Right-hand side of a row: a green check for done entries, or a short
+   dimmed note (research/coupon cost, "imported x / y") for pending ones.
+   Multi-item costs never render here (they get the expander below); the
+   ellipsis is just a guard so one long single-item label can't overflow. */
+.progressionRowStatus {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #8a919e;
+}
+
+/* "▸ cost" expander on rows whose requirement list is too long to show
+   inline -- unfolds .progressionCostList below the row's main line. */
+.progressionCostToggle {
+  flex: none;
+  background: none;
+  border: 1px solid #3a3f4a;
+  border-radius: 5px;
+  color: #8a919e;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.progressionCostToggle:hover {
+  color: #ddd;
+  border-color: #4a505c;
+}
+
+.progressionCostToggle .chev {
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+
+.progressionCostToggle.open .chev {
+  transform: rotate(90deg);
+}
+
+.progressionCostList {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 6px 0 2px 30px; /* left-aligns with the row label (icon width + gap) */
+}
+
+.progressionCostLine {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: #aab0bb;
+}
+
+.progressionCostIcon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  object-fit: contain;
+}
+
+.progressionCostAmount {
+  flex: none;
+  color: #8ab4f8;
+  font-weight: 500;
+}
+
+.progressionRowStatus.done {
+  color: #7fd18b;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.progressionRowStatus.countValue {
+  color: #8ab4f8;
+  font-weight: 500;
+  font-size: 13px;
+}
+
+/* Space Elevator view: headline phase status + per-part delivery rows with
+   their own mini progress bars. */
+.progressionPhaseBanner {
+  border: 1px solid #3a3f4a;
+  background: var(--inset);
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  color: #ddd;
+}
+
+.progressionPhaseBanner .phaseTitle {
+  font-weight: 600;
+  color: #fff;
+  font-size: 14px;
+}
+
+.progressionPhaseBanner .phaseNote {
+  font-size: 12px;
+  color: #8a919e;
+  margin-top: 2px;
+}
+
+.progressionPhaseBanner.complete {
+  border-color: #3b5a41;
+  background: rgba(88, 165, 101, 0.10);
+}
+
+/* The Space Elevator part rows stack a delivery bar under the label
+   (their main line is a regular .progressionRowMain), so they're taller
+   than plain progression rows. */
+.sePartRow {
+  padding: 7px 8px;
+}
+
+.sePartBarTrack {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--inset);
+  overflow: hidden;
+  margin: 5px 0 1px 30px;
+}
+
+.sePartBarFill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.sePartBarFill.complete {
+  background: #58a565;
 }

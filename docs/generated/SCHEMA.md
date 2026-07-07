@@ -223,3 +223,76 @@ Build-menu placement, keyed by the same `Build_*_C` name as `buildings.json`.
   the script prints a warning and drops it rather than guessing -- don't
   assume every building in `buildings.json` is guaranteed to have a category
   entry here.
+
+## schematics.json
+
+```json
+"Research_Quartz_1_2_C": {
+  "displayName": "Silica",
+  "type": "MAM",
+  "techTier": 3,
+  "menuPriority": 0.0,
+  "cost": [{"item": "Desc_RawQuartz_C", "amount": 20.0}],
+  "researchTree": "Quartz",
+  "unlockRecipes": ["Recipe_Silica_C"]
+}
+```
+
+Every `FGSchematic` in Docs.json -- the static side of everything the save's
+SchematicManager records as "purchased". Consumed by
+`sav_map_data.collectProgression` for the map's progression panels.
+
+- `type` is `mType` with its `EST_` prefix stripped. The values in play:
+  `Milestone` (HUB milestones), `Tutorial` (the six tier-0 HUB Upgrades),
+  `MAM` (research nodes), `Alternate` (hard-drive rewards), `ResourceSink`
+  (AWESOME Shop products), `HardDrive` (one hidden internal node),
+  `Customization`, `Custom`.
+- `cost` is what it costs to purchase (milestone parts, research items, or
+  `Desc_ResourceSinkCoupon_C` for shop products); same shape as a recipe's
+  `ingredients`.
+- `researchTree` (MAM/HardDrive types only) is the folder token from the
+  schematic's own asset path (`.../Research/<Tree>_RS/...`) -- the
+  `BPD_ResearchTree_*` assets themselves aren't in Docs.json, so there are no
+  display names for trees (hand-curated map in sav_map_data.py).
+- `shopCategories` (ResourceSink only) -- `SC_RSS_*_C` shop-tab class names;
+  no display strings exist for these either.
+- `unlockRecipes` / `giveItems` -- what purchasing actually grants:
+  recipes unlocked (`BP_UnlockRecipe_C`) and/or items handed over directly
+  (`BP_UnlockGiveItem_C`, e.g. shop ammo packs -- those are repeatable
+  purchases the save never marks as "purchased"). Other unlock kinds
+  (emotes, tapes, inventory slots, customizer features) aren't extracted.
+- A handful of entries have a literal "Discontinued - " display-name prefix:
+  legacy nodes the game itself never shows.
+
+## gamePhases.json
+
+```json
+"GP_Project_Assembly_Phase_2": {
+  "phaseNumber": 2,
+  "displayName": "Construction Dock",
+  "cost": [{"item": "Desc_SpaceElevatorPart_1_C", "amount": 1000}, ...],
+  "lastTierOfPhase": 6
+}
+```
+
+The Space Elevator / Project Assembly phases. NOT produced by
+`extract_docs_json.py` -- the `FGGamePhase` assets aren't reflected in
+Docs.json at all. Produced by `docs/extract_game_phases.py` from an
+FModel-style JSON export of the game paks (the same extraction dump
+`copy_icons.py` reads, `<Content>/FactoryGame/GamePhases/*.json`):
+
+```
+py docs/extract_game_phases.py [path/to/extraction/.../Content]
+```
+
+- `cost` amounts are BASE values -- the game-mode
+  `mSpacePartsCostMultiplier` (on the save's BP_GameState_C) scales them at
+  load time in `sav_map_data._collectSpaceElevatorState`.
+- `displayName` is hand-written in the extractor (wiki-sourced): the assets
+  only carry a localization-table key, and the string tables (Game.locres)
+  aren't part of the extraction. Phases 0/6/7 (onboarding + the two
+  post-Assembly completion states, no costs) stay `null` -- consumers show
+  "Phase N".
+- `sav_map_data.py` keeps an equivalent hand-written fallback table
+  (`_FALLBACK_GAME_PHASES`, phases 1-5 only) for when this file hasn't been
+  generated; the generated file wins when present.

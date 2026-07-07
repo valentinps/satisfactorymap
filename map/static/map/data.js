@@ -248,6 +248,7 @@
         Filters.build(payload);
         Altitude.build(payload);
         FindItem.build(payload);
+        Progression.build(payload);
         SelectionTool.reset();
         if (pinnedSelection) {
           restorePinnedSelection(pinnedSelection);

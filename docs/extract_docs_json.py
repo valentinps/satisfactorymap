@@ -13,10 +13,13 @@
 # Category rule (kept simple on purpose so new NativeClass groups in future
 # game updates fall into a sane bucket without needing this script to know
 # their name up front):
-#   - NativeClass group is FGSchematic / FGCustomizationRecipe -> skipped
-#     entirely (schematics aren't placeable/holdable; customization recipes
-#     are skins/patterns/swatches, not craftable recipes, and mostly have no
+#   - NativeClass group is FGCustomizationRecipe -> skipped entirely
+#     (skins/patterns/swatches, not craftable recipes, and mostly have no
 #     real mDisplayName anyway).
+#   - NativeClass group is FGSchematic -> schematics.json (milestones, MAM
+#     research nodes, alternate-recipe unlocks, AWESOME Shop products, HUB
+#     tutorial upgrades -- everything the save's SchematicManager records as
+#     "purchased", used by the map's progression panels).
 #   - NativeClass group is FGResourceDescriptor -> resources.json (raw
 #     resources -- ore/fluid/etc -- are their own small, fixed set: only 13
 #     entries total, all with a real mDisplayName/icon. Kept separate from
@@ -50,8 +53,9 @@ from pathlib import Path
 DOCS_JSON_PATH = Path(__file__).parent / "Docs.json"
 OUTPUT_DIR = Path(__file__).parent / "generated"
 
-SKIPPED_NATIVE_CLASS_SUFFIXES = ("FGSchematic'", "FGCustomizationRecipe'")
+SKIPPED_NATIVE_CLASS_SUFFIXES = ("FGCustomizationRecipe'",)
 RECIPE_NATIVE_CLASS_SUFFIX = "FGRecipe'"
+SCHEMATIC_NATIVE_CLASS_SUFFIX = "FGSchematic'"
 RESOURCE_NATIVE_CLASS_SUFFIX = "FGResourceDescriptor'"
 BUILDING_DESCRIPTOR_NATIVE_CLASS_SUFFIX = "FGBuildingDescriptor'"
 
@@ -122,8 +126,11 @@ def loadDocsJson(path: Path) -> list:
 def shortClassNamesFromPathList(raw: str) -> list:
    # Turns a UE array-of-quoted-asset-paths string, e.g.
    # ("/Game/.../Build_Foo.Build_Foo_C","/Script/FactoryGame.FGBar") into
-   # ["Build_Foo_C", "FGBar"].
-   return [path.rsplit(".", 1)[-1] for path in QUOTED_PATH_RE.findall(raw)]
+   # ["Build_Foo_C", "FGBar"]. Some fields (mRecipes, mSubCategories) wrap
+   # each path in a typed reference -- "...BlueprintGeneratedClass'/Game/...
+   # .Build_Foo_C'" -- leaving a trailing apostrophe inside the quotes, so
+   # that's stripped too.
+   return [path.rstrip("'").rsplit(".", 1)[-1] for path in QUOTED_PATH_RE.findall(raw)]
 
 
 def parseItemAmountList(raw: str) -> list:
@@ -183,6 +190,48 @@ def extractRecipe(entry: dict) -> dict:
       "producedIn": shortClassNamesFromPathList(entry.get("mProducedIn", "")),
       "durationSeconds": float(entry["mManufactoringDuration"]) if entry.get("mManufactoringDuration") else None,
    }
+
+
+# e.g. "BlueprintGeneratedClass /Game/FactoryGame/Schematics/Research/Quartz_RS/
+# Research_Quartz_1_2.Research_Quartz_1_2_C" -- the folder token ("Quartz_RS")
+# is the only place a MAM research node records which research tree it belongs
+# to (the BPD_ResearchTree_* assets aren't in Docs.json at all).
+RESEARCH_TREE_PATH_RE = re.compile(r"/Schematics/Research/([A-Za-z0-9]+)_RS/")
+
+
+def extractSchematic(entry: dict) -> dict:
+   schematic = {
+      "displayName": entry.get("mDisplayName", ""),
+      # e.g. "EST_Milestone" -> "Milestone"; the save-side consumer switches
+      # on this to route each purchased schematic into the right panel.
+      "type": (entry.get("mType") or "").removeprefix("EST_"),
+      "techTier": int(entry["mTechTier"]) if entry.get("mTechTier") else 0,
+      "menuPriority": float(entry["mMenuPriority"]) if entry.get("mMenuPriority") else 0.0,
+      "cost": parseItemAmountList(entry.get("mCost", "")),
+   }
+   treeMatch = RESEARCH_TREE_PATH_RE.search(entry.get("FullName", ""))
+   if treeMatch:
+      schematic["researchTree"] = treeMatch.group(1)
+   # AWESOME Shop products carry their shop-tab grouping here (SC_RSS_*_C
+   # classes); those category classes have no Docs.json entry of their own,
+   # so the short ClassName is all there is to key a display label on.
+   shopCategories = shortClassNamesFromPathList(entry.get("mSubCategories", ""))
+   if shopCategories:
+      schematic["shopCategories"] = shopCategories
+   recipes = []
+   giveItems = []
+   for unlock in entry.get("mUnlocks", []):
+      if unlock.get("Class") == "BP_UnlockRecipe_C":
+         recipes.extend(shortClassNamesFromPathList(unlock.get("mRecipes", "")))
+      # Some AWESOME Shop products (ammo packs, one-off item bundles) hand
+      # over items directly instead of unlocking a recipe.
+      elif unlock.get("Class") == "BP_UnlockGiveItem_C":
+         giveItems.extend(parseItemAmountList(unlock.get("mItemsToGive", "")))
+   if recipes:
+      schematic["unlockRecipes"] = recipes
+   if giveItems:
+      schematic["giveItems"] = giveItems
+   return schematic
 
 
 def extractItem(entry: dict) -> dict:
@@ -272,9 +321,16 @@ def extractAll(docsData: list) -> tuple:
    items = {}
    buildings = {}
    resources = {}
+   schematics = {}
    for nativeClassGroup in docsData:
       nativeClassName = nativeClassGroup.get("NativeClass", "")
       if nativeClassName.endswith(SKIPPED_NATIVE_CLASS_SUFFIXES):
+         continue
+      if nativeClassName.endswith(SCHEMATIC_NATIVE_CLASS_SUFFIX):
+         for entry in nativeClassGroup.get("Classes", []):
+            className = entry.get("ClassName")
+            if className and entry.get("mDisplayName"):
+               schematics[className] = extractSchematic(entry)
          continue
       if nativeClassName.endswith(RECIPE_NATIVE_CLASS_SUFFIX):
          for entry in nativeClassGroup.get("Classes", []):
@@ -296,7 +352,7 @@ def extractAll(docsData: list) -> tuple:
             buildings[className] = extractBuilding(entry)
          else:
             items[className] = extractItem(entry)
-   return (recipes, items, buildings, resources)
+   return (recipes, items, buildings, resources, schematics)
 
 
 def writeJson(path: Path, data: dict) -> None:
@@ -309,7 +365,7 @@ def writeJson(path: Path, data: dict) -> None:
 def main() -> None:
    docsPath = Path(sys.argv[1]) if len(sys.argv) > 1 else DOCS_JSON_PATH
    docsData = loadDocsJson(docsPath)
-   recipes, items, buildings, resources = extractAll(docsData)
+   recipes, items, buildings, resources, schematics = extractAll(docsData)
    buildingCategories, buildingIcons = extractBuildingCategoriesAndIcons(docsData, set(buildings.keys()))
    for className, icon in buildingIcons.items():
       buildings[className]["icon"] = icon
@@ -318,7 +374,9 @@ def main() -> None:
    writeJson(OUTPUT_DIR / "buildings.json", buildings)
    writeJson(OUTPUT_DIR / "resources.json", resources)
    writeJson(OUTPUT_DIR / "buildingCategories.json", buildingCategories)
-   print(f"recipes: {len(recipes)}, items: {len(items)}, buildings: {len(buildings)}, resources: {len(resources)}, buildingCategories: {len(buildingCategories)}")
+   writeJson(OUTPUT_DIR / "schematics.json", schematics)
+   print(f"recipes: {len(recipes)}, items: {len(items)}, buildings: {len(buildings)}, resources: {len(resources)}, "
+         f"buildingCategories: {len(buildingCategories)}, schematics: {len(schematics)}")
 
 
 if __name__ == "__main__":

@@ -204,6 +204,10 @@ var FindItem = {};
         var img = document.createElement("img");
         img.className = "itemLocationIcon";
         img.alt = "";
+        // Depot/location lists can run to hundreds of rows -- don't fetch/
+        // decode offscreen icons up front (same reasoning as progression.js).
+        img.loading = "lazy";
+        img.decoding = "async";
         if (pair[0] === "Dimensional Depot") {
           img.src = DEPOT_ICON_URL; // Neither an item nor a building -- no catalog icon to look up.
         } else {
@@ -267,7 +271,11 @@ var FindItem = {};
     }
     highlighting = false;
     if (lastKind === "item") {
-      MapApp.layer.buckets = MapApp.layer.buckets.filter(function(b) { return b.key !== HIGHLIGHT_BUCKET_KEY; });
+      // Must go through the layer's own removal (not a bare `buckets =
+      // buckets.filter(...)` reassignment) so the _sortedBuckets draw cache
+      // is invalidated too -- see map.js's removeBucketByKey; the old
+      // reassignment left the highlight's lens pins ghost-drawn on the map.
+      MapApp.layer.removeBucketByKey(HIGHLIGHT_BUCKET_KEY);
     }
     if (savedVisibility) {
       MapApp.layer.buckets.forEach(function(b) {
@@ -826,7 +834,7 @@ var FindItem = {};
     }
   });
 
-  // Banner "Show all" reverts the filter; "Details" reopens the full list/
+  // Banner "Clear filter" reverts the filter; "Details" reopens the full list/
   // modal for whichever kind is currently isolated (keeping the filter
   // active -- closing that back up returns to the banner).
   bannerClear.addEventListener("click", clearHighlight);
@@ -846,8 +854,13 @@ var FindItem = {};
   depotButton.addEventListener("click", function() {
     var depotItems = window.MapApp.currentDepotItems || [];
     openModal("Dimensional Depot");
-    modalIcon.onerror = null;
-    modalIcon.src = DEPOT_ICON_URL;
+    // Same real game icon as the top-bar button (see index.html's
+    // #topBarStatusButtons); the hand-drawn crate stays as the fallback.
+    modalIcon.onerror = function() {
+      modalIcon.onerror = null;
+      modalIcon.src = DEPOT_ICON_URL;
+    };
+    modalIcon.src = BUILDING_ICON_BASE + "Build_CentralStorage_C.png";
     modalIcon.style.visibility = "visible";
     modalHighlightToggle.style.display = "none";
     if (depotItems.length === 0) {

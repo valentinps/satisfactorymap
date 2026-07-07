@@ -52,6 +52,12 @@ EXTRA_ICON_COPIES = (
    # geyser icon, found by inspecting the extraction directly rather than
    # via any Docs.json field.
    ("/FactoryGame/World/Environment/HotSpring/UI/IconDesc_Geyser_256", "items", "Geyser.png"),
+   # AWESOME Shop / HUB concept icons for the map's top-bar progression
+   # buttons -- like Hard Drives above, neither is an item/building with a
+   # Docs.json descriptor of its own; both paths were found by inspecting the
+   # extraction directly.
+   ("/FactoryGame/Interface/UI/Assets/Shared/TXUI_ShopUpgrade_256", "items", "AwesomeShop.png"),
+   ("/FactoryGame/Buildable/Factory/TradingPost/UI/Hub_512", "items", "Hub.png"),
 )
 
 

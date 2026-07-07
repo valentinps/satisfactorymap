@@ -25,6 +25,7 @@ import sav_data.slug
 import sav_data.somersloop
 import sav_data.mercerSphere
 import sav_data.crashSites
+import sav_data.freeStuff
 import sav_data.readableNames
 
 # Pipeline segment types that carry a "mSplineData" property (see Build_Pipeline_C /
@@ -1022,6 +1023,119 @@ def collectCollectables(levels) -> dict:
       "mercerSpheres": _splitCollectableKind(levels, sav_data.mercerSphere.MERCER_SPHERES, _positionFromDetailedEntry),
    }
 
+# Items dropped loose on the ground (player-dropped stacks, leaves/wood/etc.
+# already spawned in the world) -- each is its own actor of this one engine
+# class, holding what-and-how-many in an "mPickupItems" property.
+ITEM_PICKUP_TYPE_PATH = "/Script/FactoryGame.FGItemPickup_Spawnable"
+
+_ITEM_ICONS_DIR = os.path.join(_MAP_DIR, "static", "map", "icons", "items")
+
+def _itemIconFilename(itemShortName: str) -> str:
+   # The item's ClassName-keyed icon file under static/map/icons/items/ (see
+   # docs/copy_icons.py), or None if no icon was extracted for it -- the
+   # frontend needs to know up front, because map.js's _drawIconBucket
+   # silently draws nothing at all for an icon URL that 404s, which would
+   # make such a bucket invisible rather than falling back to a plain dot.
+   filename = itemShortName + ".png"
+   return filename if os.path.exists(os.path.join(_ITEM_ICONS_DIR, filename)) else None
+
+def _itemPickupActorInstanceNames(levels) -> set:
+   instanceNames = set()
+   for level in levels:
+      for header in level.actorAndComponentObjectHeaders:
+         if isinstance(header, sav_parse.ActorHeader) and header.typePath == ITEM_PICKUP_TYPE_PATH:
+            instanceNames.add(header.instanceName)
+   return instanceNames
+
+def _uncollectedCatalogDrops(levels) -> list:
+   # sav_data.freeStuff.FREE_DROPPED_ITEMS catalogs every free item stack the
+   # vanilla world spawns (ammo/medkit/equipment caches lying around the map,
+   # exported from a fully-explored fresh save). A given stack only exists as
+   # an actual FGItemPickup_Spawnable actor in a save once its map area has
+   # been generated (visited) -- until then the save has no trace of it, even
+   # though it's perfectly real in-game, so the catalog is what reveals it.
+   # Yields (itemShortName, quantity, position, instanceName) for every
+   # catalog stack that ISN'T live in the save already (visited areas' actors
+   # -- those are picked up by the ordinary save scan, and their live
+   # quantity, which the player may have changed, wins over the catalog's)
+   # and ISN'T recorded as collected (picking a spawned stack up removes its
+   # actor and logs it in the level collectables lists -- checking both
+   # lists' union, same reasoning as _splitCollectableKind).
+   presentActors = _itemPickupActorInstanceNames(levels)
+   catalogInstanceNames = set()
+   for entries in sav_data.freeStuff.FREE_DROPPED_ITEMS.values():
+      for (_, _, instanceName) in entries:
+         catalogInstanceNames.add(instanceName)
+   collectedInstanceNames = set()
+   for level in levels:
+      for collectableList in (level.collectables1, level.collectables2):
+         if collectableList is not None:
+            for collectable in collectableList:
+               if collectable.pathName in catalogInstanceNames:
+                  collectedInstanceNames.add(collectable.pathName)
+
+   drops = []
+   for (itemFullPath, entries) in sav_data.freeStuff.FREE_DROPPED_ITEMS.items():
+      shortName = itemFullPath.rsplit(".", 1)[-1]
+      for (quantity, position, instanceName) in entries:
+         if instanceName not in presentActors and instanceName not in collectedInstanceNames:
+            drops.append((shortName, quantity, position, instanceName))
+   return drops
+
+def collectDroppedItems(levels) -> list:
+   # One bucket per item type lying loose on the ground, mirroring the
+   # points/ids/worldPositions shape of the other static-tooltip collectors
+   # (see collectResourceNodes), plus a parallel "counts" list (stack size
+   # per drop -- a dropped stack of 500 Iron Plates is one actor/point).
+   # Two sources merged: FGItemPickup_Spawnable actors actually in the save
+   # (player-dropped stacks + world spawns in visited areas), and the static
+   # world-spawn catalog for stacks in not-yet-generated areas (see
+   # _uncollectedCatalogDrops, which owns the dedup between the two).
+   # Returns [{"itemPath":, "label":, "icon":, "points":, "ids":, "counts":,
+   # "worldPositions":}, ...] sorted by drop count descending.
+   pickupPositions: dict[str, list] = {}
+   for level in levels:
+      for header in level.actorAndComponentObjectHeaders:
+         if isinstance(header, sav_parse.ActorHeader) and header.typePath == ITEM_PICKUP_TYPE_PATH:
+            pickupPositions[header.instanceName] = header.position
+
+   buckets: dict[str, dict] = {}
+
+   def appendDrop(shortName, position, instanceName, numItems):
+      bucket = buckets.get(shortName)
+      if bucket is None:
+         bucket = {"itemPath": shortName, "label": readableLabel(shortName),
+                   "icon": _itemIconFilename(shortName),
+                   "points": [], "ids": [], "counts": [], "worldPositions": []}
+         buckets[shortName] = bucket
+      (px, py) = projectXY(position)
+      bucket["points"].extend([px, py, worldZToMeters(position[2])])
+      bucket["ids"].append(instanceName)
+      bucket["counts"].append(numItems)
+      # Raw world-space X/Y for the tooltip's Coordinates row/copy button,
+      # same split as collectResourceNodes/_splitCollectableKind.
+      bucket["worldPositions"].extend([position[0], position[1]])
+
+   for level in levels:
+      for object in level.objects:
+         position = pickupPositions.get(object.instanceName)
+         if position is None:
+            continue
+         pickupItems = sav_parse.getPropertyValue(object.properties, "mPickupItems")
+         if pickupItems is None:
+            continue
+         item = sav_parse.getPropertyValue(pickupItems[0], "Item")
+         numItems = sav_parse.getPropertyValue(pickupItems[0], "NumItems")
+         itemPath = item[0] if isinstance(item, (list, tuple)) else item
+         if not itemPath or not numItems: # NumItems 0 = an already-picked-up leftover actor.
+            continue
+         appendDrop(itemPath.rsplit(".", 1)[-1], position, object.instanceName, numItems)
+
+   for (shortName, quantity, position, instanceName) in _uncollectedCatalogDrops(levels):
+      appendDrop(shortName, position, instanceName, quantity)
+
+   return sorted(buckets.values(), key=lambda bucket: (-len(bucket["ids"]), bucket["label"]))
+
 PLAYER_TYPE_PATH = "/Game/FactoryGame/Character/Player/Char_Player.Char_Player_C"
 
 # Of all the wildlife/enemy creatures the save tracks, only the Lizard Doggo
@@ -1117,6 +1231,380 @@ def collectDimensionalDepotContents(levels) -> list:
       items.append({"itemPath": shortName, "label": readableLabel(shortName), "count": amount})
    items.sort(key=lambda entry: entry["count"], reverse=True)
    return items
+
+# --- Progression (MAM / alternate recipes / AWESOME Shop / HUB milestones /
+# --- Space Elevator) -------------------------------------------------------
+# Everything the game calls "unlocked" -- HUB milestones, MAM research nodes,
+# alternate recipes from hard drives, AWESOME Shop purchases -- is one flat
+# list of purchased FGSchematic references on the save's single
+# SchematicManager actor. docs/generated/schematics.json (see
+# extract_docs_json.py) provides the static side: display names, which panel
+# each schematic belongs to (its mType), tech tiers, coupon costs, research
+# trees, and which recipes it unlocks.
+_SCHEMATICS_JSON = _loadJsonFile(os.path.join(_REPO_ROOT, "docs", "generated", "schematics.json"))
+_RECIPES_JSON = _loadJsonFile(os.path.join(_REPO_ROOT, "docs", "generated", "recipes.json"))
+
+def recipeLabel(recipePathName: str) -> str:
+   # The real in-game recipe display name from docs/generated/recipes.json
+   # (e.g. "Alternate: Caterium Wire"). sav_data.readableNames' curated table
+   # barely covers Recipe_* paths, so going through readableLabel() produces
+   # comma-fied class-name guesses like "Recipe, Alternate, Wire 2" -- kept
+   # only as the fallback (minus its noise prefixes) for recipes Docs.json
+   # doesn't know (mods, removed content).
+   entry = _RECIPES_JSON.get(_shortClassName(recipePathName))
+   if entry and entry.get("displayName"):
+      return entry["displayName"]
+   label = readableLabel(recipePathName)
+   for noisePrefix in ("Recipe, ", "Alternate, "):
+      if label.startswith(noisePrefix):
+         label = label[len(noisePrefix):]
+   return label
+
+# In-game MAM tab names for schematics.json's researchTree tokens (the
+# BPD_ResearchTree_* assets carry the real display names but aren't in
+# Docs.json). Tokens missing here fall back to the raw token. The single-node
+# "HardDrive" tree is the internal machinery behind hard-drive scanning, not
+# a tab the MAM UI shows -- excluded entirely.
+_RESEARCH_TREE_LABELS = {
+   "AlienOrganisms": "Alien Organisms",
+   "AlienTech": "Alien Technology",
+   "Caterium": "Caterium",
+   "Mycelia": "Mycelia",
+   "Nutrients": "Nutrients",
+   "PowerSlugs": "Power Slugs",
+   "Quartz": "Quartz",
+   "Sulfur": "Sulfur",
+   "XMas": "FICSMAS",
+}
+_HIDDEN_RESEARCH_TREES = {"HardDrive"}
+
+SCHEMATIC_MANAGER_TYPE_PATH_SUBSTRING = "BP_SchematicManager_C"
+RESEARCH_MANAGER_TYPE_PATH_SUBSTRING = "BP_ResearchManager_C"
+GAME_PHASE_MANAGER_TYPE_PATH_SUBSTRING = "BP_GamePhaseManager_C"
+SPACE_ELEVATOR_TYPE_PATH = "/Game/FactoryGame/Buildable/Factory/SpaceElevator/Build_SpaceElevator.Build_SpaceElevator_C"
+
+# Space Elevator phase names/costs (static game data). Docs.json doesn't
+# cover the GP_Project_Assembly_Phase_* assets, so the real source is
+# docs/generated/gamePhases.json, generated by docs/extract_game_phases.py
+# from the FModel JSON export of the game's own FGGamePhase assets --
+#   {"GP_Project_Assembly_Phase_1": {"phaseNumber": 1, "displayName": ...,
+#     "cost": [{"item": "Desc_SpaceElevatorPart_1_C", "amount": 50}]}, ...}
+# This hand-written table (sourced from the wiki's 1.0 Project Assembly
+# page, verified identical to the extracted assets) is only the fallback for
+# when the generated file hasn't been produced yet. Costs are BASE amounts --
+# the game-mode mSpacePartsCostMultiplier is applied at collect time.
+_FALLBACK_GAME_PHASES = {
+   "GP_Project_Assembly_Phase_1": {"phaseNumber": 1, "displayName": "Distribution Platform", "cost": [
+      {"item": "Desc_SpaceElevatorPart_1_C", "amount": 50}]},
+   "GP_Project_Assembly_Phase_2": {"phaseNumber": 2, "displayName": "Construction Dock", "cost": [
+      {"item": "Desc_SpaceElevatorPart_1_C", "amount": 1000},
+      {"item": "Desc_SpaceElevatorPart_2_C", "amount": 1000},
+      {"item": "Desc_SpaceElevatorPart_3_C", "amount": 100}]},
+   "GP_Project_Assembly_Phase_3": {"phaseNumber": 3, "displayName": "Main Body", "cost": [
+      {"item": "Desc_SpaceElevatorPart_2_C", "amount": 2500},
+      {"item": "Desc_SpaceElevatorPart_4_C", "amount": 500},
+      {"item": "Desc_SpaceElevatorPart_5_C", "amount": 100}]},
+   "GP_Project_Assembly_Phase_4": {"phaseNumber": 4, "displayName": "Propulsion", "cost": [
+      {"item": "Desc_SpaceElevatorPart_7_C", "amount": 500},
+      {"item": "Desc_SpaceElevatorPart_6_C", "amount": 500},
+      {"item": "Desc_SpaceElevatorPart_8_C", "amount": 250},
+      {"item": "Desc_SpaceElevatorPart_9_C", "amount": 100}]},
+   "GP_Project_Assembly_Phase_5": {"phaseNumber": 5, "displayName": "Assembly", "cost": [
+      {"item": "Desc_SpaceElevatorPart_9_C", "amount": 1000},
+      {"item": "Desc_SpaceElevatorPart_10_C", "amount": 1000},
+      {"item": "Desc_SpaceElevatorPart_12_C", "amount": 256},
+      {"item": "Desc_SpaceElevatorPart_11_C", "amount": 200}]},
+}
+
+def _loadGamePhases() -> dict:
+   generated = _loadJsonFile(os.path.join(_REPO_ROOT, "docs", "generated", "gamePhases.json"))
+   return generated or _FALLBACK_GAME_PHASES
+
+_GAME_PHASES = _loadGamePhases()
+
+# Cases the generic camel-case splitter below gets wrong.
+_SHOP_CATEGORY_LABEL_OVERRIDES = {
+   "SC_RSS_Equipment2_C": "Equipment",
+   # The game's own joke name for its oddities tab -- keep it verbatim
+   # instead of splitting it into "Massage-2 ABb".
+   "SC_RSS_Massage-2ABb_C": "Massage-2ABb",
+}
+
+def _humanizeShopCategory(shortClassName: str) -> str:
+   # "SC_RSS_FoundationMaterials_C" -> "Foundation Materials". The SC_RSS_*
+   # category classes have no Docs.json entry, so their ClassName is the only
+   # label source.
+   override = _SHOP_CATEGORY_LABEL_OVERRIDES.get(shortClassName)
+   if override is not None:
+      return override
+   name = shortClassName
+   if name.startswith("SC_RSS_"):
+      name = name[len("SC_RSS_"):]
+   if name.endswith("_C"):
+      name = name[:-2]
+   return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name)
+
+def _firstRecipeProductItem(schematicEntry: dict):
+   # The first unlocked recipe's first product (or, for shop products that
+   # hand items over directly instead of unlocking a recipe, the first given
+   # item) -- the closest thing a schematic has to a representative
+   # item/building for an icon.
+   for recipeClassName in schematicEntry.get("unlockRecipes", []):
+      recipe = _RECIPES_JSON.get(recipeClassName)
+      if recipe:
+         for product in recipe.get("product", []):
+            return product.get("item")
+   for givenItem in schematicEntry.get("giveItems", []):
+      return givenItem.get("item")
+   return None
+
+def _findObjectByTypePathSubstring(levels, substring: str):
+   for level in levels:
+      for object in level.objects:
+         if substring in object.instanceName:
+            return object
+   # Some managers' instanceName doesn't contain the class token (e.g.
+   # "...PersistentLevel.SchematicManager"), so fall back to matching the
+   # ActorHeader's typePath and resolving that header's instanceName.
+   instanceName = None
+   for level in levels:
+      for header in level.actorAndComponentObjectHeaders:
+         if isinstance(header, sav_parse.ActorHeader) and substring in header.typePath:
+            instanceName = header.instanceName
+            break
+      if instanceName is not None:
+         break
+   if instanceName is None:
+      return None
+   for level in levels:
+      for object in level.objects:
+         if object.instanceName == instanceName:
+            return object
+   return None
+
+def _shortNamesFromObjectReferenceList(references) -> set:
+   shortNames = set()
+   for reference in references or []:
+      pathName = getattr(reference, "pathName", None)
+      if pathName:
+         shortNames.add(pathName.rsplit(".", 1)[-1])
+   return shortNames
+
+def _labeledCost(costEntries) -> list:
+   return [{"item": cost["item"], "label": readableLabel(cost["item"]), "amount": cost["amount"]}
+           for cost in costEntries or []]
+
+def collectProgression(levels) -> dict:
+   # One purchased-schematics pass feeding the four schematic-driven panels
+   # (MAM, alternate recipes, AWESOME Shop, HUB milestones), plus the Space
+   # Elevator/game-phase state. Every panel lists ALL known entries with a
+   # per-entry "done" flag rather than only the unlocked ones -- seeing
+   # what's still missing is half the point of a progression view.
+   schematicManager = _findObjectByTypePathSubstring(levels, SCHEMATIC_MANAGER_TYPE_PATH_SUBSTRING)
+   purchased = set()
+   if schematicManager is not None:
+      purchased = _shortNamesFromObjectReferenceList(
+         sav_parse.getPropertyValue(schematicManager.properties, "mPurchasedSchematics"))
+
+   researchManager = _findObjectByTypePathSubstring(levels, RESEARCH_MANAGER_TYPE_PATH_SUBSTRING)
+   unlockedTrees = set()
+   if researchManager is not None:
+      unlockedTrees = {name.replace("BPD_ResearchTree_", "").replace("_C", "") for name in
+                       _shortNamesFromObjectReferenceList(
+                          sav_parse.getPropertyValue(researchManager.properties, "mUnlockedResearchTrees"))}
+
+   # -- MAM research, grouped by tree ----------------------------------------
+   nodesByTree: dict[str, list] = {}
+   # -- Alternate recipes -----------------------------------------------------
+   alternateRecipes = []
+   # -- AWESOME Shop, grouped by shop tab ------------------------------------
+   shopByCategory: dict[str, list] = {}
+   couponsSpent = 0
+   # -- HUB milestones, grouped by tier (tier 0 = the initial HUB upgrades) --
+   milestonesByTier: dict[int, list] = {}
+
+   for (className, entry) in _SCHEMATICS_JSON.items():
+      schematicType = entry.get("type")
+      done = className in purchased
+      # A handful of legacy research nodes linger in Docs.json with a literal
+      # "Discontinued - " display name; the game itself never shows them.
+      if (entry.get("displayName") or "").startswith("Discontinued"):
+         continue
+      if schematicType == "MAM":
+         tree = entry.get("researchTree")
+         if tree in _HIDDEN_RESEARCH_TREES:
+            continue
+         nodesByTree.setdefault(tree, []).append({
+            "className": className, "label": entry.get("displayName"), "done": done,
+            "cost": _labeledCost(entry.get("cost")),
+            "menuPriority": entry.get("menuPriority", 0.0),
+         })
+      elif schematicType == "Alternate":
+         # Only hard-drive alternates that actually unlock a recipe -- the two
+         # EST_Alternate inventory-slot upgrades aren't recipes.
+         productItem = _firstRecipeProductItem(entry)
+         if not entry.get("unlockRecipes"):
+            continue
+         alternateRecipes.append({
+            "className": className, "label": entry.get("displayName"), "done": done,
+            "techTier": entry.get("techTier", 0), "productItem": productItem,
+         })
+      elif schematicType == "ResourceSink":
+         # Repeatable item bundles (ammo packs, biomass, raw-part bundles --
+         # anything whose only "unlock" is handing items over) can be bought
+         # again and again and are never recorded in mPurchasedSchematics, so
+         # they'd sit at "locked" forever in a progression view. Only actual
+         # one-time unlocks belong here.
+         if entry.get("giveItems") and not entry.get("unlockRecipes"):
+            continue
+         couponCost = 0
+         for cost in entry.get("cost", []):
+            if cost.get("item") == "Desc_ResourceSinkCoupon_C":
+               couponCost = int(cost.get("amount", 0))
+         if done:
+            couponsSpent += couponCost
+         categories = entry.get("shopCategories") or [None]
+         categoryLabel = _humanizeShopCategory(categories[0]) if categories[0] else "Other"
+         shopByCategory.setdefault(categoryLabel, []).append({
+            "className": className, "label": entry.get("displayName"), "done": done,
+            "couponCost": couponCost, "productItem": _firstRecipeProductItem(entry),
+            "menuPriority": entry.get("menuPriority", 0.0),
+         })
+      elif schematicType in ("Milestone", "Tutorial"):
+         tier = entry.get("techTier", 0)
+         milestonesByTier.setdefault(tier, []).append({
+            "className": className, "label": entry.get("displayName"), "done": done,
+            "cost": _labeledCost(entry.get("cost")),
+            "menuPriority": entry.get("menuPriority", 0.0),
+         })
+
+   mamTrees = []
+   for tree in sorted(nodesByTree, key=lambda name: _RESEARCH_TREE_LABELS.get(name, name)):
+      nodes = nodesByTree[tree]
+      nodes.sort(key=lambda node: (node.pop("menuPriority"), node["label"]))
+      mamTrees.append({
+         "tree": tree,
+         "label": _RESEARCH_TREE_LABELS.get(tree, tree),
+         "treeUnlocked": tree in unlockedTrees,
+         "doneCount": sum(1 for node in nodes if node["done"]),
+         "nodes": nodes,
+      })
+
+   alternateRecipes.sort(key=lambda recipe: (recipe["techTier"], recipe["label"]))
+
+   shopCategories = []
+   for categoryLabel in sorted(shopByCategory):
+      entries = shopByCategory[categoryLabel]
+      entries.sort(key=lambda item: (item.pop("menuPriority"), item["label"]))
+      shopCategories.append({
+         "label": categoryLabel,
+         "doneCount": sum(1 for item in entries if item["done"]),
+         "entries": entries,
+      })
+
+   hubTiers = []
+   for tier in sorted(milestonesByTier):
+      milestones = milestonesByTier[tier]
+      milestones.sort(key=lambda milestone: (milestone.pop("menuPriority"), milestone["label"]))
+      hubTiers.append({
+         "tier": tier,
+         "label": "HUB Upgrades" if tier == 0 else f"Tier {tier}",
+         "doneCount": sum(1 for milestone in milestones if milestone["done"]),
+         "milestones": milestones,
+      })
+
+   return {
+      "mamTrees": mamTrees,
+      "alternateRecipes": alternateRecipes,
+      "shopCategories": shopCategories,
+      "couponsSpent": couponsSpent,
+      "hubTiers": hubTiers,
+      "spaceElevator": _collectSpaceElevatorState(levels),
+   }
+
+def _phaseInfo(phaseReference) -> dict:
+   pathName = getattr(phaseReference, "pathName", None)
+   if not pathName:
+      return None
+   assetName = pathName.rsplit(".", 1)[-1]
+   entry = _GAME_PHASES.get(assetName)
+   if entry is not None:
+      return {"assetName": assetName, "phaseNumber": entry.get("phaseNumber"),
+              "name": entry.get("displayName"), "cost": entry.get("cost", [])}
+   numberMatch = re.search(r"Phase_(\d+)$", assetName)
+   return {"assetName": assetName,
+           "phaseNumber": int(numberMatch.group(1)) if numberMatch else None,
+           "name": None, "cost": []}
+
+def _collectSpaceElevatorState(levels) -> dict:
+   spaceElevatorBuilt = False
+   for level in levels:
+      for header in level.actorAndComponentObjectHeaders:
+         if isinstance(header, sav_parse.ActorHeader) and header.typePath == SPACE_ELEVATOR_TYPE_PATH:
+            spaceElevatorBuilt = True
+
+   phaseManager = _findObjectByTypePathSubstring(levels, GAME_PHASE_MANAGER_TYPE_PATH_SUBSTRING)
+   if phaseManager is None:
+      return {"built": spaceElevatorBuilt, "gameCompleted": False, "currentPhase": None,
+              "targetPhase": None, "costMultiplier": 1.0, "targetCost": []}
+
+   properties = phaseManager.properties
+   currentPhase = _phaseInfo(sav_parse.getPropertyValue(properties, "mCurrentGamePhase"))
+   targetPhase = _phaseInfo(sav_parse.getPropertyValue(properties, "mTargetGamePhase"))
+   gameCompleted = bool(sav_parse.getPropertyValue(properties, "mIsGameCompleted"))
+
+   # {itemShortName: amount already delivered toward the TARGET phase}. Items
+   # not yet delivered at all simply don't appear in the list.
+   paidOffByItem: dict[str, int] = {}
+   paidOffCosts = sav_parse.getPropertyValue(properties, "mTargetGamePhasePaidOffCosts") or []
+   for paidOffEntry in paidOffCosts:
+      itemClass = sav_parse.getPropertyValue(paidOffEntry[0], "ItemClass")
+      amount = sav_parse.getPropertyValue(paidOffEntry[0], "Amount")
+      pathName = getattr(itemClass, "pathName", None)
+      if pathName and amount is not None:
+         paidOffByItem[pathName.rsplit(".", 1)[-1]] = amount
+
+   # The "game mode" world-creation setting scaling Space Elevator phase
+   # costs -- lives on BP_GameState_C next to the settings collectGameSettings
+   # reads; absent (like every game-mode property) when left at its 1.0 default.
+   costMultiplier = 1.0
+   for level in levels:
+      for object in level.objects:
+         if GAME_STATE_TYPE_PATH_SUBSTRING in object.instanceName:
+            multiplier = sav_parse.getPropertyValue(object.properties, "mSpacePartsCostMultiplier")
+            if multiplier is not None:
+               costMultiplier = multiplier
+
+   # One row per required part of the target phase (base cost x multiplier),
+   # overlaid with delivered amounts; delivered items the static table doesn't
+   # know about (custom phase data, table gaps) still get their own row.
+   targetCost = []
+   knownItems = set()
+   for cost in (targetPhase or {}).get("cost", []):
+      itemShortName = cost.get("item")
+      knownItems.add(itemShortName)
+      targetCost.append({
+         "item": itemShortName, "label": readableLabel(itemShortName),
+         "required": round(cost.get("amount", 0) * costMultiplier),
+         "imported": paidOffByItem.get(itemShortName, 0),
+      })
+   for (itemShortName, amount) in paidOffByItem.items():
+      if itemShortName not in knownItems:
+         targetCost.append({"item": itemShortName, "label": readableLabel(itemShortName),
+                            "required": None, "imported": amount})
+   if targetPhase is not None:
+      targetPhase = {key: value for (key, value) in targetPhase.items() if key != "cost"}
+   if currentPhase is not None:
+      currentPhase = {key: value for (key, value) in currentPhase.items() if key != "cost"}
+
+   return {
+      "built": spaceElevatorBuilt,
+      "gameCompleted": gameCompleted,
+      "currentPhase": currentPhase,
+      "targetPhase": targetPhase,
+      "costMultiplier": costMultiplier,
+      "targetCost": targetCost,
+   }
 
 def collectHardDrives(levels) -> dict:
    (_, notOpened, openWithDrive, openAndEmpty, dismantled) = sav_to_html.getCrashSiteState(levels)
@@ -1222,6 +1710,22 @@ def _collectStaticItemLocations(levels) -> dict:
 
    hardDrives = collectHardDrives(levels)
    addEntries(HARD_DRIVE_ITEM_SHORT_NAME, "Hard Drive", hardDrives["hasDriveIds"], hardDrives["hasDrive"], hardDrives["hasDriveWorldPositions"])
+
+   # World-spawned free item stacks in not-yet-generated map areas (see
+   # _uncollectedCatalogDrops) -- real in-game, but with no actor in the save
+   # for _collectItemLocationIndex's mPickupItems scan to find. Live actors
+   # are that scan's job, so this only covers the catalog-only remainder --
+   # no double counting. Same label findItemLocations gives live drops.
+   for (shortName, quantity, position, instanceName) in _uncollectedCatalogDrops(levels):
+      (px, py) = projectXY(position)
+      index.setdefault(shortName, []).append({
+         "instanceName": instanceName,
+         "typePath": None,
+         "label": "Dropped on the ground",
+         "count": quantity,
+         "position": [px, py, worldZToMeters(position[2])],
+         "worldPosition": [position[0], position[1]],
+      })
 
    return index
 
@@ -1562,6 +2066,17 @@ def _collectItemLocationIndex(objectsByInstanceName: dict) -> dict:
             if itemPath:
                shortName = itemPath.rsplit(".", 1)[-1]
                countByItem[shortName] = countByItem.get(shortName, 0) + numItems
+      # Items dropped loose on the ground (see collectDroppedItems) hold
+      # theirs in an inline "mPickupItems" struct instead of a referenced
+      # inventory component -- without this they'd be invisible to item search.
+      pickupItems = sav_parse.getPropertyValue(object.properties, "mPickupItems")
+      if pickupItems is not None:
+         item = sav_parse.getPropertyValue(pickupItems[0], "Item")
+         numItems = sav_parse.getPropertyValue(pickupItems[0], "NumItems")
+         itemPath = item[0] if isinstance(item, (list, tuple)) else item
+         if itemPath and numItems:
+            shortName = itemPath.rsplit(".", 1)[-1]
+            countByItem[shortName] = countByItem.get(shortName, 0) + numItems
       for (shortName, count) in countByItem.items():
          index.setdefault(shortName, []).append((instanceName, count))
    return index
@@ -1582,6 +2097,11 @@ def findItemLocations(saveIndex: dict, itemShortName: str) -> dict:
       (px, py) = projectXY(header.position)
       typePath = getattr(header, "typePath", None)
       label = readableLabel(typePath) if typePath else instanceName
+      if typePath == ITEM_PICKUP_TYPE_PATH:
+         # readableLabel's generic fallback would render the engine class as
+         # "FGItem Pickup, Spawnable"-style noise -- what matters to a search
+         # result is that this stack is lying loose on the ground.
+         label = "Dropped on the ground"
       if typePath == PLAYER_TYPE_PATH:
          # readableLabel's generic fallback renders this as the nonsensical
          # "Char, Player" (Char_Player_C isn't in the curated name table) --
@@ -1783,14 +2303,11 @@ def collectBuildingInfo(saveIndex: dict, typePaths: list) -> dict:
          recipePathName = recipe.pathName if recipe is not None and hasattr(recipe, "pathName") and recipe.pathName else None
          if recipePathName is not None:
             hasRecipeCapableInstance = True
-            recipeLabel = readableLabel(recipePathName)
-            for noisePrefix in ("Recipe, ", "Alternate, "):
-               if recipeLabel.startswith(noisePrefix):
-                  recipeLabel = recipeLabel[len(noisePrefix):]
-            if recipeLabel not in recipeCounts:
-               recipeCounts[recipeLabel] = 0
-               recipeOrder.append(recipeLabel)
-            recipeCounts[recipeLabel] += 1
+            recipeName = recipeLabel(recipePathName)
+            if recipeName not in recipeCounts:
+               recipeCounts[recipeName] = 0
+               recipeOrder.append(recipeName)
+            recipeCounts[recipeName] += 1
          elif recipe is not None:
             # A recipe reference exists but couldn't be resolved to a name --
             # treat the same as "no recipe set" rather than dropping the instance.
@@ -1914,14 +2431,7 @@ def describeInstance(saveIndex: dict, instanceName: str) -> dict:
    recipePathName = None
    if recipe is not None and hasattr(recipe, "pathName") and recipe.pathName:
       recipePathName = recipe.pathName
-      # readableLabel() turns "Recipe_Alternate_PureCateriumIngot_C" into
-      # "Recipe, Alternate, Pure Caterium Ingot" -- both prefixes are
-      # redundant once it's already shown under a "Recipe" row.
-      recipeLabel = readableLabel(recipe.pathName)
-      for noisePrefix in ("Recipe, ", "Alternate, "):
-         if recipeLabel.startswith(noisePrefix):
-            recipeLabel = recipeLabel[len(noisePrefix):]
-      result["recipe"] = recipeLabel
+      result["recipe"] = recipeLabel(recipePathName)
 
    # mBuiltWithRecipe is deliberately not surfaced: it's always just
    # "Recipe, <this building's own name>" (e.g. a Conveyor Belt Mk6 was
@@ -2174,10 +2684,14 @@ def buildMapPayload(parsedSave: sav_parse.ParsedSave) -> dict:
       "hardDrives": collectHardDrives(parsedSave.levels),
       "players": collectPlayers(parsedSave.levels),
       "creatures": collectCreatures(parsedSave.levels),
+      "droppedItems": collectDroppedItems(parsedSave.levels),
       "hub": collectHub(parsedSave.levels),
       "gameSettings": collectGameSettings(parsedSave.levels),
       "itemCatalog": listSearchableItems(),
       "dimensionalDepot": collectDimensionalDepotContents(parsedSave.levels),
+      # MAM/alternate-recipe/AWESOME-Shop/HUB-milestone/Space-Elevator
+      # progression -- the top bar's progression buttons (see progression.js).
+      "progression": collectProgression(parsedSave.levels),
       "lines": _annotateLineKinds({
          "powerLines": collectPowerLines(parsedSave.levels),
          "railroads": collectSplinePaths(parsedSave.levels, RAILROAD_SEGMENTS),

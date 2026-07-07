@@ -18,16 +18,34 @@
         <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/>
         <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
       </svg>
-      <input type="text" id="mainSearchInput" placeholder="Search for an item&hellip;" autocomplete="off" spellcheck="false">
+      <input type="text" id="mainSearchInput" placeholder="Search for anything&hellip;" autocomplete="off" spellcheck="false">
       <div id="searchSuggestions" style="display:none"></div>
     </div>
   </div>
-  <button id="depotIconButton" title="Dimensional Depot contents">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22">
-      <path d="M12 3 L20 8 L20 16 L12 21 L4 16 L4 8 Z" fill="none" stroke="#8ab4f8" stroke-width="1.6" stroke-linejoin="round"/>
-      <path d="M12 8 V16 M12 8 L8 6 M12 8 L16 6" stroke="#8ab4f8" stroke-width="1.4" fill="none" stroke-linecap="round"/>
-    </svg>
-  </button>
+  <!-- Per-save status buttons: Dimensional Depot contents (finditem.js) and
+       the progression views -- MAM research, alternate recipes, AWESOME Shop,
+       HUB milestones, Space Elevator (progression.js). All use real game
+       icons extracted by docs/copy_icons.py. -->
+  <div id="topBarStatusButtons">
+    <button id="depotIconButton" class="topIconButton" title="Dimensional Depot contents">
+      <img src="icons/buildings/Build_CentralStorage_C.png" alt="">
+    </button>
+    <button id="mamIconButton" class="topIconButton" title="MAM research">
+      <img src="icons/buildings/Build_Mam_C.png" alt="">
+    </button>
+    <button id="altRecipesIconButton" class="topIconButton" title="Alternate recipes">
+      <img src="icons/items/HardDrive.png" alt="">
+    </button>
+    <button id="shopIconButton" class="topIconButton" title="AWESOME Shop purchases">
+      <img src="icons/items/AwesomeShop.png" alt="">
+    </button>
+    <button id="hubIconButton" class="topIconButton" title="HUB milestones">
+      <img src="icons/items/Hub.png" alt="">
+    </button>
+    <button id="spaceElevatorIconButton" class="topIconButton" title="Space Elevator status">
+      <img src="icons/buildings/Build_SpaceElevator_C.png" alt="">
+    </button>
+  </div>
 </div>
 
 <div id="sidebar">
@@ -112,7 +130,7 @@
   </svg>
   <span id="activeFilterLabel"></span>
   <button id="activeFilterDetails" title="Show the full list again">Details</button>
-  <button id="activeFilterClear" title="Show all layers again">Show all</button>
+  <button id="activeFilterClear" title="Remove this filter and restore every layer that was visible before">Clear filter</button>
 </div>
 
 <div id="itemModalOverlay" style="display:none">
@@ -153,6 +171,23 @@
   </div>
 </div>
 
+<!-- Progression modal (see progression.js) -- one shared dialog for the
+     MAM research / alternate recipes / AWESOME Shop / HUB milestones /
+     Space Elevator top-bar buttons. Sectioned scrollable body instead of
+     #itemModal's flat list, since every progression view groups its rows
+     (by research tree / shop tab / HUB tier). -->
+<div id="progressionModalOverlay" style="display:none">
+  <div id="progressionModal">
+    <div id="progressionModalHeader">
+      <img id="progressionModalIcon" alt="">
+      <span id="progressionModalTitle"></span>
+      <button id="progressionModalClose" title="Close">&times;</button>
+    </div>
+    <div id="progressionModalSummary"></div>
+    <div id="progressionModalBody"></div>
+  </div>
+</div>
+
 <!-- Right-click context menu (see contextmenu.js) -- shown on a plain
      right-click (no drag) over a map object; a real right-drag still opens
      the rectangle selection below instead. -->
@@ -187,6 +222,7 @@
 <script src="altitude.js"></script>
 <script src="tooltip.js"></script>
 <script src="finditem.js"></script>
+<script src="progression.js"></script>
 <script src="selection.js"></script>
 <script src="contextmenu.js"></script>
 <script src="data.js"></script>

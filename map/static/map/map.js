@@ -117,6 +117,17 @@ var MapApp = {};
       this._sortedBuckets = null;
     },
 
+    // The one supported way to remove a single bucket (finditem.js's
+    // temporary highlight bucket). Reassigning `buckets` from outside
+    // instead would leave the removed bucket alive in the _sortedBuckets
+    // draw cache below -- it kept being drawn every frame (ghost pins that
+    // didn't even hit-test, since hitTest walks the live array) until
+    // something else happened to invalidate the cache.
+    removeBucketByKey: function(key) {
+      this.buckets = this.buckets.filter(function(bucket) { return bucket.key !== key; });
+      this._sortedBuckets = null;
+    },
+
     // Point-based buckets (circle/icon/rect) can hold tens to hundreds of
     // thousands of points; without an index, every redraw/hit-test has to
     // walk the *entire* points array just to reject the points outside the

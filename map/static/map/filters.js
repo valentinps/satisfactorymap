@@ -9,9 +9,9 @@
 // Production/Power/Logistics/Special, plus the catch-all Unknown) and their
 // one level of subcategory come straight from docs/generated/buildingCategories.json
 // + docs/categoryLabels.json via payload.menuOrder -- see
-// buildBuildingCategorySections. Resource Nodes, HUB, Entities, and
-// Collectables (which nests Hard Drives alongside Power Slugs/Somersloops/
-// Mercer Spheres) are their own separate sections. renderGroup() supports the
+// buildBuildingCategorySections. Resource Nodes, HUB, Entities, Collectables
+// (which nests Hard Drives alongside Power Slugs/Somersloops/Mercer Spheres),
+// and Dropped Items (loose ground stacks) are their own separate sections. renderGroup() supports the
 // subcategory nesting generically (see its doc comment).
 
 var Filters = {};
@@ -850,6 +850,51 @@ var Filters = {};
     });
   }
 
+  // ---- Dropped / ground items ----------------------------------------------
+
+  // Fallback dot color for the rare dropped item whose ClassName has no
+  // extracted icon PNG (see sav_map_data._itemIconFilename -- entry.icon is
+  // null then, and an icon bucket with a 404ing URL would draw nothing at all).
+  var DROPPED_ITEM_COLOR = "#b57edc";
+
+  // Items lying loose on the ground (player-dropped stacks, harvested
+  // leaves/wood/etc.) -- one row per item type, drawn with the real item
+  // icon. One marker is one dropped stack; the row count is stacks, the
+  // tooltip's Amount row has that stack's item count.
+  function buildDroppedItemsSection(navList, detailPane, payload) {
+    var rows = [];
+    (payload.droppedItems || []).forEach(function(itemEntry) {
+      var count = pointCount(itemEntry.points, 3);
+      if (count === 0) {
+        return;
+      }
+      var url = itemEntry.icon ? ICON_BASE_URL + encodeURIComponent(itemEntry.icon) : null;
+      // worldPositions/counts parallel points/ids (see
+      // sav_map_data.collectDroppedItems) -- static tooltip, everything's
+      // already in the payload.
+      var tooltipInfo = function(index) {
+        var wp = itemEntry.worldPositions;
+        return {
+          title: itemEntry.label,
+          rows: [["Amount", itemEntry.counts[index]], ["Status", "On the ground"]],
+          position: wp ? [wp[index * 2], wp[index * 2 + 1]] : undefined,
+        };
+      };
+      var bucket = url
+        ? makeIconBucket("dropped:" + itemEntry.itemPath, itemEntry.label, DROPPED_ITEM_COLOR,
+            itemEntry.points, itemEntry.ids, "static", tooltipInfo, url, 1)
+        : makePointBucket("dropped:" + itemEntry.itemPath, itemEntry.label, DROPPED_ITEM_COLOR,
+            itemEntry.points, "circle", 3, itemEntry.ids, "static", tooltipInfo);
+      rows.push({ label: itemEntry.label, count: count, color: DROPPED_ITEM_COLOR,
+                  renderType: url ? "icon" : "circle", buckets: [bucket], iconUrl: url });
+    });
+    if (rows.length === 0) {
+      return;
+    }
+    var total = rows.reduce(function(s, r) { return s + r.count; }, 0);
+    renderTopLevelCategory(navList, detailPane, "Dropped Items (" + total + ")", "circle", DROPPED_ITEM_COLOR, rows);
+  }
+
   // ---- HUB ------------------------------------------------------------------
 
   // The HUB is a one-of-a-kind landmark (excluded from collectBuildings --
@@ -1120,6 +1165,7 @@ var Filters = {};
     ["hasDrive", "empty", "dismantled"].forEach(function(key) {
       total += pointCount(payload.hardDrives[key], 3);
     });
+    (payload.droppedItems || []).forEach(function(itemEntry) { total += pointCount(itemEntry.points, 3); });
     Object.keys(payload.lines).forEach(function(key) {
       total += payload.lines[key].polylines.length;
     });
@@ -1147,6 +1193,7 @@ var Filters = {};
     buildHubSection(navList, detailPane, payload);
     buildEntitiesSection(navList, detailPane, payload);
     buildCollectablesSection(navList, detailPane, payload);
+    buildDroppedItemsSection(navList, detailPane, payload);
 
     // Fit the nav panel to the category labels now that they all exist.
     autoSizeNavPanel();
