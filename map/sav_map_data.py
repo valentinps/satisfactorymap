@@ -419,28 +419,26 @@ def _convexHull(points: list) -> list:
       upper.append(p)
    return lower[:-1] + upper[:-1]
 
-def _tiltedFootprintPolygon(rotation, halfExtentsMeters):
-   # The true top-down silhouette of a building's local 3D box after a FULL
-   # rotation (not just yaw) -- see collectBuildings' use of this for why
-   # it's only ever computed for the rare genuinely-tilted instances
-   # (Pillars/Beams bracing a run between two out-of-line snap points). A
-   # rotated box's silhouette is the convex hull of its 8 corners projected
-   # to the XY plane -- generally a hexagon, not a rectangle, for a
-   # genuinely tilted box (a plain axis-aligned bounding box was tried first
-   # and rejected: it can only grow along world X/Y, so it can never point
-   # toward the tilt's actual diagonal direction).
+def _boxSilhouettePolygonPixels(rotation, cornerRangesCm) -> list:
+   # The true top-down silhouette of a local-space box after a FULL rotation
+   # (not just yaw): the convex hull of its 8 corners projected to the XY
+   # plane -- generally a hexagon, not a rectangle, for a genuinely tilted
+   # box (a plain axis-aligned bounding box was tried first and rejected: it
+   # can only grow along world X/Y, so it can never point toward the tilt's
+   # actual diagonal direction). cornerRangesCm is ((minX,maxX), (minY,maxY),
+   # (minZ,maxZ)) in centimeters, deliberately NOT assumed symmetric around
+   # the origin -- adaptive-length Beams' boxes start at the instance's own
+   # position and extend one-way along the beam axis (see
+   # _footprintForInstance).
    # Projected via projectVectorXY (not a bare meters->pixels scale) so this
    # picks up the same Y-axis flip every other world-space vector on the map
    # goes through -- corners are computed directly in centimeters (this
    # project's native world unit) to feed it without a separate conversion.
-   (halfWidthM, halfDepthM, halfHeightM) = halfExtentsMeters
-   (halfWidthCm, halfDepthCm, halfHeightCm) = (
-      halfWidthM * WORLD_UNITS_PER_METER, halfDepthM * WORLD_UNITS_PER_METER, halfHeightM * WORLD_UNITS_PER_METER)
    cornersPixels = []
-   for sx in (-1.0, 1.0):
-      for sy in (-1.0, 1.0):
-         for sz in (-1.0, 1.0):
-            rotated = rotateVectorByQuaternion(rotation, [sx * halfWidthCm, sy * halfDepthCm, sz * halfHeightCm])
+   for cx in cornerRangesCm[0]:
+      for cy in cornerRangesCm[1]:
+         for cz in cornerRangesCm[2]:
+            rotated = rotateVectorByQuaternion(rotation, [cx, cy, cz])
             cornersPixels.append(tuple(projectVectorXY(rotated)))
    hull = _convexHull(cornersPixels)
    flatPolygon = []
@@ -449,12 +447,74 @@ def _tiltedFootprintPolygon(rotation, halfExtentsMeters):
       flatPolygon.append(y)
    return flatPolygon
 
-def _footprintForInstance(typePath: str, rotation, bucketFootprintPixels):
-   # Returns (yaw, tiltedPolygonOrNone) for one placed instance.
-   # tiltedPolygonOrNone is only non-None for the rare genuinely-tilted case,
-   # a flat [x1,y1,x2,y2,...] pixel-offset list (relative to the instance's
+def _tiltedFootprintPolygon(rotation, halfExtentsMeters):
+   # Silhouette of an origin-centered box -- see collectBuildings' use of
+   # this for why it's only ever computed for the rare genuinely-tilted
+   # instances (e.g. Pillars bracing a run between two out-of-line snap
+   # points). Adaptive-length Beams don't come through here -- their box
+   # isn't origin-centered and their length is per-instance (see
+   # _footprintForInstance's beam path).
+   (halfWidthM, halfDepthM, halfHeightM) = halfExtentsMeters
+   (halfWidthCm, halfDepthCm, halfHeightCm) = (
+      halfWidthM * WORLD_UNITS_PER_METER, halfDepthM * WORLD_UNITS_PER_METER, halfHeightM * WORLD_UNITS_PER_METER)
+   return _boxSilhouettePolygonPixels(rotation, (
+      (-halfWidthCm, halfWidthCm), (-halfDepthCm, halfDepthCm), (-halfHeightCm, halfHeightCm)))
+
+def _loadAdaptiveBeamSpecs() -> dict:
+   # ClassName -> (crossHalfACm, crossHalfBCm, defaultLengthCm) for every
+   # buildable placed the way Beams are: a stick of player-chosen length
+   # snapped between two arbitrary points, at any angle. Identified purely by
+   # properties, not by name: an adaptiveLength block carrying both
+   # DefaultLength and MaxLength (belts/pipes/ladders only have
+   # MeshLength/MeshHeight, poles/supports only a placeholder Length, power
+   # lines have MaxLength but no DefaultLength -- none of those are
+   # free-angle sticks). As of 1.1 that's exactly the 8 Build_Beam_* types.
+   # Their clearance box is authored with the length running along Z (0 ->
+   # DefaultLength, NOT origin-centered), but placed instances empirically
+   # extend along local +X (verified against a real save: a yaw-only 33.7
+   # degree "Braided Cable Cluster" of BeamLength 2884 lands exactly
+   # 2400/1600cm away in X/Y), so only the clearance X/Y extents are kept
+   # here, as the beam's cross-section.
+   specs = {}
+   for (className, entry) in _RAW_BUILDINGS_JSON.items():
+      adaptive = entry.get("adaptiveLength") or {}
+      if not adaptive.get("MaxLength") or not adaptive.get("DefaultLength"):
+         continue
+      clearance = entry.get("clearance")
+      if not clearance:
+         continue
+      crossHalfACm = (max(box["max"]["x"] for box in clearance) - min(box["min"]["x"] for box in clearance)) / 2
+      crossHalfBCm = (max(box["max"]["y"] for box in clearance) - min(box["min"]["y"] for box in clearance)) / 2
+      specs[className] = (crossHalfACm, crossHalfBCm, adaptive["DefaultLength"])
+   return specs
+
+_ADAPTIVE_BEAM_SPECS_BY_CLASSNAME = _loadAdaptiveBeamSpecs()
+
+def _footprintForInstance(typePath: str, rotation, bucketFootprintPixels, beamLengthCm=None):
+   # Returns (yaw, polygonOrNone) for one placed instance. polygonOrNone is a
+   # flat [x1,y1,x2,y2,...] pixel-offset list (relative to the instance's
    # own position, already in final rotated orientation -- no further yaw
-   # needed at render time) -- see _tiltedFootprintPolygon's doc comment.
+   # needed at render time) -- see _boxSilhouettePolygonPixels' doc comment.
+   # Two cases produce a polygon:
+   # - Adaptive-length Beams (see _loadAdaptiveBeamSpecs) ALWAYS get one,
+   #   even for a pure-yaw rotation: the bucket's shared footprint rect only
+   #   covers the cross-section at the beam's base, not the per-instance
+   #   player-chosen length, and the beam extends one-way from its position
+   #   (local +X) rather than being centered on it. A horizontal beam's
+   #   rotation maps that +X run into the map plane; a vertical one
+   #   degenerates to the small cross-section quad -- both fall out of the
+   #   same hull.
+   # - Anything else only for the rare genuinely-tilted rotation, where the
+   #   shared axis-aligned rect can't represent the true silhouette.
+   beamSpec = _ADAPTIVE_BEAM_SPECS_BY_CLASSNAME.get(_shortClassName(typePath))
+   if beamSpec is not None:
+      (crossHalfACm, crossHalfBCm, defaultLengthCm) = beamSpec
+      # BeamLength can be missing (pre-lightweight-v2 saves, or a beam that
+      # somehow surfaced as a regular actor) or 0 -- fall back to the
+      # build-gun default rather than collapsing to a zero-length sliver.
+      lengthCm = beamLengthCm if beamLengthCm else defaultLengthCm
+      return (0.0, _boxSilhouettePolygonPixels(rotation, (
+         (0.0, lengthCm), (-crossHalfACm, crossHalfACm), (-crossHalfBCm, crossHalfBCm))))
    if bucketFootprintPixels is None or _tiltIntensity(rotation) <= _TILT_THRESHOLD:
       return (_renderedYaw(rotation), None)
    halfExtents = _footprintHalfExtentsMeters(_shortClassName(typePath))
@@ -481,10 +541,11 @@ def yawFromQuaternion(rotation) -> float:
    return math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
 
 # Buildings that snap between two arbitrary connection points (Pillars in
-# particular, also seen on Beams) can end up with a rotation that ISN'T a
-# pure yaw -- e.g. a pillar segment bracing a diagonal run between two
-# out-of-line points genuinely has pitch/roll baked into its quaternion
-# alongside whatever yaw. yawFromQuaternion still returns *a* number for
+# particular; Beams too, though those never reach here anymore -- every Beam
+# instance takes _footprintForInstance's dedicated polygon path) can end up
+# with a rotation that ISN'T a pure yaw -- e.g. a pillar segment bracing a
+# diagonal run between two out-of-line points genuinely has pitch/roll baked
+# into its quaternion alongside whatever yaw. yawFromQuaternion still returns *a* number for
 # those (atan2 is defined for any input), but it isn't a meaningful top-down
 # angle -- confirmed against a real save: ~25% of one save's ~20800 Concrete
 # Pillar segments carry a non-trivial pitch/roll component, spread across a
@@ -579,18 +640,33 @@ def _findLightweightBuildableGroups(levels):
             return info[1:] # Drop the leading lightweightVersion int.
    return []
 
+def _lightweightBeamLengthCm(lightweightDataProperty):
+   # instance[9] of a lightweight buildable (see _findLightweightBuildableGroups'
+   # layout comment) is a (properties, propertyTypes) pair, present only when
+   # the game attached extra per-instance data -- in practice exactly the
+   # adaptive-length Beams, whose one property is BeamLength (a
+   # FloatProperty, in centimeters, sav_parse tags the payload type
+   # "/Script/FactoryGame.BuildableBeamLightweightData"). None for every
+   # other buildable and for pre-v2 lightweight saves.
+   if not lightweightDataProperty:
+      return None
+   (properties, _propertyTypes) = lightweightDataProperty
+   return sav_parse.getPropertyValue(properties, "BeamLength")
+
 def _newBuildingBucket(typePath: str) -> dict:
    footprint = footprintPixels(typePath)
    return {
       "label": readableLabel(typePath), "points": [], "ids": [], "footprintPixels": footprint,
       # Sparse pointIndex -> flat [x1,y1,x2,y2,...] polygon (pixel offsets
       # from the instance's own position, already in final rotated
-      # orientation), only populated for the rare genuinely-tilted instance
-      # (see _footprintForInstance) whose true top-down silhouette isn't
-      # this bucket's shared axis-aligned footprintPixels rect -- None (not
-      # even an empty dict) when nothing in this bucket ever needed it, so
-      # the frontend can cheaply skip the whole per-point override lookup
-      # for the overwhelming majority of buckets.
+      # orientation), populated for any instance whose true top-down
+      # silhouette isn't this bucket's shared axis-aligned footprintPixels
+      # rect: the rare genuinely-tilted instance, plus EVERY instance of an
+      # adaptive-length Beam type (per-instance player-chosen length -- see
+      # _footprintForInstance) -- None (not even an empty dict) when nothing
+      # in this bucket ever needed it, so the frontend can cheaply skip the
+      # whole per-point override lookup for the overwhelming majority of
+      # buckets.
       "tiltedFootprints": {},
       # Largest distance from center to any point actually used anywhere in
       # this bucket (starts at the plain rect's own corner distance, grows if
@@ -602,9 +678,9 @@ def _newBuildingBucket(typePath: str) -> dict:
       "maxFootprintRadius": math.hypot(footprint[0], footprint[1]) if footprint is not None else 0.0,
    }
 
-def _appendBuildingInstance(bucket: dict, typePath: str, rotation, position, instanceId: str) -> None:
+def _appendBuildingInstance(bucket: dict, typePath: str, rotation, position, instanceId: str, beamLengthCm=None) -> None:
    (px, py) = projectXY(position)
-   (yaw, tiltedPolygon) = _footprintForInstance(typePath, rotation, bucket["footprintPixels"])
+   (yaw, tiltedPolygon) = _footprintForInstance(typePath, rotation, bucket["footprintPixels"], beamLengthCm)
    if tiltedPolygon is not None:
       bucket["tiltedFootprints"][len(bucket["ids"])] = tiltedPolygon
       polygonRadius = max(math.hypot(tiltedPolygon[i], tiltedPolygon[i + 1]) for i in range(0, len(tiltedPolygon), 2))
@@ -650,7 +726,8 @@ def collectBuildings(levels) -> dict:
          typeBuckets[typePath] = bucket
       for (idx, instance) in enumerate(instances):
          (rotationQuaternion, position) = (instance[0], instance[1])
-         _appendBuildingInstance(bucket, typePath, rotationQuaternion, position, f"LightweightBuildable:{typePath}:{idx}")
+         _appendBuildingInstance(bucket, typePath, rotationQuaternion, position, f"LightweightBuildable:{typePath}:{idx}",
+                                 beamLengthCm=_lightweightBeamLengthCm(instance[9]))
 
    buildingCategories = []
    for category in categoryBuckets:
