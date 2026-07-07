@@ -1,37 +1,40 @@
 # Credentials / runtime state
 sftp_config.json
-sftp_config.json.example
 server_config.json
 
 # Downloaded saves and uploads (runtime directories)
 sftp_saves/
 map/uploads/
 
-# Large local-only assets (not versioned)
-map_highres.png
-blank_map20.png
-
-# Parser output
-map_output/
-
 # Satisfactory save files
 *.sav
+
+# Game data dump (copy from your game install's
+# Satisfactory\CommunityResources\Docs\en-US.json to game_data/docs.json);
+# see README.md's "Generating game data" section.
+game_data/docs.json
+
+# Everything derived from game files: the JSONs generated from docs.json by
+# game_data/extract_docs_json.py, gamePhases.json from
+# game_data/extract_game_phases.py, and map_highres.png from
+# game_data/extract_map_image.py. game_data/SCHEMA.md (hand-written) sits one
+# level up on purpose so this whole folder stays regenerable/disposable.
+game_data/generated/
+
+# Icon PNGs (regenerate via game_data/copy_icons.py; kept under map/static/
+# so Flask can serve them). See README.md's "Generating icons" section.
+map/static/map/icons/
+
+# Redistributable archive of all of the above, built by
+# game_data/package_game_data.py.
+game_data.zip
+
+# Output of the upstream parser's CLI tools (parser/sav_to_html.py etc.)
+map_output/
 
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
-
-# Game data dump (copy from your game install's
-# Satisfactory\CommunityResources\Docs\en-US.json) and the JSON generated
-# from it via docs/extract_docs_json.py; see README.md's "Generating game
-# data" section. docs/generated/SCHEMA.md itself is hand-written, not
-# generated, and stays tracked.
-Docs.json
-docs/generated/*.json
-
-# Icon PNGs (regenerate via docs/copy_icons.py; see README.md's
-# "Generating icons" section).
-map/static/map/icons/
 
 .claude

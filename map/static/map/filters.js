@@ -7,8 +7,8 @@
 // Sidebar structure: top-level sections are each a collapsible renderGroup
 // with a master checkbox. The building categories (Organisation/Walls/
 // Production/Power/Logistics/Special, plus the catch-all Unknown) and their
-// one level of subcategory come straight from docs/generated/buildingCategories.json
-// + docs/categoryLabels.json via payload.menuOrder -- see
+// one level of subcategory come straight from game_data/generated/buildingCategories.json
+// + game_data/categoryLabels.json via payload.menuOrder -- see
 // buildBuildingCategorySections. Resource Nodes, HUB, Entities, Collectables
 // (which nests Hard Drives alongside Power Slugs/Somersloops/Mercer Spheres),
 // and Dropped Items (loose ground stacks) are their own separate sections. renderGroup() supports the
@@ -19,7 +19,7 @@ var Filters = {};
 (function() {
   "use strict";
 
-  // Keyed by the build-menu category display names from docs/categoryLabels.json
+  // Keyed by the build-menu category display names from game_data/categoryLabels.json
   // (see sav_map_data.BUILD_MENU_ORDER). "Unknown" is the catch-all for any
   // placed buildable whose class isn't in buildingCategories.json.
   var BUILDING_CATEGORY_COLORS = {
@@ -46,8 +46,8 @@ var Filters = {};
   var MERCER_SPHERE_COLOR = "#4e1071";
 
   // Real item icons (see static/map/icons/items/, keyed by ClassName -- see
-  // docs/generated/items.json/resources.json's "icon" field and
-  // docs/copy_icons.py) read far more clearly on the map than an abstract
+  // game_data/generated/items.json/resources.json's "icon" field and
+  // game_data/copy_icons.py) read far more clearly on the map than an abstract
   // colored dot for these specific collectables -- "remaining" is drawn at
   // full opacity, "collected"/already-dealt-with states are dimmed
   // (COLLECTED_ICON_OPACITY) rather than needing a second image asset just
@@ -70,7 +70,7 @@ var Filters = {};
   // (picked up once as a one-off tech unlock, never held in inventory), but
   // the game does have real crate art for them -- it just lives under a
   // schematic's mSchematicIcon field, which extract_docs_json.py doesn't
-  // parse generically (see docs/copy_icons.py's EXTRA_ICON_COPIES). Copied
+  // parse generically (see game_data/copy_icons.py's EXTRA_ICON_COPIES). Copied
   // in by hand as icons/items/HardDrive.png -- a real game asset, not a
   // hand-picked label file.
   var HARD_DRIVE_ICON_URL = "icons/items/HardDrive.png";
@@ -78,12 +78,12 @@ var Filters = {};
   // Resource node icons -- keyed by the save's own resourceType pathName
   // (see sav_map_data.collectResourceNodes), which is exactly the ClassName
   // the raw resource's own per-class icon is stored under (see
-  // docs/generated/resources.json, copied in by docs/copy_icons.py), so the
+  // game_data/generated/resources.json, copied in by game_data/copy_icons.py), so the
   // URL is fully deterministic -- no lookup table needed. Geyser
   // (Desc_Geyser_C) is the one exception: it's a synthetic resourceType this
   // parser invented for a resource node kind with no FGResourceDescriptor (or
   // any other Docs.json field) behind it at all -- its real icon is copied in
-  // by hand instead (see docs/copy_icons.py's EXTRA_ICON_COPIES) as
+  // by hand instead (see game_data/copy_icons.py's EXTRA_ICON_COPIES) as
   // icons/items/Geyser.png, not ClassName-keyed since there's no class to key it by.
   function resourceIconUrl(resourceType) {
     if (resourceType === "Desc_Geyser_C") {
@@ -159,7 +159,7 @@ var Filters = {};
   };
 
   // Category/subcategory order comes from the payload (payload.menuOrder,
-  // built from docs/generated/buildingCategories.json) -- see buildBuildingCategorySections.
+  // built from game_data/generated/buildingCategories.json) -- see buildBuildingCategorySections.
 
   // Lightweight buildables (foundations/walls/ramps/beams) come in several
   // material skins per shape -- e.g. "Foundation 4m", "Foundation 4m
@@ -948,7 +948,7 @@ var Filters = {};
     renderTopLevelCategory(navList, detailPane, "Entities (" + total + ")", "icon", PLAYER_COLOR, rows, { iconUrl: PLAYER_ICON_URL });
   }
 
-  // ---- Building categories (from docs/generated/buildingCategories.json, plus Unknown) ----
+  // ---- Building categories (from game_data/generated/buildingCategories.json, plus Unknown) ----
 
   function buildingRow(typeEntry, color, drawPriority) {
     var bucket = makePointBucket(
@@ -1046,7 +1046,7 @@ var Filters = {};
 
   // The whole filter tree of placed buildables, grouped by the build-menu
   // category/subcategory each typePath maps to (order from payload.menuOrder,
-  // built from docs/generated/buildingCategories.json). Point/rect buildings,
+  // built from game_data/generated/buildingCategories.json). Point/rect buildings,
   // per-mark belts/pipes/vehicle-paths, and the whole-line kinds (power lines/
   // railroads/hypertubes) are all folded into one category -> subcategory
   // -> rows structure; any typePath not in the build menu lands in "Unknown".

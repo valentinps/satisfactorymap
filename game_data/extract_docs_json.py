@@ -5,10 +5,12 @@
 # itself is a ~10MB UTF-16 dump of every reflected UClass in the game
 # (buildable physics params, schematics, customization swatches, etc) -- most
 # of it is irrelevant to us, so this is a one-shot build step, not something
-# read directly by the server or the map frontend. Re-run whenever Docs.json
-# is updated (new game patch).
+# read directly by the server or the map frontend. The local copy lives at
+# game_data/docs.json (lowercase; copied from the game install's
+# Satisfactory\CommunityResources\Docs\en-US.json). Re-run whenever it is
+# updated (new game patch).
 #
-# Usage: py docs/extract_docs_json.py [path/to/Docs.json]
+# Usage: py game_data/extract_docs_json.py [path/to/docs.json]
 #
 # Category rule (kept simple on purpose so new NativeClass groups in future
 # game updates fall into a sane bucket without needing this script to know
@@ -50,7 +52,7 @@ import re
 import sys
 from pathlib import Path
 
-DOCS_JSON_PATH = Path(__file__).parent / "Docs.json"
+DOCS_JSON_PATH = Path(__file__).parent / "docs.json"
 OUTPUT_DIR = Path(__file__).parent / "generated"
 
 SKIPPED_NATIVE_CLASS_SUFFIXES = ("FGCustomizationRecipe'",)

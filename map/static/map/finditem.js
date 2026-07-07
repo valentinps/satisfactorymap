@@ -37,8 +37,8 @@ var FindItem = {};
   var MAX_SUGGESTIONS_PER_KIND = 5;
   // Item/building icons are stored under ClassName (see static/map/icons/items/,
   // e.g. "Desc_IronPlate_C.png", and icons/buildings/, e.g. "Build_WorkBench_C.png")
-  // -- extracted straight from the game's own per-class icon (docs/generated/
-  // items.json|buildings.json's "icon" field, see docs/copy_icons.py) rather
+  // -- extracted straight from the game's own per-class icon (game_data/generated/
+  // items.json|buildings.json's "icon" field, see game_data/copy_icons.py) rather
   // than a hand-picked file per readable label, so the lookup is always exact,
   // never a guess. Not every catalog entry has one (a couple of buildings, see
   // SCHEMA.md); a missing image just falls back to a generic glyph (see

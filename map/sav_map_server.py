@@ -29,7 +29,7 @@ import sav_parse
 import sav_map_data
 
 STATIC_DIR       = os.path.join(_MAP_DIR, "static", "map")
-MAP_IMAGE_FILE   = os.path.join(REPO_ROOT, "map_highres.png")
+MAP_IMAGE_FILE   = os.path.join(REPO_ROOT, "game_data", "generated", "map_highres.png")
 SFTP_CONFIG_FILE = os.path.join(REPO_ROOT, "sftp_config.json")
 UPLOADS_DIR      = os.path.join(_MAP_DIR, "uploads")
 
@@ -432,7 +432,7 @@ def apiSelectionInventory():
 
 @app.route("/map_highres.png")
 def mapImage():
-   return flask.send_from_directory(REPO_ROOT, "map_highres.png")
+   return flask.send_file(MAP_IMAGE_FILE)
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -446,7 +446,9 @@ def main():
    args = parser.parse_args()
 
    if not os.path.isfile(MAP_IMAGE_FILE):
-      print(f"ERROR: map_highres.png not found in {REPO_ROOT}.", file=sys.stderr)
+      print(f"ERROR: {MAP_IMAGE_FILE} not found. Generate it with "
+            f"'py game_data/extract_map_image.py' or unpack a game-data archive "
+            f"('py game_data/package_game_data.py unpack <zip>') -- see README.md.", file=sys.stderr)
       sys.exit(1)
 
    url = f"http://{args.host}:{args.port}/"

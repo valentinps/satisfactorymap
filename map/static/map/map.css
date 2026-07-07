@@ -321,7 +321,7 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
 
 /* The top bar's per-save status buttons (Dimensional Depot + the progression
    views -- see index.html's #topBarStatusButtons). Each shows a real game
-   icon extracted by docs/copy_icons.py. */
+   icon extracted by game_data/copy_icons.py. */
 #topBarStatusButtons {
   flex: none;
   display: flex;

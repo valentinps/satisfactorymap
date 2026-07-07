@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copies just the item/building icon PNGs referenced by docs/generated/items.json
+# Copies just the item/building icon PNGs referenced by game_data/generated/items.json
 # and buildings.json (their "icon" field -- see extract_docs_json.py/SCHEMA.md)
 # out of a full game asset extraction, into the map's static icon folders, keyed
 # by ClassName (e.g. "Desc_IronPlate_C.png", "Build_WorkBench_C.png"). This is
@@ -7,7 +7,7 @@
 # unrelated meshes/textures/blueprints) be deleted afterwards -- only the
 # handful of PNGs actually used by the map need to survive.
 #
-# Usage: py docs/copy_icons.py [path/to/extraction/.../Content]
+# Usage: py game_data/copy_icons.py [path/to/extraction/.../Content]
 #
 # The path argument is the "Content" folder of the extraction -- the icon
 # fields are asset paths rooted at "/FactoryGame/...", which resolve to

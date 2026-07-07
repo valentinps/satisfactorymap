@@ -1,10 +1,10 @@
 # Generated data files
 
-Produced by `docs/extract_docs_json.py` from `docs/Docs.json`. Regenerate after
+Produced by `game_data/extract_docs_json.py` from `game_data/docs.json`. Regenerate after
 every game update / Docs.json refresh:
 
 ```
-py docs/extract_docs_json.py
+py game_data/extract_docs_json.py
 ```
 
 All three files are keyed by `ClassName` (the short in-game class, e.g.
@@ -277,12 +277,12 @@ SchematicManager records as "purchased". Consumed by
 
 The Space Elevator / Project Assembly phases. NOT produced by
 `extract_docs_json.py` -- the `FGGamePhase` assets aren't reflected in
-Docs.json at all. Produced by `docs/extract_game_phases.py` from an
+Docs.json at all. Produced by `game_data/extract_game_phases.py` from an
 FModel-style JSON export of the game paks (the same extraction dump
 `copy_icons.py` reads, `<Content>/FactoryGame/GamePhases/*.json`):
 
 ```
-py docs/extract_game_phases.py [path/to/extraction/.../Content]
+py game_data/extract_game_phases.py [path/to/extraction/.../Content]
 ```
 
 - `cost` amounts are BASE values -- the game-mode

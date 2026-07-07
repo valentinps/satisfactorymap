@@ -1768,7 +1768,7 @@ var MapApp = {};
     var map = L.map("map", {
       crs: L.CRS.Simple,
       minZoom: -3,
-      maxZoom: 7, // map_highres.png is 8192px (game-native fused map, see docs/extract_map_image.py), ~1.64x the old 5000px upscale; bumped from 6 so the extra detail is actually reachable.
+      maxZoom: 7, // map_highres.png is 8192px (game-native fused map, see game_data/extract_map_image.py), ~1.64x the old 5000px upscale; bumped from 6 so the extra detail is actually reachable.
       attributionControl: false,
       maxBoundsViscosity: 0.8,
       // The canvas overlay only redraws on moveend/zoomend (see BucketedCanvasLayer),

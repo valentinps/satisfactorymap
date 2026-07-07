@@ -22,7 +22,7 @@ import sav_data.readableNames
 
 def _loadExtractedDisplayNames():
    # ClassName -> mDisplayName, straight from the game's own Docs.json (see
-   # docs/extract_docs_json.py). Preferred over sav_data.readableNames'
+   # game_data/extract_docs_json.py). Preferred over sav_data.readableNames'
    # hand-curated dict wherever both have an entry -- Docs.json is the
    # authoritative source and stays current across game updates; the hand
    # dict now only fills the classes Docs.json doesn't reflect at all
@@ -30,7 +30,7 @@ def _loadExtractedDisplayNames():
    repoRoot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
    names = {}
    for fileName in ("items.json", "buildings.json"):
-      path = os.path.join(repoRoot, "docs", "generated", fileName)
+      path = os.path.join(repoRoot, "game_data", "generated", fileName)
       try:
          with open(path, encoding="utf-8") as handle:
             data = json.load(handle)

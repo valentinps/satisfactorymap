@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Generates docs/generated/gamePhases.json from the game's own
+# Generates game_data/generated/gamePhases.json from the game's own
 # GP_Project_Assembly_Phase_* assets (FGGamePhase) -- the Space Elevator
 # phase list with each phase's part costs. These assets are NOT in Docs.json
 # (which is why sav_map_data.py carries a hand-written wiki-sourced fallback
@@ -7,7 +7,7 @@
 # the same extraction dump copy_icons.py reads PNGs from:
 #   <Content>/FactoryGame/GamePhases/GP_Project_Assembly_Phase_<N>.json
 #
-# Usage: py docs/extract_game_phases.py [path/to/extraction/.../Content]
+# Usage: py game_data/extract_game_phases.py [path/to/extraction/.../Content]
 #
 # Re-run whenever the extraction dump is refreshed (new game patch).
 # sav_map_data._loadGamePhases() picks the generated file over its fallback
