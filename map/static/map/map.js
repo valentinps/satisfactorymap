@@ -35,10 +35,14 @@ var MapApp = {};
   "use strict";
 
   // See _drawRectBuckets: full screen-space box size (in px) below which a
-  // bucket skips rotated-quad rendering entirely in favor of plotting tiny
-  // axis-aligned squares -- the case that matters at tens-of-thousands-of-
-  // boxes scale (lightweight buildables), where this is the dominant cost.
-  var SUBPIXEL_RECT_THRESHOLD = 2;
+  // bucket skips rotated-quad rendering in favor of an axis-aligned rect of
+  // the same screen dimensions. Rotation of a sub-4px blob is imperceptible,
+  // while the rotated path costs sin/cos plus four corner computations per
+  // building -- at the zoom levels where a whole megabase is in view (every
+  // building 1-4px), that difference is the redraw. Axis-aligned rects also
+  // stay in the canvas's fast-rect path representation and are eligible for
+  // the per-pixel dedup (see _occEnsure).
+  var SMALL_RECT_SCREEN_PX = 4;
 
   // See _drawRectBuckets: max altitude spread (in meters) among currently
   // visible rects below which fill order is treated as not mattering, so
@@ -48,6 +52,32 @@ var MapApp = {};
   // minor snapping jitter doesn't.
   var FLAT_PLATFORM_Z_EPSILON = 1.0;
 
+  // See _drawRectBucketsSorted: number of altitude quantization bins for
+  // the O(n) counting sort that replaces a comparator sort over every
+  // visible rect. 2048 bins over the visible z spread resolves draw order
+  // to ~1m even across the full ~2km world altitude range (finer than one
+  // 4m floor; a typical view spans far less, so bins are usually a few
+  // cm). The sort key is (zBin, bucket), not raw z -- items within the
+  // same bin draw grouped by bucket, so each (floor, category) pair
+  // becomes ONE batched fill instead of a beginPath/fill per color change
+  // as z-interleaved categories alternate.
+  var Z_SORT_BINS = 2048;
+
+  // See _reset: the bulk canvas is rendered with a margin around the
+  // viewport (up to 2x viewport per axis) so that panning within the margin
+  // needs NO redraw at all -- Leaflet's pane transform already moves the
+  // canvas the right amount during/after a drag. Capped in total pixels so
+  // a 4K fullscreen window doesn't allocate absurd canvas memory (20M px
+  // RGBA == 80MB); the margin just shrinks on huge viewports.
+  var BUFFER_MAX_PIXELS = 20e6;
+
+  // See _onZoomEnd: how long after the last zoom step the real redraw runs.
+  // In between, the existing buffer is scaled into place with a CSS
+  // transform (compositor-only, no canvas work), so wheel-zooming across
+  // several levels costs ONE full redraw at the end instead of one freeze
+  // per notch.
+  var ZOOM_REDRAW_DEBOUNCE_MS = 180;
+
   var BucketedCanvasLayer = L.Layer.extend({
     initialize: function() {
       this.buckets = []; // Public: filters.js pushes/reads bucket objects here directly.
@@ -56,10 +86,35 @@ var MapApp = {};
       // everything here runs synchronously on the main thread, one bucket at
       // a time.
       this._scratchIndices = [];
+      // Reusable visible-point snapshot filled by _drawRectBuckets each
+      // redraw (see there) -- persisted across frames so a steady view
+      // allocates nothing per redraw.
+      this._cullCapacity = 0;
+      this._cullZ = null;
+      this._cullPointIdx = null;
+      this._cullBucketIdx = null;
+      this._orderArr = null;
+      this._binCounts = null;
+      // Screen-pixel occupancy buffer for subpixel-rect dedup (see
+      // _occEnsure) -- lazily sized to the canvas.
+      this._occ = null;
+      this._occW = 0;
+      this._occH = 0;
+      this._occStamp = 0;
+      this._resetFrame = null;
+      // Buffered-rendering state (see _reset/_onMoveEnd/_onZoomEnd).
+      this._renderedZoom = null;
+      this._renderedPixelOrigin = null;
+      this._viewTopLeft = null;
+      this._bufferW = 0;
+      this._bufferH = 0;
+      this._cullBounds = null;
+      this._zoomRedrawTimer = null;
     },
 
     clearBuckets: function() {
       this.buckets = [];
+      this._sortedBuckets = null;
     },
 
     // Point-based buckets (circle/icon/rect) can hold tens to hundreds of
@@ -78,6 +133,7 @@ var MapApp = {};
         bucket._lineBounds = _buildLineBounds(bucket.lines, bucket.pointStride);
       }
       this.buckets.push(bucket);
+      this._sortedBuckets = null;
       return bucket;
     },
 
@@ -98,20 +154,119 @@ var MapApp = {};
       this.getPane().appendChild(this._canvas);
       this.getPane().appendChild(this._highlightCanvas);
 
-      map.on("moveend zoomend resize", this._reset, this);
+      map.on("zoomend", this._onZoomEnd, this);
+      map.on("moveend", this._onMoveEnd, this);
+      map.on("resize", this._requestReset, this);
       this._reset();
     },
 
     onRemove: function(map) {
       this.getPane().removeChild(this._canvas);
       this.getPane().removeChild(this._highlightCanvas);
-      map.off("moveend zoomend resize", this._reset, this);
+      map.off("zoomend", this._onZoomEnd, this);
+      map.off("moveend", this._onMoveEnd, this);
+      map.off("resize", this._requestReset, this);
+      if (this._resetFrame) {
+        L.Util.cancelAnimFrame(this._resetFrame);
+        this._resetFrame = null;
+      }
+      if (this._zoomRedrawTimer) {
+        clearTimeout(this._zoomRedrawTimer);
+        this._zoomRedrawTimer = null;
+      }
+      this._map = null;
+    },
+
+    // Coalesces the reset/redraw work to one per animation frame -- used
+    // for anything that genuinely needs a full redraw right away (buffer
+    // exceeded, resize, data/visibility changes).
+    _requestReset: function() {
+      if (this._resetFrame) {
+        return;
+      }
+      var self = this;
+      this._resetFrame = L.Util.requestAnimFrame(function() {
+        self._resetFrame = null;
+        self._reset();
+      });
+    },
+
+    // Zoom changed: don't redraw hundreds of thousands of points per wheel
+    // notch. Scale the already-rendered buffer into place as a preview
+    // (cheap CSS transform) and debounce the one real redraw to after the
+    // zoom gesture settles.
+    _onZoomEnd: function() {
+      var map = this._map;
+      if (!map) {
+        return;
+      }
+      if (this._renderedZoom === null) {
+        this._requestReset();
+        return;
+      }
+      if (map.getZoom() === this._renderedZoom) {
+        return;
+      }
+      this._applyZoomPreview();
+      if (this._zoomRedrawTimer) {
+        clearTimeout(this._zoomRedrawTimer);
+      }
+      var self = this;
+      this._zoomRedrawTimer = setTimeout(function() {
+        self._zoomRedrawTimer = null;
+        self._reset();
+      }, ZOOM_REDRAW_DEBOUNCE_MS);
+    },
+
+    _onMoveEnd: function() {
+      var map = this._map;
+      if (!map) {
+        return;
+      }
+      if (map.getZoom() !== this._renderedZoom) {
+        return; // Mid-zoom flow: _onZoomEnd already previewed and scheduled the real redraw.
+      }
+      // The viewport-sized highlight canvas is screen-anchored, so a pan
+      // has to re-glue it (cheap -- it holds at most one box).
+      var viewTopLeft = map.containerPointToLayerPoint([0, 0]);
+      this._viewTopLeft = viewTopLeft;
+      L.DomUtil.setPosition(this._highlightCanvas, viewTopLeft);
+      this._redrawHighlight();
+      // Pan still inside the buffered margin: the bulk canvas is positioned
+      // in layer space, and Leaflet's pane transform already moved it with
+      // the drag -- nothing to redraw at all. Only when the viewport
+      // escapes the rendered margin is a real redraw needed. Fully zoomed
+      // out the buffer covers the whole map, so every pan is free.
+      var size = map.getSize();
+      if (this._topLeft &&
+          viewTopLeft.x >= this._topLeft.x && viewTopLeft.y >= this._topLeft.y &&
+          viewTopLeft.x + size.x <= this._topLeft.x + this._bufferW &&
+          viewTopLeft.y + size.y <= this._topLeft.y + this._bufferH) {
+        return;
+      }
+      this._requestReset();
+    },
+
+    // Places the last-rendered buffer where it belongs in the NEW zoom's
+    // layer space: for CRS.Simple, layerNew = k*(layerOld + pixelOriginOld)
+    // - pixelOriginNew with the bitmap scaled by k around that corner.
+    // Pure compositor work -- no canvas commands at all.
+    _applyZoomPreview: function() {
+      var map = this._map;
+      var k = map.getZoomScale(map.getZoom(), this._renderedZoom);
+      var pixelOrigin = map.getPixelOrigin();
+      var t = this._topLeft.add(this._renderedPixelOrigin).multiplyBy(k).subtract(pixelOrigin);
+      this._canvas.style.transformOrigin = "0 0";
+      this._canvas.style.transform = "translate3d(" + t.x + "px, " + t.y + "px, 0) scale(" + k + ")";
+      // The highlight box would sit at the wrong spot mid-preview; hide it
+      // until the real redraw repaints it (it holds at most one box).
+      var hctx = this._highlightCanvas.getContext("2d");
+      hctx.clearRect(0, 0, this._highlightCanvas.width, this._highlightCanvas.height);
     },
 
     requestRedraw: function() {
       if (this._map) {
-        this._redraw();
-        this._redrawHighlight();
+        this._requestReset();
       }
     },
 
@@ -131,15 +286,48 @@ var MapApp = {};
 
     _reset: function() {
       var map = this._map;
+      if (!map) {
+        return; // Layer was removed while a coalesced reset was pending.
+      }
+      if (this._zoomRedrawTimer) {
+        clearTimeout(this._zoomRedrawTimer);
+        this._zoomRedrawTimer = null;
+      }
       var size = map.getSize();
-      var topLeft = map.containerPointToLayerPoint([0, 0]);
-      L.DomUtil.setPosition(this._canvas, topLeft);
-      L.DomUtil.setPosition(this._highlightCanvas, topLeft);
-      this._canvas.width = size.x;
-      this._canvas.height = size.y;
+      // Bulk canvas covers viewport + margin (see BUFFER_MAX_PIXELS); the
+      // highlight canvas stays viewport-sized -- it redraws for free on
+      // every hover anyway and doesn't need buffer-sized memory.
+      var factor = Math.max(1, Math.min(2, Math.sqrt(BUFFER_MAX_PIXELS / Math.max(1, size.x * size.y))));
+      var bufW = Math.round(size.x * factor);
+      var bufH = Math.round(size.y * factor);
+      var padX = Math.round((bufW - size.x) / 2);
+      var padY = Math.round((bufH - size.y) / 2);
+      var viewTopLeft = map.containerPointToLayerPoint([0, 0]);
+      var bufferTopLeft = viewTopLeft.subtract(L.point(padX, padY));
+      // setPosition rewrites the element's whole transform, which also
+      // clears any zoom-preview scale left by _applyZoomPreview.
+      L.DomUtil.setPosition(this._canvas, bufferTopLeft);
+      L.DomUtil.setPosition(this._highlightCanvas, viewTopLeft);
+      this._canvas.width = bufW;
+      this._canvas.height = bufH;
       this._highlightCanvas.width = size.x;
       this._highlightCanvas.height = size.y;
-      this._topLeft = topLeft;
+      this._topLeft = bufferTopLeft;
+      this._viewTopLeft = viewTopLeft;
+      this._bufferW = bufW;
+      this._bufferH = bufH;
+      this._renderedZoom = map.getZoom();
+      this._renderedPixelOrigin = map.getPixelOrigin();
+      // Map-space bounds of the whole buffered canvas, for culling in
+      // _redraw -- the plain viewport bounds would cull away the margin.
+      var nw = map.layerPointToLatLng(bufferTopLeft);
+      var se = map.layerPointToLatLng(L.point(bufferTopLeft.x + bufW, bufferTopLeft.y + bufH));
+      this._cullBounds = {
+        minX: Math.min(nw.lng, se.lng),
+        maxX: Math.max(nw.lng, se.lng),
+        minY: Math.min(nw.lat, se.lat),
+        maxY: Math.max(nw.lat, se.lat),
+      };
       this._redraw();
       this._redrawHighlight();
     },
@@ -173,31 +361,82 @@ var MapApp = {};
       ctx.clearRect(0, 0, this._highlightCanvas.width, this._highlightCanvas.height);
 
       var bucket = MapApp.highlightedBucket;
-      if (!bucket || bucket.renderType !== "rect" || !bucket.ids) {
+      if (!bucket || !bucket.ids) {
         return;
       }
       var idx = bucket.ids.indexOf(MapApp.highlightedId);
       if (idx === -1) {
         return;
       }
-      var p = idx * 4;
       var zoom = map.getZoom();
       var pixelOrigin = map.getPixelOrigin();
-      var topLeft = this._topLeft;
-      var affine = this._computeAffine(zoom, pixelOrigin, topLeft);
-      var footprint = _footprintForPoint(bucket, idx, bucket.points[p + 2]);
+      // The highlight canvas is viewport-anchored (see _reset/_onMoveEnd),
+      // unlike the buffered bulk canvas -- so its affine uses _viewTopLeft.
+      var affine = this._computeAffine(zoom, pixelOrigin, this._viewTopLeft);
 
-      ctx.beginPath();
-      if (footprint.verts) {
-        _tracePolygon(ctx, bucket.points[p], bucket.points[p + 1], footprint.verts, affine);
-      } else {
-        this._traceRect(ctx, bucket.points[p], bucket.points[p + 1], footprint.yaw, footprint.halfWidth, footprint.halfDepth, affine);
+      if (bucket.renderType === "rect") {
+        var p = idx * 4;
+        var footprint = _footprintForPoint(bucket, idx, bucket.points[p + 2]);
+        ctx.beginPath();
+        if (footprint.verts) {
+          _tracePolygon(ctx, bucket.points[p], bucket.points[p + 1], footprint.verts, affine);
+        } else {
+          this._traceRect(ctx, bucket.points[p], bucket.points[p + 1], footprint.yaw, footprint.halfWidth, footprint.halfDepth, affine);
+        }
+        ctx.fillStyle = bucket.color;
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      } else if (bucket.renderType === "line") {
+        // Same idea as the rect treatment above, adapted to a stroke: retrace
+        // just the one hovered polyline at full detail, wearing a white halo
+        // (a wider stroke underneath) plus its own color slightly thicker
+        // than the bulk pass, so the exact belt/pipe/wire the tooltip is
+        // describing pops out of a dense bundle of same-colored neighbors.
+        var pts = bucket.lines[idx];
+        if (!pts || pts.length < bucket.pointStride * 2) {
+          return;
+        }
+        var baseWidth = bucket.lineWidth || 2.5;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        _tracePolylinePath(ctx, pts, bucket.pointStride, affine);
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = baseWidth + 3.5;
+        ctx.stroke();
+        ctx.strokeStyle = bucket.color;
+        ctx.lineWidth = baseWidth + 1;
+        ctx.stroke(); // The traced path survives the first stroke -- no need to rebuild it.
+      } else if (bucket.renderType === "circle") {
+        var cp = idx * bucket.pointStride;
+        var cx = affine.originX + bucket.points[cp] * affine.scaleX;
+        var cy = affine.originY + bucket.points[cp + 1] * affine.scaleY;
+        // Redrawn slightly larger than _redraw's zoom-dependent dot radius
+        // with a white ring, mirroring the rect treatment.
+        var dotRadius = Math.min(3, 1 + Math.max(0, zoom) * 0.4) + 1.5;
+        ctx.beginPath();
+        ctx.arc(cx, cy, dotRadius, 0, Math.PI * 2);
+        ctx.fillStyle = bucket.color;
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      } else if (bucket.renderType === "icon") {
+        // A white ring around the pin's circle (whose center sits above the
+        // real coordinate by the tail length -- keep in sync with
+        // _drawIconBucket's pin geometry).
+        var ip = idx * bucket.pointStride;
+        var pinRadius = _iconRadiusForZoom(zoom);
+        var tipX = affine.originX + bucket.points[ip] * affine.scaleX;
+        var tipY = affine.originY + bucket.points[ip + 1] * affine.scaleY;
+        ctx.beginPath();
+        ctx.arc(tipX, tipY - pinRadius - pinRadius * 0.7, pinRadius + 2, 0, Math.PI * 2);
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
       }
-      ctx.fillStyle = bucket.color;
-      ctx.fill();
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 2;
-      ctx.stroke();
     },
 
     _redraw: function() {
@@ -211,11 +450,13 @@ var MapApp = {};
       var zoom = map.getZoom();
       var pixelOrigin = map.getPixelOrigin();
       var topLeft = this._topLeft;
-      var bounds = map.getBounds();
-      var minX = bounds.getWest();
-      var maxX = bounds.getEast();
-      var minY = bounds.getSouth();
-      var maxY = bounds.getNorth();
+      // Cull to the whole buffered canvas, not just the viewport -- the
+      // margin is the whole point (see _reset/_onMoveEnd).
+      var cullBounds = this._cullBounds;
+      var minX = cullBounds.minX;
+      var maxX = cullBounds.maxX;
+      var minY = cullBounds.minY;
+      var maxY = cullBounds.maxY;
       var circleRadius = Math.min(3, 1 + Math.max(0, zoom) * 0.4);
       var iconRadius = _iconRadiusForZoom(zoom);
       var affine = this._computeAffine(zoom, pixelOrigin, topLeft);
@@ -225,14 +466,21 @@ var MapApp = {};
       // Canvas painting is just layering -- whatever's drawn last sits on
       // top. Non-rect buckets (lines/circles/icons) still go by drawPriority
       // (see filters.js's makePointBucket) since they rarely visually
-      // conflict with each other; this sorts the (few hundred) bucket
-      // objects themselves, not their underlying point arrays, so it's
-      // cheap even though it runs every redraw. Rect buckets (every
-      // building/foundation, across every category) are pulled out and
-      // drawn separately by _drawRectBuckets, which orders them by actual
-      // altitude instead -- see that function for why drawPriority alone
-      // isn't enough once buildings span multiple floors.
-      var orderedBuckets = this.buckets.slice().sort(function(a, b) { return (a.drawPriority || 0) - (b.drawPriority || 0); });
+      // conflict with each other. Rect buckets (every building/foundation,
+      // across every category) are pulled out and drawn separately by
+      // _drawRectBuckets, which orders them by actual altitude instead --
+      // see that function for why drawPriority alone isn't enough once
+      // buildings span multiple floors.
+      //
+      // The sort itself is cached (_sortedBuckets, invalidated only by
+      // addBucket/clearBuckets -- see above) rather than redone here on
+      // every redraw: bucket membership and drawPriority never change
+      // between a save load and the next, only `visible` flags do, so
+      // resorting on every single pan/zoom/checkbox-toggle was pure waste.
+      if (!this._sortedBuckets) {
+        this._sortedBuckets = this.buckets.slice().sort(function(a, b) { return (a.drawPriority || 0) - (b.drawPriority || 0); });
+      }
+      var orderedBuckets = this._sortedBuckets;
       var rectBuckets = [];
 
       for (var b = 0; b < orderedBuckets.length; b++) {
@@ -283,9 +531,21 @@ var MapApp = {};
       var imageSize = radius * 1.3;
       var prevAlpha = ctx.globalAlpha;
       ctx.globalAlpha = bucket.iconOpacity !== undefined ? bucket.iconOpacity : 1;
+      // Pins whose centers land within the same 2x2px cell are visually one
+      // pin (the circle alone is 2*radius >= 32px across) -- drawing the
+      // pile costs a fill+stroke+drawImage per pin for zero visible change.
+      // Dense clusters (e.g. a field of uncollected pickups viewed zoomed
+      // out) collapse to one draw per occupied cell. Same stamp mechanism
+      // as the rect paths -- see _occEnsure.
+      var occ = this._occEnsure();
+      var occW = this._occW, occH = this._occH, stamp = this._occStamp;
       var indices = _collectGridIndices(bucket._grid, minX, maxX, minY, maxY, this._scratchIndices);
       for (var ii = 0; ii < indices.length; ii++) {
-        var i = indices[ii] * stride;
+        var pointIdx = indices[ii];
+        if (_isHidden(bucket, pointIdx)) {
+          continue; // Individually hidden via a right-click "Hide this object" (see MapApp.hideObject).
+        }
+        var i = pointIdx * stride;
         var x = pts[i];
         var y = pts[i + 1];
         var z = pts[i + altIdx];
@@ -296,6 +556,14 @@ var MapApp = {};
         var tipY = affine.originY + y * affine.scaleY;
         var circleX = tipX;
         var circleY = tipY - radius - tailLength;
+        var pxi = circleX | 0, pyi = circleY | 0;
+        if (pxi >= 0 && pyi >= 0 && pxi < occW && pyi < occH) {
+          var oi = (pyi >> 1) * occW + (pxi >> 1); // 2px cells; row stride occW keeps cell keys unique.
+          if (occ[oi] === stamp) {
+            continue;
+          }
+          occ[oi] = stamp;
+        }
 
         // Tail and circle are filled as two SEPARATE fill() calls rather
         // than one combined path -- combining them into a single path and
@@ -336,9 +604,18 @@ var MapApp = {};
       var altIdx = stride - 1;
       ctx.fillStyle = bucket.color;
       ctx.beginPath();
+      // At <=1.5px radius (fully zoomed out) coincident dots are pure path
+      // bloat -- dedup per screen pixel, same as the tiny-rect paths.
+      var dedup = radius <= 1.5;
+      var occ = dedup ? this._occEnsure() : null;
+      var occW = this._occW, occH = this._occH, stamp = this._occStamp;
       var indices = _collectGridIndices(bucket._grid, minX, maxX, minY, maxY, this._scratchIndices);
       for (var ii = 0; ii < indices.length; ii++) {
-        var i = indices[ii] * stride;
+        var pointIdx = indices[ii];
+        if (_isHidden(bucket, pointIdx)) {
+          continue;
+        }
+        var i = pointIdx * stride;
         var x = pts[i];
         var y = pts[i + 1];
         var z = pts[i + altIdx];
@@ -347,6 +624,16 @@ var MapApp = {};
         }
         var cx = affine.originX + x * affine.scaleX;
         var cy = affine.originY + y * affine.scaleY;
+        if (occ) {
+          var pxi = cx | 0, pyi = cy | 0;
+          if (pxi >= 0 && pyi >= 0 && pxi < occW && pyi < occH) {
+            var oi = pyi * occW + pxi;
+            if (occ[oi] === stamp) {
+              continue;
+            }
+            occ[oi] = stamp;
+          }
+        }
         ctx.moveTo(cx + radius, cy);
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       }
@@ -370,21 +657,15 @@ var MapApp = {};
       var sinW = sin * halfWidth;
       var cosD = cos * halfDepth;
       var sinD = sin * halfDepth;
-      var corners = [
-        [cosW - sinD, sinW + cosD],
-        [-cosW - sinD, -sinW + cosD],
-        [-cosW + sinD, -sinW - cosD],
-        [cosW + sinD, sinW - cosD],
-      ];
-      for (var k = 0; k < 4; k++) {
-        var sx = cx + corners[k][0] * affine.scaleX;
-        var sy = cy + corners[k][1] * affine.scaleY;
-        if (k === 0) {
-          ctx.moveTo(sx, sy);
-        } else {
-          ctx.lineTo(sx, sy);
-        }
-      }
+      // Corners unrolled with no intermediate arrays -- this runs once per
+      // visible building per redraw, and the array-of-arrays version was
+      // measurable pure GC churn at megabase scale.
+      var sX = affine.scaleX;
+      var sY = affine.scaleY;
+      ctx.moveTo(cx + (cosW - sinD) * sX, cy + (sinW + cosD) * sY);
+      ctx.lineTo(cx + (-cosW - sinD) * sX, cy + (-sinW + cosD) * sY);
+      ctx.lineTo(cx + (-cosW + sinD) * sX, cy + (-sinW - cosD) * sY);
+      ctx.lineTo(cx + (cosW + sinD) * sX, cy + (sinW - cosD) * sY);
       ctx.closePath();
     },
 
@@ -425,68 +706,264 @@ var MapApp = {};
       if (rectBuckets.length === 0) {
         return;
       }
+      // When every bucket in view renders below SMALL_RECT_SCREEN_PX,
+      // altitude layering of few-px blobs is imperceptible, so the whole
+      // cull-snapshot + z-sort machinery below is pure overhead -- and
+      // z-interleaved draw order would force a beginPath/fill per color
+      // change anyway (thousands of tiny fills on exactly the full-map
+      // view). Decidable up front from footprint * scale alone, so the
+      // fused fast path can skip the snapshot entirely.
+      var absScaleX = Math.abs(affine.scaleX);
+      var absScaleY = Math.abs(affine.scaleY);
+      var allSmall = true;
+      for (var tb = 0; tb < rectBuckets.length; tb++) {
+        var tfp = rectBuckets[tb].footprintPixels;
+        if (!tfp || tfp[0] * 2 * absScaleX >= SMALL_RECT_SCREEN_PX || tfp[1] * 2 * absScaleY >= SMALL_RECT_SCREEN_PX) {
+          allSmall = false;
+          break;
+        }
+      }
+      if (allSmall) {
+        this._drawRectBucketsAllSmall(ctx, rectBuckets, affine, minX, maxX, minY, maxY, altMin, altMax);
+        return;
+      }
+      // Single cull pass: every visible point is recorded once into the
+      // flat reusable _cull* arrays (grouped by bucket via bucketStarts),
+      // with the global z spread computed along the way. The flat and
+      // sorted paths below both draw straight from this snapshot -- the
+      // previous version re-walked the grid up to three times per redraw
+      // (a z-spread probe, then one or two more passes inside whichever
+      // path ran), which at hundreds of thousands of visible points
+      // tripled the most expensive part of the frame.
+      var total = 0;
       var globalMinZ = Infinity, globalMaxZ = -Infinity;
-      for (var zb = 0; zb < rectBuckets.length; zb++) {
-        var zBucket = rectBuckets[zb];
-        var zPts = zBucket.points;
-        if (zPts.length === 0) {
-          continue;
-        }
-        var zIndices = _collectGridIndices(zBucket._grid, minX, maxX, minY, maxY, this._scratchIndices);
-        for (var zi = 0; zi < zIndices.length; zi++) {
-          var zp = zIndices[zi] * 4;
-          var zz = zPts[zp + 3];
-          if (zPts[zp] < minX || zPts[zp] > maxX || zPts[zp + 1] < minY || zPts[zp + 1] > maxY || zz < altMin || zz > altMax) {
-            continue;
-          }
-          if (zz < globalMinZ) globalMinZ = zz;
-          if (zz > globalMaxZ) globalMaxZ = zz;
-        }
-      }
-      if (globalMinZ > globalMaxZ) {
-        return; // Nothing visible.
-      }
-
-      if (globalMaxZ - globalMinZ <= FLAT_PLATFORM_Z_EPSILON) {
-        this._drawRectBucketsFlat(ctx, rectBuckets, affine, minX, maxX, minY, maxY, altMin, altMax);
-      } else {
-        this._drawRectBucketsSorted(ctx, rectBuckets, affine, minX, maxX, minY, maxY, altMin, altMax);
-      }
-    },
-
-    // Fast path: no point in this view set is more than FLAT_PLATFORM_Z_EPSILON
-    // away from any other, so fill order can't visibly matter -- draw each
-    // bucket directly (one beginPath/fill per bucket, like the original
-    // single-bucket version of this code) with no per-point allocation or sort.
-    _drawRectBucketsFlat: function(ctx, rectBuckets, affine, minX, maxX, minY, maxY, altMin, altMax) {
+      var bucketStarts = this._bucketStarts || (this._bucketStarts = []);
+      bucketStarts.length = rectBuckets.length + 1;
       for (var bi = 0; bi < rectBuckets.length; bi++) {
+        bucketStarts[bi] = total;
         var bucket = rectBuckets[bi];
         var pts = bucket.points;
         if (pts.length === 0) {
           continue;
         }
+        var indices = _collectGridIndices(bucket._grid, minX, maxX, minY, maxY, this._scratchIndices);
+        if (total + indices.length > this._cullCapacity) {
+          this._growCull(total + indices.length);
+        }
+        var zArr = this._cullZ;
+        var pointIdxArr = this._cullPointIdx;
+        var bucketIdxArr = this._cullBucketIdx;
+        for (var ii = 0; ii < indices.length; ii++) {
+          var idx = indices[ii];
+          if (_isHidden(bucket, idx)) {
+            continue;
+          }
+          var p = idx * 4;
+          var x = pts[p], y = pts[p + 1], z = pts[p + 3];
+          if (x < minX || x > maxX || y < minY || y > maxY || z < altMin || z > altMax) {
+            continue;
+          }
+          zArr[total] = z;
+          pointIdxArr[total] = idx;
+          bucketIdxArr[total] = bi;
+          total++;
+          if (z < globalMinZ) globalMinZ = z;
+          if (z > globalMaxZ) globalMaxZ = z;
+        }
+      }
+      bucketStarts[rectBuckets.length] = total;
+      if (total === 0) {
+        return;
+      }
+
+      if (globalMaxZ - globalMinZ <= FLAT_PLATFORM_Z_EPSILON) {
+        this._drawRectBucketsFlat(ctx, rectBuckets, affine, bucketStarts);
+      } else {
+        this._drawRectBucketsSorted(ctx, rectBuckets, affine, total, globalMinZ, globalMaxZ);
+      }
+    },
+
+    // Fused fast path for zoomed-out views: every bucket renders below
+    // SMALL_RECT_SCREEN_PX, so cull + dedup + draw happen in ONE direct
+    // walk of each bucket's grid cells -- no scratch index array, no cull
+    // snapshot, no sort, one batched fill per bucket, and axis-aligned
+    // rects at each bucket's true screen dimensions instead of rotated
+    // quads. This is what a sidebar checkbox toggle or a pan/zoom settle
+    // costs on a 500k-object save viewed whole, so it's the hottest loop
+    // in the renderer; keep it allocation-free.
+    _drawRectBucketsAllSmall: function(ctx, rectBuckets, affine, minX, maxX, minY, maxY, altMin, altMax) {
+      var absScaleX = Math.abs(affine.scaleX);
+      var absScaleY = Math.abs(affine.scaleY);
+      for (var bi = 0; bi < rectBuckets.length; bi++) {
+        var bucket = rectBuckets[bi];
+        var pts = bucket.points;
+        var grid = bucket._grid;
+        if (pts.length === 0 || !grid) {
+          continue;
+        }
+        // Half extents in screen px, floored at 0.75 so even a subpixel
+        // building stays a visible ~1.5px dot (the old fixed size).
+        var halfW = Math.max(0.75, bucket.footprintPixels[0] * absScaleX);
+        var halfH = Math.max(0.75, bucket.footprintPixels[1] * absScaleY);
+        var fullW = halfW * 2, fullH = halfH * 2;
+        var hidden = bucket.hiddenIndices || null;
+        var hasOverrides = !!bucket.tiltedFootprints;
+        var fillColor = _withAlpha(bucket.color, 0.55);
+        ctx.fillStyle = fillColor;
+        ctx.beginPath();
+        var occ = this._occEnsure();
+        var occW = this._occW, occH = this._occH, stamp = this._occStamp;
+        var deferredPolygons = null;
+        // Inline _collectGridIndices: iterate the overlapping cells
+        // directly instead of copying half a million indices into the
+        // scratch array first.
+        var gridSize = grid.gridSize;
+        var cx0 = Math.max(0, Math.floor((minX - grid.minX) / grid.cellW));
+        var cx1 = Math.min(gridSize - 1, Math.floor((maxX - grid.minX) / grid.cellW));
+        var cy0 = Math.max(0, Math.floor((minY - grid.minY) / grid.cellH));
+        var cy1 = Math.min(gridSize - 1, Math.floor((maxY - grid.minY) / grid.cellH));
+        if (cx1 < 0 || cy1 < 0 || cx0 >= gridSize || cy0 >= gridSize || cx0 > cx1 || cy0 > cy1) {
+          continue;
+        }
+        for (var cy = cy0; cy <= cy1; cy++) {
+          var rowBase = cy * gridSize;
+          for (var cx = cx0; cx <= cx1; cx++) {
+            var cell = grid.cells[rowBase + cx];
+            for (var k = 0; k < cell.length; k++) {
+              var idx = cell[k];
+              if (hidden !== null && hidden.has(idx)) {
+                continue;
+              }
+              var p = idx * 4;
+              var x = pts[p], y = pts[p + 1], z = pts[p + 3];
+              if (x < minX || x > maxX || y < minY || y > maxY || z < altMin || z > altMax) {
+                continue;
+              }
+              if (hasOverrides) {
+                var verts = bucket.tiltedFootprints[idx];
+                if (verts) {
+                  (deferredPolygons || (deferredPolygons = [])).push(x, y, verts);
+                  continue;
+                }
+              }
+              var sx = affine.originX + x * affine.scaleX;
+              var sy = affine.originY + y * affine.scaleY;
+              var pxi = sx | 0, pyi = sy | 0;
+              if (pxi >= 0 && pyi >= 0 && pxi < occW && pyi < occH) {
+                var oi = pyi * occW + pxi;
+                if (occ[oi] === stamp) {
+                  continue; // A same-sized rect already covers this pixel this fill.
+                }
+                occ[oi] = stamp;
+              }
+              ctx.rect(sx - halfW, sy - halfH, fullW, fullH);
+            }
+          }
+        }
+        ctx.fill();
+        if (deferredPolygons) {
+          ctx.fillStyle = fillColor;
+          for (var dp = 0; dp < deferredPolygons.length; dp += 3) {
+            ctx.beginPath();
+            _tracePolygon(ctx, deferredPolygons[dp], deferredPolygons[dp + 1], deferredPolygons[dp + 2], affine);
+            ctx.fill();
+          }
+        }
+      }
+    },
+
+    // Doubles the _cull* snapshot arrays to at least `needed` entries,
+    // preserving what's already been written this frame. Sized to the
+    // high-water mark and kept across frames, so after the first zoomed-out
+    // redraw this never runs again.
+    _growCull: function(needed) {
+      var cap = Math.max(4096, this._cullCapacity);
+      while (cap < needed) {
+        cap *= 2;
+      }
+      var z = new Float32Array(cap);
+      var pointIdx = new Uint32Array(cap);
+      var bucketIdx = new Uint16Array(cap);
+      if (this._cullZ) {
+        z.set(this._cullZ);
+        pointIdx.set(this._cullPointIdx);
+        bucketIdx.set(this._cullBucketIdx);
+      }
+      this._cullZ = z;
+      this._cullPointIdx = pointIdx;
+      this._cullBucketIdx = bucketIdx;
+      this._cullCapacity = cap;
+    },
+
+    // Starts a new subpixel-dedup batch (see the tiny-rect branches in the
+    // draw paths below) and returns the occupancy buffer: one stamp byte
+    // per canvas pixel. A point whose integer pixel already carries the
+    // current stamp is skipped -- zoomed out, huge foundation fields
+    // collapse to a handful of screen pixels, and building a path with
+    // hundreds of thousands of coincident 1.5px squares costs real time
+    // while changing nothing visually (within one fill() overlapping
+    // subpaths don't even double-blend). Bumping the stamp makes
+    // "clearing" the buffer between batches free; Uint8 (vs Int32) keeps
+    // the random-access working set 4x smaller -- this buffer is hit once
+    // per point in the hottest loops, so cache footprint matters. The
+    // stamp wraps at 255, at which point the buffer is actually zeroed
+    // (a rare, cheap fill) so stale stamps can never false-positive.
+    _occEnsure: function() {
+      var w = this._canvas.width, h = this._canvas.height;
+      if (!this._occ || this._occW !== w || this._occH !== h) {
+        this._occ = new Uint8Array(w * h);
+        this._occStamp = 0;
+        this._occW = w;
+        this._occH = h;
+      }
+      this._occStamp++;
+      if (this._occStamp > 255) {
+        this._occ.fill(0);
+        this._occStamp = 1;
+      }
+      return this._occ;
+    },
+
+    // Fast path: no point in this view set is more than FLAT_PLATFORM_Z_EPSILON
+    // away from any other, so fill order can't visibly matter -- draw each
+    // bucket directly (one beginPath/fill per bucket, like the original
+    // single-bucket version of this code) straight from the _cull* snapshot
+    // _drawRectBuckets already built (bucketStarts[bi]..bucketStarts[bi+1]
+    // is bucket bi's slice of it), with no re-culling and no sort.
+    _drawRectBucketsFlat: function(ctx, rectBuckets, affine, bucketStarts) {
+      var pointIdxArr = this._cullPointIdx;
+      for (var bi = 0; bi < rectBuckets.length; bi++) {
+        var start = bucketStarts[bi];
+        var end = bucketStarts[bi + 1];
+        if (start === end) {
+          continue;
+        }
+        var bucket = rectBuckets[bi];
+        var pts = bucket.points;
         var halfWidth = bucket.footprintPixels[0];
         var halfDepth = bucket.footprintPixels[1];
-        var tiny = halfWidth * 2 * affine.scaleX < SUBPIXEL_RECT_THRESHOLD && halfDepth * 2 * affine.scaleY < SUBPIXEL_RECT_THRESHOLD;
+        var screenW = halfWidth * 2 * Math.abs(affine.scaleX);
+        var screenH = halfDepth * 2 * Math.abs(affine.scaleY);
+        // Below SMALL_RECT_SCREEN_PX rotation is invisible -- draw an
+        // axis-aligned rect at true screen size (see the constant's comment).
+        var small = screenW < SMALL_RECT_SCREEN_PX && screenH < SMALL_RECT_SCREEN_PX;
+        var halfWPx = Math.max(0.75, screenW / 2);
+        var halfHPx = Math.max(0.75, screenH / 2);
         var hasOverrides = !!bucket.tiltedFootprints; // See _footprintForPoint -- false for almost every bucket.
         var fillColor = _withAlpha(bucket.color, 0.55);
         ctx.fillStyle = fillColor;
         ctx.beginPath();
-        var indices = _collectGridIndices(bucket._grid, minX, maxX, minY, maxY, this._scratchIndices);
+        var occ = small ? this._occEnsure() : null;
+        var occW = this._occW, occH = this._occH, stamp = this._occStamp;
         // Deferred [x,y,verts, x,y,verts, ...] for this bucket's tilted
         // instances -- only ever allocated if the bucket actually has any
         // (see the comment below on why they can't just join the loop above).
         var deferredPolygons = null;
-        for (var ii = 0; ii < indices.length; ii++) {
-          var idx = indices[ii];
+        for (var k = start; k < end; k++) {
+          var idx = pointIdxArr[k];
           var i = idx * 4;
           var x = pts[i];
           var y = pts[i + 1];
-          var yaw = pts[i + 2];
-          var z = pts[i + 3];
-          if (x < minX || x > maxX || y < minY || y > maxY || z < altMin || z > altMax) {
-            continue;
-          }
           var verts = hasOverrides && bucket.tiltedFootprints[idx];
           if (verts) {
             // Measured, not guessed: adding even a few thousand closePath()'d
@@ -503,12 +980,20 @@ var MapApp = {};
             (deferredPolygons || (deferredPolygons = [])).push(x, y, verts);
             continue;
           }
-          if (tiny) {
+          if (small) {
             var cx = affine.originX + x * affine.scaleX;
             var cy = affine.originY + y * affine.scaleY;
-            ctx.rect(cx - 0.75, cy - 0.75, 1.5, 1.5);
+            var pxi = cx | 0, pyi = cy | 0;
+            if (pxi >= 0 && pyi >= 0 && pxi < occW && pyi < occH) {
+              var oi = pyi * occW + pxi;
+              if (occ[oi] === stamp) {
+                continue; // A same-sized rect already covers this pixel this fill.
+              }
+              occ[oi] = stamp;
+            }
+            ctx.rect(cx - halfWPx, cy - halfHPx, halfWPx * 2, halfHPx * 2);
           } else {
-            this._traceRect(ctx, x, y, yaw, halfWidth, halfDepth, affine);
+            this._traceRect(ctx, x, y, pts[i + 2], halfWidth, halfDepth, affine);
           }
         }
         ctx.fill();
@@ -526,37 +1011,68 @@ var MapApp = {};
     // Slow path: points genuinely span multiple floors, so fill order has to
     // follow actual altitude (lowest first) to match hitTest's "highest Z
     // wins" rule -- see the big comment on _drawRectBuckets above.
-    _drawRectBucketsSorted: function(ctx, rectBuckets, affine, minX, maxX, minY, maxY, altMin, altMax) {
-      var items = [];
+    //
+    // Draws from the _cull* snapshot _drawRectBuckets already built, ordered
+    // by a counting sort over quantized z instead of a comparator sort: at
+    // hundreds of thousands of visible points, Array#sort with a JS
+    // comparator (O(n log n) with a call per comparison) was the single
+    // biggest chunk of the redraw. Counting into Z_SORT_BINS bins is O(n),
+    // allocation-free after the first frame, and stable, so same-bin points
+    // keep bucket order -- exactly what the flat path does for views whose
+    // whole z spread fits FLAT_PLATFORM_Z_EPSILON anyway. Bin granularity is
+    // spread/Z_SORT_BINS: even a full-map view spanning ~2000m of altitude
+    // still resolves draw order to ~0.5m, well under one floor's height.
+    _drawRectBucketsSorted: function(ctx, rectBuckets, affine, total, globalMinZ, globalMaxZ) {
+      var zArr = this._cullZ;
+      var pointIdxArr = this._cullPointIdx;
+      var bucketIdxArr = this._cullBucketIdx;
+
+      // Precomputed once per bucket (constant across all of its points) so
+      // the fill loop below doesn't redo this arithmetic -- or, for the
+      // color, a string-keyed cache lookup -- once per point.
+      var absScaleX = Math.abs(affine.scaleX);
+      var absScaleY = Math.abs(affine.scaleY);
+      var smallByBucket = new Uint8Array(rectBuckets.length);
+      var halfWByBucket = new Float32Array(rectBuckets.length);
+      var halfHByBucket = new Float32Array(rectBuckets.length);
+      var colorByBucket = new Array(rectBuckets.length);
       for (var bi = 0; bi < rectBuckets.length; bi++) {
-        var bucket = rectBuckets[bi];
-        var pts = bucket.points;
-        if (pts.length === 0) {
-          continue;
-        }
-        var halfWidth = bucket.footprintPixels[0];
-        var halfDepth = bucket.footprintPixels[1];
-        var tiny = halfWidth * 2 * affine.scaleX < SUBPIXEL_RECT_THRESHOLD && halfDepth * 2 * affine.scaleY < SUBPIXEL_RECT_THRESHOLD;
-        var hasOverrides = !!bucket.tiltedFootprints; // See _footprintForPoint -- false for almost every bucket.
-        var indices = _collectGridIndices(bucket._grid, minX, maxX, minY, maxY, this._scratchIndices);
-        for (var ii = 0; ii < indices.length; ii++) {
-          var idx = indices[ii];
-          var i = idx * 4;
-          var x = pts[i];
-          var y = pts[i + 1];
-          var yaw = pts[i + 2];
-          var z = pts[i + 3];
-          if (x < minX || x > maxX || y < minY || y > maxY || z < altMin || z > altMax) {
-            continue;
-          }
-          var verts = hasOverrides && bucket.tiltedFootprints[idx];
-          items.push({ z: z, bucket: bucket, x: x, y: y, yaw: yaw, tiny: !verts && tiny, halfWidth: halfWidth, halfDepth: halfDepth, verts: verts || null });
-        }
+        var fp = rectBuckets[bi].footprintPixels;
+        var screenW = fp ? fp[0] * 2 * absScaleX : 0;
+        var screenH = fp ? fp[1] * 2 * absScaleY : 0;
+        smallByBucket[bi] = (screenW < SMALL_RECT_SCREEN_PX && screenH < SMALL_RECT_SCREEN_PX) ? 1 : 0;
+        halfWByBucket[bi] = Math.max(0.75, screenW / 2);
+        halfHByBucket[bi] = Math.max(0.75, screenH / 2);
+        colorByBucket[bi] = _withAlpha(rectBuckets[bi].color, 0.55);
       }
-      if (items.length === 0) {
-        return;
+
+      // Counting sort over the composite key (zBin, bucket) -- see
+      // Z_SORT_BINS for why the bucket is folded into the key. Stable, so
+      // same-key points keep collection order.
+      var bins = Z_SORT_BINS;
+      var nBuckets = rectBuckets.length;
+      var slots = bins * nBuckets + 1;
+      var counts = this._binCounts;
+      if (!counts || counts.length < slots) {
+        counts = this._binCounts = new Uint32Array(slots);
+      } else {
+        counts.fill(0, 0, slots);
       }
-      items.sort(function(a, b) { return a.z - b.z; });
+      var zScale = (bins - 1) / (globalMaxZ - globalMinZ); // Spread is > FLAT_PLATFORM_Z_EPSILON here, so never divides by zero.
+      var i;
+      for (i = 0; i < total; i++) {
+        counts[1 + (((zArr[i] - globalMinZ) * zScale) | 0) * nBuckets + bucketIdxArr[i]]++;
+      }
+      for (var b = 1; b < slots; b++) {
+        counts[b] += counts[b - 1];
+      }
+      var order = this._orderArr;
+      if (!order || order.length < total) {
+        order = this._orderArr = new Uint32Array(this._cullCapacity);
+      }
+      for (i = 0; i < total; i++) {
+        order[counts[(((zArr[i] - globalMinZ) * zScale) | 0) * nBuckets + bucketIdxArr[i]]++] = i;
+      }
 
       // ctx.fill() only applies one fillStyle to the whole current path, so
       // a fresh path/fill is needed whenever the color changes -- runs of
@@ -573,10 +1089,21 @@ var MapApp = {};
       var currentColor = null;
       var currentIsPolygon = null;
       var hasOpenPath = false;
-      for (var k = 0; k < items.length; k++) {
-        var item = items[k];
-        var color = _withAlpha(item.bucket.color, 0.55);
-        var isPolygon = !!item.verts;
+      // Subpixel dedup batch state (see _occEnsure) -- restarted on every
+      // beginPath below, so dedup never suppresses a square that a
+      // different-colored fill layered on top would have shown through.
+      var occ = null, occW = 0, occH = 0, stamp = 0;
+      for (var k = 0; k < total; k++) {
+        var w2 = order[k];
+        var bIdx = bucketIdxArr[w2];
+        var itemBucket = rectBuckets[bIdx];
+        var pIdx = pointIdxArr[w2];
+        var ip = pIdx * 4;
+        var ipts = itemBucket.points;
+        var ix = ipts[ip], iy = ipts[ip + 1], iyaw = ipts[ip + 2];
+        var verts = itemBucket.tiltedFootprints && itemBucket.tiltedFootprints[pIdx];
+        var color = colorByBucket[bIdx];
+        var isPolygon = !!verts;
         if (color !== currentColor || isPolygon !== currentIsPolygon) {
           if (hasOpenPath) {
             ctx.fill();
@@ -586,15 +1113,31 @@ var MapApp = {};
           currentColor = color;
           currentIsPolygon = isPolygon;
           hasOpenPath = true;
+          occ = null;
         }
         if (isPolygon) {
-          _tracePolygon(ctx, item.x, item.y, item.verts, affine);
-        } else if (item.tiny) {
-          var cx = affine.originX + item.x * affine.scaleX;
-          var cy = affine.originY + item.y * affine.scaleY;
-          ctx.rect(cx - 0.75, cy - 0.75, 1.5, 1.5);
+          _tracePolygon(ctx, ix, iy, verts, affine);
+        } else if (smallByBucket[bIdx]) {
+          var cx = affine.originX + ix * affine.scaleX;
+          var cy = affine.originY + iy * affine.scaleY;
+          if (!occ) {
+            occ = this._occEnsure();
+            occW = this._occW;
+            occH = this._occH;
+            stamp = this._occStamp;
+          }
+          var pxi = cx | 0, pyi = cy | 0;
+          if (pxi >= 0 && pyi >= 0 && pxi < occW && pyi < occH) {
+            var oi = pyi * occW + pxi;
+            if (occ[oi] === stamp) {
+              continue; // A same-sized rect already covers this pixel this fill.
+            }
+            occ[oi] = stamp;
+          }
+          var hw = halfWByBucket[bIdx], hh = halfHByBucket[bIdx];
+          ctx.rect(cx - hw, cy - hh, hw * 2, hh * 2);
         } else {
-          this._traceRect(ctx, item.x, item.y, item.yaw, item.halfWidth, item.halfDepth, affine);
+          this._traceRect(ctx, ix, iy, iyaw, itemBucket.footprintPixels[0], itemBucket.footprintPixels[1], affine);
         }
       }
       if (hasOpenPath) {
@@ -621,6 +1164,8 @@ var MapApp = {};
       ctx.lineWidth = bucket.lineWidth || 2.5;
       ctx.beginPath();
       var lineBounds = bucket._lineBounds;
+      var absScaleX = Math.abs(affine.scaleX);
+      var absScaleY = Math.abs(affine.scaleY);
       for (var L_ = 0; L_ < lines.length; L_++) {
         var pts = lines[L_];
         // Precomputed once when the bucket was added (see _buildLineBounds) --
@@ -630,24 +1175,24 @@ var MapApp = {};
         if (lb && (lb.minX > maxX || lb.maxX < minX || lb.minY > maxY || lb.maxY < minY || lb.minZ > altMax || lb.maxZ < altMin)) {
           continue;
         }
+        if (_isHidden(bucket, L_)) {
+          continue; // Individually hidden via a right-click "Hide this object".
+        }
         var prevX = affine.originX + pts[0] * affine.scaleX;
         var prevY = affine.originY + pts[1] * affine.scaleY;
-        ctx.moveTo(prevX, prevY);
-        for (var i = stride; i < pts.length; i += stride) {
-          var curX = affine.originX + pts[i] * affine.scaleX;
-          var curY = affine.originY + pts[i + 1] * affine.scaleY;
-          if (stride >= 7) {
-            var cp1x = prevX + (pts[i - stride + 4] / 3) * affine.scaleX; // prev vertex's leaveTangentX
-            var cp1y = prevY + (pts[i - stride + 5] / 3) * affine.scaleY; // prev vertex's leaveTangentY
-            var cp2x = curX - (pts[i + 2] / 3) * affine.scaleX; // cur vertex's arriveTangentX
-            var cp2y = curY - (pts[i + 3] / 3) * affine.scaleY; // cur vertex's arriveTangentY
-            ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, curX, curY);
-          } else {
-            ctx.lineTo(curX, curY);
-          }
-          prevX = curX;
-          prevY = curY;
+        // Zoomed out far enough that this whole polyline covers under ~3
+        // screen px, its curve/vertex detail is invisible -- one straight
+        // first-to-last segment is indistinguishable and turns a belt-heavy
+        // save's tens of thousands of multi-vertex beziers into two path
+        // verbs each. This is what keeps full-map views usable with huge
+        // conveyor/pipe networks.
+        if (lb && (lb.maxX - lb.minX) * absScaleX + (lb.maxY - lb.minY) * absScaleY < 3) {
+          var lastI = pts.length - stride;
+          ctx.moveTo(prevX, prevY);
+          ctx.lineTo(affine.originX + pts[lastI] * affine.scaleX, affine.originY + pts[lastI + 1] * affine.scaleY);
+          continue;
         }
+        _tracePolylinePath(ctx, pts, stride, affine);
       }
       ctx.stroke();
     },
@@ -690,7 +1235,21 @@ var MapApp = {};
         }
         var lineStride = lineBucket.pointStride;
         var lineAltIdx = lineStride - 1;
+        var lineBoundsArr = lineBucket._lineBounds;
         for (var li = 0; li < lineBucket.lines.length; li++) {
+          // Bounding-box reject before touching any vertex: without this,
+          // every hover tick walked every vertex of every belt/pipe on the
+          // map (millions, on a big save) just to find the one line near
+          // the cursor -- a constant background freeze while zoomed out.
+          var hlb = lineBoundsArr && lineBoundsArr[li];
+          if (hlb && (hlb.minX > x + toleranceMapUnits || hlb.maxX < x - toleranceMapUnits ||
+                      hlb.minY > y + toleranceMapUnits || hlb.maxY < y - toleranceMapUnits ||
+                      hlb.minZ > altMax || hlb.maxZ < altMin)) {
+            continue;
+          }
+          if (_isHidden(lineBucket, li)) {
+            continue;
+          }
           var pts = lineBucket.lines[li];
           var lineInAltitudeRange = false;
           for (var zk = lineAltIdx; zk < pts.length; zk += lineStride) {
@@ -711,7 +1270,7 @@ var MapApp = {};
             var lineScore = d / toleranceMapUnits;
             if (lineScore < bestLineScore) {
               bestLineScore = lineScore;
-              bestLineHit = { bucket: lineBucket, id: lineBucket.ids[li], z: pts[i + lineAltIdx] };
+              bestLineHit = { bucket: lineBucket, id: lineBucket.ids[li], index: li, z: pts[i + lineAltIdx] };
             }
           }
         }
@@ -751,6 +1310,9 @@ var MapApp = {};
         var rectIndices = _collectGridIndices(rectBucket._grid, x - maxRadius, x + maxRadius, y - maxRadius, y + maxRadius, this._scratchIndices);
         for (var ri = 0; ri < rectIndices.length; ri++) {
           var rectIdx = rectIndices[ri];
+          if (_isHidden(rectBucket, rectIdx)) {
+            continue;
+          }
           var rp = rectIdx * 4;
           var bx = rectBucket.points[rp];
           var by = rectBucket.points[rp + 1];
@@ -842,6 +1404,9 @@ var MapApp = {};
         var pointIndices = _collectGridIndices(bucket._grid, x - effectiveTolerance, x + effectiveTolerance, queryY - effectiveTolerance, queryY + effectiveTolerance, this._scratchIndices);
         for (var pi = 0; pi < pointIndices.length; pi++) {
           var idx = pointIndices[pi];
+          if (_isHidden(bucket, idx)) {
+            continue;
+          }
           var p = idx * stride;
           var z = bucket.points[p + altIdx];
           if (z < altMin || z > altMax) {
@@ -968,6 +1533,15 @@ var MapApp = {};
     return img;
   }
 
+  // True if this specific point/line index was individually hidden via a
+  // right-click "Hide this object" (see MapApp.hideObject/ContextMenu).
+  // bucket.hiddenIndices is left undefined for the overwhelming majority of
+  // buckets (nothing in them has ever been individually hidden), so this is
+  // a single false-y check with no Set allocated or touched in the common case.
+  function _isHidden(bucket, idx) {
+    return !!bucket.hiddenIndices && bucket.hiddenIndices.has(idx);
+  }
+
   // Per-point footprint override for a rect bucket -- see
   // sav_map_data.collectBuildings' tiltedFootprints. Most buildings only
   // ever rotate around the vertical axis (yaw), so one shared
@@ -991,6 +1565,42 @@ var MapApp = {};
   // current path. verts is a flat [x1,y1,x2,y2,...] list of pixel offsets
   // from (x,y), already in final orientation -- unlike _traceRect, no
   // rotation is applied here, just translation + the same screen scale.
+  // Traces one full-detail polyline into ctx's current path -- the shared
+  // vertex walk behind both _drawLineBucket's bulk pass and the hovered-line
+  // highlight (_redrawHighlight), so the curve geometry only lives in one
+  // place. stride semantics match the bucket shapes described at the top of
+  // this file: stride 3 vertices connect with straight segments, stride 7
+  // vertices with a cubic bezier built from the stored Hermite tangents.
+  function _tracePolylinePath(ctx, pts, stride, affine) {
+    var prevX = affine.originX + pts[0] * affine.scaleX;
+    var prevY = affine.originY + pts[1] * affine.scaleY;
+    ctx.moveTo(prevX, prevY);
+    for (var i = stride; i < pts.length; i += stride) {
+      var curX = affine.originX + pts[i] * affine.scaleX;
+      var curY = affine.originY + pts[i + 1] * affine.scaleY;
+      if (stride >= 7) {
+        // A bezier whose chord is under ~4px can't visibly deviate from
+        // a straight segment (tangent magnitudes are on the order of the
+        // chord, so the bulge is a fraction of it) -- lineTo is much
+        // cheaper to build and rasterize at path sizes this large.
+        var sdx = curX - prevX, sdy = curY - prevY;
+        if (sdx * sdx + sdy * sdy < 16) {
+          ctx.lineTo(curX, curY);
+        } else {
+          var cp1x = prevX + (pts[i - stride + 4] / 3) * affine.scaleX; // prev vertex's leaveTangentX
+          var cp1y = prevY + (pts[i - stride + 5] / 3) * affine.scaleY; // prev vertex's leaveTangentY
+          var cp2x = curX - (pts[i + 2] / 3) * affine.scaleX; // cur vertex's arriveTangentX
+          var cp2y = curY - (pts[i + 3] / 3) * affine.scaleY; // cur vertex's arriveTangentY
+          ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, curX, curY);
+        }
+      } else {
+        ctx.lineTo(curX, curY);
+      }
+      prevX = curX;
+      prevY = curY;
+    }
+  }
+
   function _tracePolygon(ctx, x, y, verts, affine) {
     var cx = affine.originX + x * affine.scaleX;
     var cy = affine.originY + y * affine.scaleY;
@@ -1088,6 +1698,61 @@ var MapApp = {};
     }
   };
 
+  // Hides one specific instance within a bucket (a right-click "Hide this
+  // object" -- see ContextMenu) rather than the whole bucket/layer. `index`
+  // is a point index for circle/icon/rect buckets or a line index for line
+  // buckets -- whichever hitTest returned as `hit.index`. Not persisted
+  // across a save reload: buckets (and their indices) are rebuilt fresh by
+  // Filters.build every load, same as everything else keyed by bucket index.
+  MapApp.hideObject = function(bucket, index) {
+    if (index === undefined || index === null) {
+      return;
+    }
+    if (!bucket.hiddenIndices) {
+      bucket.hiddenIndices = new Set();
+    }
+    bucket.hiddenIndices.add(index);
+    if (MapApp.highlightedBucket === bucket && bucket.ids && bucket.ids[index] === MapApp.highlightedId) {
+      MapApp.setHighlight(null, null);
+      if (window.Tooltip) {
+        window.Tooltip.hide();
+      }
+    }
+    if (MapApp.layer) {
+      MapApp.layer.requestRedraw();
+    }
+  };
+
+  // Total count across every bucket's hiddenIndices -- drives the sidebar's
+  // "Reset hidden objects" button (see filters.js), which only makes sense
+  // to show at all once this is greater than zero.
+  MapApp.countHiddenObjects = function() {
+    if (!MapApp.layer) {
+      return 0;
+    }
+    var total = 0;
+    MapApp.layer.buckets.forEach(function(bucket) {
+      if (bucket.hiddenIndices) {
+        total += bucket.hiddenIndices.size;
+      }
+    });
+    return total;
+  };
+
+  // Un-hides every individually-hidden object across every bucket -- the
+  // only way to undo MapApp.hideObject short of reloading the save, since
+  // (unlike a layer/category hide) there's no sidebar checkbox tracking
+  // these to just re-check.
+  MapApp.resetHiddenObjects = function() {
+    if (!MapApp.layer) {
+      return;
+    }
+    MapApp.layer.buckets.forEach(function(bucket) {
+      bucket.hiddenIndices = null;
+    });
+    MapApp.layer.requestRedraw();
+  };
+
   MapApp.init = function() {
     var map = L.map("map", {
       crs: L.CRS.Simple,
@@ -1128,9 +1793,21 @@ var MapApp = {};
     // more often than that while the mouse is actually moving).
     var HOVER_THROTTLE_MS = 40;
     var lastHoverTime = 0;
+    // No hover hit-testing while the map is moving: DOM mousemove keeps
+    // firing during a drag, and running hitTest against a huge save every
+    // 40ms while also panning is wasted work at the worst possible time.
+    var isMoving = false;
+    map.on("movestart", function() { isMoving = true; });
+    map.on("moveend", function() { isMoving = false; });
     map.on("mousemove", function(e) {
+      if (isMoving) {
+        return;
+      }
       if (!window.Tooltip || window.Tooltip.isPinned()) {
         return; // A pinned tooltip stays put until explicitly unpinned (see click handler below).
+      }
+      if (window.ContextMenu && ContextMenu.isOpen()) {
+        return; // Leave the right-clicked object's tooltip/highlight alone while its menu is up (see contextmenu.js).
       }
       var now = Date.now();
       if (now - lastHoverTime < HOVER_THROTTLE_MS) {
@@ -1164,6 +1841,9 @@ var MapApp = {};
       }
     });
     map.on("mouseout", function() {
+      if (window.ContextMenu && ContextMenu.isOpen()) {
+        return; // Keep the right-clicked object highlighted while its menu is up.
+      }
       if (window.Tooltip && !window.Tooltip.isPinned()) {
         window.Tooltip.hide();
         MapApp.setHighlight(null, null);

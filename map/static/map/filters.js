@@ -9,8 +9,9 @@
 // Production/Power/Logistics/Special, plus the catch-all Unknown) and their
 // one level of subcategory come straight from docs/generated/buildingCategories.json
 // + docs/categoryLabels.json via payload.menuOrder -- see
-// buildBuildingCategorySections. Resource Nodes, HUB, Entities, Collectables
-// and Hard Drives are their own separate sections. renderGroup() supports the
+// buildBuildingCategorySections. Resource Nodes, HUB, Entities, and
+// Collectables (which nests Hard Drives alongside Power Slugs/Somersloops/
+// Mercer Spheres) are their own separate sections. renderGroup() supports the
 // subcategory nesting generically (see its doc comment).
 
 var Filters = {};
@@ -44,57 +45,51 @@ var Filters = {};
   var SOMERSLOOP_COLOR = "#f43845";
   var MERCER_SPHERE_COLOR = "#4e1071";
 
-  // Real item icons (see static/icons/items/) read far more clearly on the
-  // map than an abstract colored dot for these specific collectables --
-  // "remaining" is drawn at full opacity, "collected"/already-dealt-with
-  // states are dimmed (COLLECTED_ICON_OPACITY) rather than needing a second
-  // image asset just to show the same icon "used up".
+  // Real item icons (see static/map/icons/items/, keyed by ClassName -- see
+  // docs/generated/items.json/resources.json's "icon" field and
+  // docs/copy_icons.py) read far more clearly on the map than an abstract
+  // colored dot for these specific collectables -- "remaining" is drawn at
+  // full opacity, "collected"/already-dealt-with states are dimmed
+  // (COLLECTED_ICON_OPACITY) rather than needing a second image asset just
+  // to show the same icon "used up".
   var ICON_BASE_URL = "icons/items/";
-  var ITEM_ICON_FILES = {
-    slugsBlue: "Blue Power Slug.png",
-    slugsYellow: "Yellow Power Slug.png",
-    slugsPurple: "Purple Power Slug.png",
-    somersloops: "Somersloop.png",
-    mercerSpheres: "Mercer Sphere.png",
-    hardDrive: "Hard Drive.png",
+  var ITEM_ICON_CLASS_NAMES = {
+    slugsBlue: "Desc_Crystal_C",
+    slugsYellow: "Desc_Crystal_mk2_C",
+    slugsPurple: "Desc_Crystal_mk3_C",
+    somersloops: "Desc_WAT1_C",
+    mercerSpheres: "Desc_WAT2_C",
   };
   var COLLECTED_ICON_OPACITY = 0.4;
 
   function iconUrl(key) {
-    return ICON_BASE_URL + encodeURIComponent(ITEM_ICON_FILES[key]);
+    return ICON_BASE_URL + encodeURIComponent(ITEM_ICON_CLASS_NAMES[key]) + ".png";
   }
 
-  // Resource node icons, keyed by the save's own resourceType pathName (see
-  // sav_map_data.collectResourceNodes). Most of these PNGs already existed
-  // for other purposes (inventory/tooltip rendering); Crude Oil, Nitrogen
-  // Gas, and Water were downloaded from the wiki's fluid icon set
-  // (satisfactory.fandom.com/wiki/Category:Fluid_icons) specifically for
-  // this. Geyser lives in icons/other/ (not icons/items/) since it isn't an
-  // inventory item at all.
-  var RESOURCE_ICON_FILES = {
-    Desc_Coal_C: "items/Coal.png",
-    Desc_OreIron_C: "items/Iron Ore.png",
-    Desc_OreCopper_C: "items/Copper Ore.png",
-    Desc_OreGold_C: "items/Caterium Ore.png",
-    Desc_OreBauxite_C: "items/Bauxite.png",
-    Desc_OreUranium_C: "items/Uranium.png",
-    Desc_Stone_C: "items/Limestone.png",
-    Desc_Sulfur_C: "items/Sulfur.png",
-    Desc_RawQuartz_C: "items/Raw Quartz.png",
-    Desc_SAM_C: "items/SAM.png",
-    Desc_LiquidOil_C: "items/Crude Oil.png",
-    Desc_NitrogenGas_C: "items/Nitrogen Gas.png",
-    Desc_Water_C: "items/Water.png",
-    Desc_Geyser_C: "other/Geyser.png",
-  };
+  // Hard Drives have no FGItemDescriptor/FGResourceDescriptor of their own
+  // (picked up once as a one-off tech unlock, never held in inventory), but
+  // the game does have real crate art for them -- it just lives under a
+  // schematic's mSchematicIcon field, which extract_docs_json.py doesn't
+  // parse generically (see docs/copy_icons.py's EXTRA_ICON_COPIES). Copied
+  // in by hand as icons/items/HardDrive.png -- a real game asset, not a
+  // hand-picked label file.
+  var HARD_DRIVE_ICON_URL = "icons/items/HardDrive.png";
 
+  // Resource node icons -- keyed by the save's own resourceType pathName
+  // (see sav_map_data.collectResourceNodes), which is exactly the ClassName
+  // the raw resource's own per-class icon is stored under (see
+  // docs/generated/resources.json, copied in by docs/copy_icons.py), so the
+  // URL is fully deterministic -- no lookup table needed. Geyser
+  // (Desc_Geyser_C) is the one exception: it's a synthetic resourceType this
+  // parser invented for a resource node kind with no FGResourceDescriptor (or
+  // any other Docs.json field) behind it at all -- its real icon is copied in
+  // by hand instead (see docs/copy_icons.py's EXTRA_ICON_COPIES) as
+  // icons/items/Geyser.png, not ClassName-keyed since there's no class to key it by.
   function resourceIconUrl(resourceType) {
-    var relativePath = RESOURCE_ICON_FILES[resourceType];
-    if (!relativePath) {
-      return null;
+    if (resourceType === "Desc_Geyser_C") {
+      return ICON_BASE_URL + "Geyser.png";
     }
-    var encodedSegments = relativePath.split("/").map(encodeURIComponent);
-    return "icons/" + encodedSegments.join("/");
+    return ICON_BASE_URL + encodeURIComponent(resourceType) + ".png";
   }
 
   // No "player" icon exists among the real item icons (static/map/icons/items/),
@@ -200,6 +195,20 @@ var Filters = {};
   // save. Persists for the life of the page (rebuilt fresh only on reload),
   // deliberately never cleared by Filters.build itself.
   var savedVisibility = {};
+
+  // bucket.key -> the checkbox/label of the sidebar row ("layer") and the
+  // top-level category that own it -- populated by appendLeafRow (every
+  // leaf row, however deeply nested) and renderTopLevelCategory (every
+  // top-level section) respectively, as the two centralized places that
+  // already run for every bucket in the whole tree. Lets the right-click
+  // context menu (see ContextMenu) flip the exact same checkboxes the
+  // sidebar owns for "Hide layer"/"Hide category" without re-deriving the
+  // tree. Rebuilt fresh in Filters.build, same lifetime as the buckets
+  // themselves (unlike savedVisibility, which deliberately outlives a reload).
+  var bucketLayerCheckbox = {};
+  var bucketLayerLabel = {};
+  var bucketCategoryCheckbox = {};
+  var bucketCategoryLabel = {};
 
   // tooltipInfo(idx) -> {title, rows: [[label, value], ...]} for a "static"
   // bucket (no server round-trip; we already know everything worth showing).
@@ -362,6 +371,17 @@ var Filters = {};
     // one source of truth for a building's visibility, whether it's flipped
     // from here or from a search suggestion.
     row.checkbox = checkbox;
+    // Every bucket's "layer" is exactly the row that owns it -- recorded here
+    // (the single place every leaf row is built, however deeply nested) so
+    // the right-click context menu (see ContextMenu/Filters.hideLayer) can
+    // find and flip this same checkbox without walking the sidebar tree
+    // again. The row's own label/displayLabel (not a bucket's own, narrower
+    // label -- e.g. one material skin's) is what "Hide layer" should show,
+    // since that's the scope it actually hides.
+    row.buckets.forEach(function(bucket) {
+      bucketLayerCheckbox[bucket.key] = checkbox;
+      bucketLayerLabel[bucket.key] = row.displayLabel || row.label;
+    });
     return checkbox;
   }
 
@@ -464,7 +484,7 @@ var Filters = {};
   }
 
   // Every top-level category (Resource Nodes, Extraction, ..., Entities,
-  // Collectables, Hard Drives) shows a single row in the narrow left nav
+  // Collectables) shows a single row in the narrow left nav
   // column and its full content in the wider right detail pane, only one of
   // which is visible at a time (see selectCategory) -- this is what
   // Filters.build calls instead of renderGroup directly for those ~14 top-
@@ -576,6 +596,17 @@ var Filters = {};
     });
 
     categoryEntries.push({ navRow: titleRow, detailGroup: detailGroup });
+
+    // See bucketCategoryCheckbox's doc comment above -- `title` carries a
+    // trailing " (1,234)" total count (most call sites) that reads oddly
+    // repeated in a right-click menu, so it's stripped for display only;
+    // the checkbox itself doesn't care either way.
+    var cleanTitle = title.replace(/\s*\([\d,]+\)\s*$/, "");
+    result.buckets.forEach(function(bucket) {
+      bucketCategoryCheckbox[bucket.key] = result.checkbox;
+      bucketCategoryLabel[bucket.key] = cleanTitle;
+    });
+
     return { buckets: result.buckets, checkbox: result.checkbox };
   }
 
@@ -653,7 +684,8 @@ var Filters = {};
   // Every top-level section shows its total count in the header (matching
   // the building-category sections below) so it's informative even
   // collapsed -- see buildResourceEntrySection/buildCollectablesSection/
-  // buildHardDrivesSection, all now startCollapsed:true by default.
+  // buildCollectablesSection's nested Hard Drives group, all now
+  // startCollapsed:true by default.
   function resourceEntriesTotal(resourceEntries) {
     var total = 0;
     resourceEntries.forEach(function(resourceEntry) {
@@ -687,7 +719,73 @@ var Filters = {};
     buildResourceEntrySection(navList, detailPane, "Resource Wells", byResourceType.filter(function(e) { return e.isWell; }));
   }
 
-  // ---- Collectables -----------------------------------------------------
+  // ---- Collectables (Power Slugs/Somersloops/Mercer Spheres/Hard Drives) ----
+
+  // "hasDrive" still has something for the player to get (full opacity);
+  // "empty"/"dismantled" are already dealt with (dimmed) -- same icon
+  // throughout, since it's still physically a hard drive crate.
+  var HARD_DRIVE_ICON_OPACITY = {
+    hasDrive: 1, empty: COLLECTED_ICON_OPACITY, dismantled: COLLECTED_ICON_OPACITY,
+  };
+
+  // Hard Drives nested inside Collectables as their own sub-group, same
+  // level as each Power Slug/Somersloop/Mercer Sphere kind below -- they're
+  // the same "find it out in the world" flavor of pickup, just with 3 states
+  // (has drive/empty/dismantled) instead of remaining/collected.
+  function buildHardDrivesGroup(childrenDiv, payload) {
+    var hardDrives = payload.hardDrives;
+    var stateKeys = ["hasDrive", "empty", "dismantled"];
+    var url = HARD_DRIVE_ICON_URL;
+    var rows = stateKeys.map(function(stateKey) {
+      var color = HARD_DRIVE_COLORS[stateKey];
+      var points = hardDrives[stateKey];
+      var ids = hardDrives[stateKey + "Ids"];
+      var worldPositions = hardDrives[stateKey + "WorldPositions"];
+      // What a crash site demands before it hands over its hard drive --
+      // either an item stack or a power hookup (see
+      // sav_map_data.collectHardDrives) -- always shown, explicitly as
+      // "None" rather than omitting the row, so its absence reads as a
+      // known fact rather than missing data.
+      var requirements = hardDrives[stateKey + "Requirements"];
+      function requirementText(requirement) {
+        if (!requirement) {
+          return "None";
+        }
+        if (requirement.type === "power") {
+          return requirement.watts + "W Power";
+        }
+        return requirement.quantity + "x " + requirement.item;
+      }
+      // See sav_map_data.collectHardDrives -- needed even once dismantled,
+      // since the actor itself is gone from the save by then.
+      var tooltipInfo = function(index) {
+        var position = worldPositions ? [worldPositions[index * 2], worldPositions[index * 2 + 1]] : undefined;
+        var requirement = requirements ? requirements[index] : null;
+        var rows = [["Status", HARD_DRIVE_LABELS[stateKey]], ["Requirement", requirementText(requirement)]];
+        return { title: "Hard Drive", rows: rows, position: position };
+      };
+      // Bucket label is the item-generic "Hard Drive" (not the per-state
+      // HARD_DRIVE_LABELS name) -- same reasoning as the Power Slug/
+      // Somersloop/Mercer Sphere buckets above, whose remaining/collected
+      // buckets both use kind.label rather than "Remaining"/"Collected":
+      // selection.js's rectangle-select object list groups purely by
+      // bucket.label, so a per-state label here would split one "Hard
+      // Drive" into three separate "Has Drive"/"Empty"/"Dismantled" rows
+      // instead of one combined count. The per-state name still shows in
+      // the sidebar row (row.label below) and the tooltip's "Status" row.
+      var bucket = makeIconBucket("hd:" + stateKey, "Hard Drive", color, points, ids, "static", tooltipInfo, url, HARD_DRIVE_ICON_OPACITY[stateKey]);
+      return { label: HARD_DRIVE_LABELS[stateKey], count: pointCount(points, 3), color: color, buckets: [bucket], iconUrl: url };
+    });
+    var total = rows.reduce(function(s, r) { return s + r.count; }, 0);
+    // "hasDrive" (rows[0], stateKeys' first entry) is the only state still
+    // waiting to be collected -- "empty"/"dismantled" both mean the crash
+    // site's already been dealt with, so together they're the "collected"
+    // half of the same collected/total format the Power Slug/Somersloop/
+    // Mercer Sphere groups above use.
+    var collectedCount = total - rows[0].count;
+    var title = "Hard Drives (" + collectedCount + "/" + total + ")";
+    return { total: total, result: renderGroup(childrenDiv, title, "icon", HARD_DRIVE_COLORS.hasDrive, rows, { startCollapsed: true, iconUrl: url }) };
+  }
 
   function buildCollectablesSection(navList, detailPane, payload) {
     var collectables = payload.collectables;
@@ -698,10 +796,12 @@ var Filters = {};
       { key: "somersloops", label: "Somersloop", color: SOMERSLOOP_COLOR },
       { key: "mercerSpheres", label: "Mercer Sphere", color: MERCER_SPHERE_COLOR },
     ];
+    var hardDriveTotal = pointCount(payload.hardDrives.hasDrive, 3) +
+      pointCount(payload.hardDrives.empty, 3) + pointCount(payload.hardDrives.dismantled, 3);
     var total = kinds.reduce(function(sum, kind) {
       var data = collectables[kind.key];
       return sum + pointCount(data.remaining, 3) + pointCount(data.collected, 3);
-    }, 0);
+    }, hardDriveTotal);
     renderTopLevelCategory(navList, detailPane, "Collectables (" + total + ")", "circle", NEUTRAL_COLOR, function(childrenDiv) {
       var checkboxes = [];
       var allBuckets = [];
@@ -741,56 +841,13 @@ var Filters = {};
         checkboxes.push(result.checkbox);
         allBuckets = allBuckets.concat(result.buckets);
       });
+      if (hardDriveTotal > 0) {
+        var hardDriveGroup = buildHardDrivesGroup(childrenDiv, payload);
+        checkboxes.push(hardDriveGroup.result.checkbox);
+        allBuckets = allBuckets.concat(hardDriveGroup.result.buckets);
+      }
       return { buckets: allBuckets, checkboxes: checkboxes };
     });
-  }
-
-  // ---- Hard Drives -------------------------------------------------------
-
-  // "hasDrive" still has something for the player to get (full opacity);
-  // "empty"/"dismantled" are already dealt with (dimmed) -- same icon
-  // throughout, since it's still physically a hard drive crate.
-  var HARD_DRIVE_ICON_OPACITY = {
-    hasDrive: 1, empty: COLLECTED_ICON_OPACITY, dismantled: COLLECTED_ICON_OPACITY,
-  };
-
-  function buildHardDrivesSection(navList, detailPane, payload) {
-    var hardDrives = payload.hardDrives;
-    var stateKeys = ["hasDrive", "empty", "dismantled"];
-    var url = iconUrl("hardDrive");
-    var rows = stateKeys.map(function(stateKey) {
-      var color = HARD_DRIVE_COLORS[stateKey];
-      var points = hardDrives[stateKey];
-      var ids = hardDrives[stateKey + "Ids"];
-      var worldPositions = hardDrives[stateKey + "WorldPositions"];
-      // What a crash site demands before it hands over its hard drive --
-      // either an item stack or a power hookup (see
-      // sav_map_data.collectHardDrives) -- always shown, explicitly as
-      // "None" rather than omitting the row, so its absence reads as a
-      // known fact rather than missing data.
-      var requirements = hardDrives[stateKey + "Requirements"];
-      function requirementText(requirement) {
-        if (!requirement) {
-          return "None";
-        }
-        if (requirement.type === "power") {
-          return requirement.watts + "W Power";
-        }
-        return requirement.quantity + "x " + requirement.item;
-      }
-      // See sav_map_data.collectHardDrives -- needed even once dismantled,
-      // since the actor itself is gone from the save by then.
-      var tooltipInfo = function(index) {
-        var position = worldPositions ? [worldPositions[index * 2], worldPositions[index * 2 + 1]] : undefined;
-        var requirement = requirements ? requirements[index] : null;
-        var rows = [["Status", HARD_DRIVE_LABELS[stateKey]], ["Requirement", requirementText(requirement)]];
-        return { title: "Hard Drive", rows: rows, position: position };
-      };
-      var bucket = makeIconBucket("hd:" + stateKey, HARD_DRIVE_LABELS[stateKey], color, points, ids, "static", tooltipInfo, url, HARD_DRIVE_ICON_OPACITY[stateKey]);
-      return { label: HARD_DRIVE_LABELS[stateKey], count: pointCount(points, 3), color: color, buckets: [bucket], iconUrl: url };
-    });
-    var total = rows.reduce(function(s, r) { return s + r.count; }, 0);
-    renderTopLevelCategory(navList, detailPane, "Hard Drives (" + total + ")", "icon", HARD_DRIVE_COLORS.hasDrive, rows, { iconUrl: url });
   }
 
   // ---- HUB ------------------------------------------------------------------
@@ -1079,6 +1136,10 @@ var Filters = {};
     detailPane.innerHTML = "";
     categoryEntries = [];
     buildingSearchEntries = [];
+    bucketLayerCheckbox = {};
+    bucketLayerLabel = {};
+    bucketCategoryCheckbox = {};
+    bucketCategoryLabel = {};
     MapApp.layer.clearBuckets();
 
     buildResourceNodeSection(navList, detailPane, payload);
@@ -1086,7 +1147,6 @@ var Filters = {};
     buildHubSection(navList, detailPane, payload);
     buildEntitiesSection(navList, detailPane, payload);
     buildCollectablesSection(navList, detailPane, payload);
-    buildHardDrivesSection(navList, detailPane, payload);
 
     // Fit the nav panel to the category labels now that they all exist.
     autoSizeNavPanel();
@@ -1098,8 +1158,15 @@ var Filters = {};
 
     var totalEl = document.getElementById("totalObjectCount");
     if (totalEl) {
-      totalEl.textContent = computeTotalObjectCount(payload).toLocaleString() + " objects loaded";
+      totalEl.innerHTML = "";
+      totalEl.appendChild(el("span", "totalObjectCountValue", computeTotalObjectCount(payload).toLocaleString()));
+      totalEl.appendChild(el("span", "totalObjectCountLabel", " objects loaded"));
     }
+
+    // Fresh buckets from clearBuckets() above have no hiddenIndices yet --
+    // hides the "Restore N hidden objects" button left over from whatever
+    // was hidden in the previous save.
+    Filters.refreshHiddenObjectsIndicator();
 
     MapApp.layer.requestRedraw();
   };
@@ -1137,4 +1204,63 @@ var Filters = {};
   if (uncheckAllButton) {
     uncheckAllButton.addEventListener("click", function() { setAllVisibility(false); });
   }
+
+  // Individually-hidden objects (see MapApp.hideObject) aren't tied to any
+  // sidebar checkbox, so "Check all" doesn't reach them -- this is the only
+  // way to undo one short of reloading the save. Hidden entirely (rather
+  // than just disabled) when there's nothing to reset, matching how e.g.
+  // #sftpPanel/#gameSettingsPanel/#altitudePanel only appear once relevant.
+  var resetHiddenButton = document.getElementById("resetHiddenButton");
+  Filters.refreshHiddenObjectsIndicator = function() {
+    if (!resetHiddenButton) {
+      return;
+    }
+    var count = MapApp.countHiddenObjects();
+    if (count === 0) {
+      resetHiddenButton.style.display = "none";
+      return;
+    }
+    resetHiddenButton.textContent = "Restore " + count.toLocaleString() + " hidden object" + (count === 1 ? "" : "s");
+    resetHiddenButton.style.display = "block";
+  };
+  if (resetHiddenButton) {
+    resetHiddenButton.addEventListener("click", function() {
+      MapApp.resetHiddenObjects();
+      Filters.refreshHiddenObjectsIndicator();
+    });
+  }
+
+  // ---- Right-click context menu support (see ContextMenu in contextmenu.js) --
+
+  // Labels for a bucket's "layer" (its sidebar row) and "category" (its
+  // top-level section), for the context menu to show without needing to know
+  // anything about the sidebar tree itself.
+  Filters.contextInfo = function(bucket) {
+    return {
+      layerLabel: bucketLayerLabel[bucket.key] || bucket.label,
+      categoryLabel: bucketCategoryLabel[bucket.key] || null,
+    };
+  };
+
+  // Hides every bucket the clicked object's sidebar row controls, by
+  // flipping that row's real checkbox -- reuses its existing "change"
+  // listener (see appendLeafRow) rather than duplicating the
+  // bucket-visibility/savedVisibility bookkeeping here. A no-op if the row
+  // is already hidden.
+  Filters.hideLayer = function(bucket) {
+    var checkbox = bucketLayerCheckbox[bucket.key];
+    if (checkbox && checkbox.checked) {
+      checkbox.click();
+    }
+  };
+
+  // Same idea, one level up -- flips the whole top-level category's master
+  // checkbox (see renderGroup's parentCheckbox), which already cascades to
+  // every nested subcategory/row/bucket underneath it.
+  Filters.hideCategory = function(bucket) {
+    var checkbox = bucketCategoryCheckbox[bucket.key];
+    if (checkbox && checkbox.checked) {
+      checkbox.click();
+    }
+  };
 })();

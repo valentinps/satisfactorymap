@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-# This file is part of the Satisfactory Save Parser distribution
-#                                  (https://github.com/GreyHak/sat_sav_parse).
-# Copyright (c) 2024-2026 GreyHak (github.com/GreyHak).
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, version 3.
-#
-# This program is distributed in the hope that it will be useful, but
-# WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-# General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <https://www.gnu.org/licenses/>.
-
 # Local web server for the interactive save-file map viewer.
 # Usage: py map/sav_map_server.py [--port PORT] [--host HOST] [--no-browser]
 # The mode (upload / local folder / SFTP) is configured through the landing page.

@@ -4,15 +4,87 @@
   --detail-col-width: 280px;
   --altitude-width: 64px;
   --logo-width: 128px;
+
+  /* ---- Color system: slate surfaces, one blue accent for everything
+     interactive, FICSIT orange reserved for the brand + the "get a save
+     onto the map" path (logo, Load save, progress), and the existing pink
+     kept as the "something is hidden from view" signal. */
+  --surface-0: #131519;   /* deepest chrome: top bar, sidebar footer */
+  --surface-1: #1a1d22;   /* panels: sidebar, altitude rail */
+  --surface-2: #21242b;   /* popups: modals, dropdown, tooltip, menus */
+  --raised: #23262c;      /* controls: buttons, fields, cards */
+  --raised-hover: #2b2f37;
+  --inset: #171a20;       /* wells sunk into a popup (icon frames, bar tracks) */
+  --border: #30333b;
+  --border-popup: #3a3f4a;
+  --border-hover: #4a505c;
+  --text: #d9dde4;
+  --text-bright: #fff;
+  --muted: #8a92a3;
+  --faint: #6a7180;
+  --accent: #5ba3e0;
+  --accent-soft: #8ab4f8;
+  --accent-bg: #2a3545;
+  --accent-bg-hover: #33435a;
+  --accent-border: #3a5070;
+  --brand: #f2913d;       /* FICSIT orange */
+  --brand-bright: #ffa552;
+  --hidden-pink: #ff3b81;
+  --hidden-pink-soft: #ff9ec2;
+  --hidden-pink-bg: #3a2330;
+  --font: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
 }
 
 html, body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  font-family: sans-serif;
+  font-family: var(--font);
   font-size: 13px;
   background: #000;
+}
+
+/* Dark, slim scrollbars everywhere -- the browser's default light-gray bars
+   were the single most visibly "un-themed" element left on Windows. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3d424c transparent;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3d424c;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #4d535f;
+}
+
+::selection {
+  background: rgba(91, 163, 224, 0.35);
+}
+
+/* One consistent hover/press feel for every button in the app, instead of
+   each one transitioning (or snapping) on its own. */
+button {
+  font-family: inherit;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* ---- Top bar: logo/mode button, the item search bar, Dimensional Depot
@@ -25,8 +97,9 @@ html, body {
   left: 0;
   right: 0;
   height: var(--top-bar-height);
-  background: #17181c;
-  border-bottom: 1px solid #333;
+  background: linear-gradient(to bottom, #1a1d23, var(--surface-0));
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -35,24 +108,58 @@ html, body {
   z-index: 10;
 }
 
+/* The one brand moment in the chrome: a two-line FICSIT-orange wordmark
+   (small-caps kicker over the name) instead of a generic gray button. Still
+   a real button -- it navigates back to mode selection. */
 #logoButton {
   flex: none;
   width: var(--logo-width);
   height: 40px;
-  background: #23262c;
-  border: 1px solid #3a3a3a;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1px;
+  padding: 0 11px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-left: 3px solid var(--brand);
   border-radius: 6px;
-  color: #ddd;
-  font-weight: bold;
-  font-size: 11px;
-  line-height: 1.3;
   cursor: pointer;
   box-sizing: border-box;
+  text-align: left;
+}
+
+.logoKicker {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--faint);
+  line-height: 1;
+}
+
+.logoName {
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--brand);
+  line-height: 1.1;
+  white-space: nowrap;
 }
 
 #logoButton:hover {
-  border-color: #666;
-  color: #fff;
+  background: var(--raised);
+  border-color: var(--border);
+  border-left-color: var(--brand-bright);
+}
+
+#logoButton:hover .logoName {
+  color: var(--brand-bright);
+}
+
+#logoButton:hover .logoKicker {
+  color: var(--muted);
 }
 
 /* Spotlight-style search: a constrained-width box centered in the top bar
@@ -85,18 +192,25 @@ html, body {
 #mainSearchInput {
   width: 100%;
   box-sizing: border-box;
-  font-size: 16px;
+  font-family: var(--font);
+  font-size: 15px;
   padding: 9px 16px 9px 42px;
   border-radius: 999px;
-  border: 1px solid #3a3a3a;
-  background: #23262c;
+  border: 1px solid var(--border);
+  background: var(--raised);
   color: #eee;
+  transition: border-color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+#mainSearchInput:hover {
+  border-color: var(--border-hover);
 }
 
 #mainSearchInput:focus {
   outline: none;
-  border-color: #5ba3e0;
+  border-color: var(--accent);
   background: #262a31;
+  box-shadow: 0 0 0 3px rgba(91, 163, 224, 0.18);
 }
 
 #mainSearchInput::placeholder {
@@ -127,10 +241,15 @@ html, body {
   padding: 8px 10px;
   border-radius: 8px;
   cursor: pointer;
+  transition: background-color 0.08s ease;
 }
 
 .searchSuggestionRow.active {
   background: #2f6bd8;
+}
+
+.searchSuggestionRow.active .searchSuggestionLabel {
+  color: #fff;
 }
 
 .searchSuggestionIcon {
@@ -207,14 +326,15 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #23262c;
-  border: 1px solid #3a3a3a;
-  border-radius: 6px;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   cursor: pointer;
 }
 
 #depotIconButton:hover {
-  border-color: #666;
+  background: var(--raised-hover);
+  border-color: var(--border-hover);
 }
 
 #map {
@@ -259,6 +379,34 @@ body.no-category-selected #map {
   background: #000;
 }
 
+/* Leaflet's default zoom control ships as white boxes with black glyphs --
+   the one stock-Leaflet element still visible in the chrome. Re-skinned to
+   match the app's raised-control treatment. */
+.leaflet-touch .leaflet-bar,
+.leaflet-bar {
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.leaflet-bar a,
+.leaflet-touch .leaflet-bar a {
+  background: var(--raised);
+  color: var(--text);
+  border-bottom-color: var(--border);
+}
+
+.leaflet-bar a:hover,
+.leaflet-touch .leaflet-bar a:hover {
+  background: var(--raised-hover);
+  color: var(--text-bright);
+}
+
+.leaflet-bar a.leaflet-disabled,
+.leaflet-touch .leaflet-bar a.leaflet-disabled {
+  background: var(--surface-1);
+  color: var(--faint);
+}
+
 /* ---- Sidebar: a two-column browser -- the fixed-width nav panel (level-1
    category list, plus the save-loading footer at its bottom) alongside the
    detail pane (shown only when a category is selected). A flex ROW so the
@@ -271,8 +419,8 @@ body.no-category-selected #map {
   left: 0;
   width: calc(var(--nav-col-width) + var(--detail-col-width));
   bottom: 0;
-  background: #1c1c1c;
-  color: #ddd;
+  background: var(--surface-1);
+  color: var(--text);
   box-sizing: border-box;
   display: flex;
   flex-direction: row;
@@ -295,7 +443,7 @@ body.no-category-selected #map {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid #333;
+  border-right: 1px solid var(--border);
 }
 
 #categoryNavHeader {
@@ -303,13 +451,34 @@ body.no-category-selected #map {
   display: flex;
   gap: 8px;
   padding: 10px;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--border);
 }
 
 #categoryNavHeader button {
   flex: 1 1 50%;
   font-size: 12px;
   padding: 7px 0;
+}
+
+/* Pink accent matches #activeFilterBanner/#activeFilterClear -- the app's
+   existing "something is hidden from view, here's how to undo it" color. */
+#resetHiddenButton {
+  flex: none;
+  margin: 0 10px 10px;
+  padding: 7px 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  color: #ff9ec2;
+  background: #3a2330;
+  border: 1px solid #ff3b81;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#resetHiddenButton:hover {
+  background: #4a2a3c;
+  color: #fff;
 }
 
 #categoryNavColumn {
@@ -359,11 +528,13 @@ body.no-category-selected #map {
   padding: 11px 14px !important;
   margin-bottom: 6px;
   border-radius: 9px;
-  background: #23262c;
+  background: var(--raised);
+  border: 1px solid transparent;
   font-size: 14.5px !important;
   text-transform: none !important;
   letter-spacing: normal !important;
   gap: 11px !important;
+  transition: background-color 0.1s ease, border-color 0.1s ease;
 }
 
 .categoryNavRow .groupLabel {
@@ -376,7 +547,8 @@ body.no-category-selected #map {
 }
 
 .categoryNavRow:hover {
-  background: #2b2f36;
+  background: var(--raised-hover);
+  border-color: var(--border);
 }
 
 .categoryNavRow.active {
@@ -432,19 +604,20 @@ body.no-category-selected #map {
 }
 
 #checkAllButton, #uncheckAllButton {
-  font-size: 10px;
-  padding: 2px 7px;
+  font-size: 11px;
+  padding: 5px 7px;
   background: none;
-  border: 1px solid #3a3a3a;
-  border-radius: 3px;
-  color: #666;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
   cursor: pointer;
   white-space: nowrap;
 }
 
 #checkAllButton:hover, #uncheckAllButton:hover {
-  color: #aaa;
-  border-color: #666;
+  color: var(--text);
+  border-color: var(--border-hover);
+  background: var(--raised);
 }
 
 /* ---- Sidebar footer: save file picker, SFTP sync, game settings --
@@ -454,44 +627,171 @@ body.no-category-selected #map {
   flex: none;
   max-height: 46%;
   overflow-y: auto;
-  padding: 10px 10px 8px 10px;
+  padding: 12px;
   box-sizing: border-box;
-  border-top: 1px solid #444;
-  background: #1a1a1a;
+  border-top: 1px solid var(--border);
+  background: var(--surface-0);
 }
 
-#loadPanel select, #loadPanel button {
+/* label[for=saveSelect] doubles as the panel's small header AND an
+   accessible label -- clicking the icon/text opens the select same as
+   clicking the select itself, same association a bare <label> already had,
+   just with room for an icon alongside the text now. */
+#loadPanelHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+  color: #8a92a3;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.loadPanelIcon {
+  flex: none;
+  color: var(--brand);
+}
+
+/* Previously an entirely unstyled native <select>/<button> (only
+   width/margin were set) -- against this app's otherwise all-dark chrome
+   that rendered as a jarring light-gray system control. Styled to match
+   #mainSearchInput's dark field treatment (same focus color) below. */
+#saveSelect {
   width: 100%;
-  margin-top: 4px;
   box-sizing: border-box;
+  margin-bottom: 8px;
+  padding: 7px 30px 7px 10px;
+  font-size: 12.5px;
+  color: #ddd;
+  background-color: #23262c;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='11' height='11'%3E%3Cpath d='M5 8l5 5 5-5' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  cursor: pointer;
+}
+
+#saveSelect:hover {
+  border-color: #555;
+}
+
+#saveSelect:focus {
+  outline: none;
+  border-color: #5ba3e0;
+}
+
+/* Primary action for this panel -- same accent-blue "filled" treatment used
+   by #buildingModalHighlightToggle/.sftpSyncBtn elsewhere, so the one button
+   that actually does something (as opposed to a passive dropdown) reads as
+   the obvious next step. */
+#loadButton {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #ffc38a;
+  background: #3d2d1c;
+  border: 1px solid #6b4a26;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#loadButton:hover:not(:disabled) {
+  background: #4a361f;
+  border-color: #8a5e2e;
+  color: #ffd7ae;
+}
+
+#loadButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Opt-in auto-reload switch (see data.js's setAutoRefresh) -- label on the
+   left, the standard toggle switch on the right, same row pattern as the
+   category rows above. */
+#autoRefreshRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  cursor: default;
+}
+
+#autoRefreshLabel {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#autoRefreshRow .toggleSwitch {
+  width: 32px;
+  height: 18px;
+}
+
+#autoRefreshRow .toggleSlider::before {
+  width: 12px;
+  height: 12px;
+  top: 3px;
+  left: 3px;
+}
+
+#autoRefreshRow .toggleSwitch input:checked + .toggleSlider::before {
+  transform: translateX(14px);
 }
 
 #loadStatus {
-  margin-top: 6px;
+  margin-top: 8px;
   color: #999;
+  font-size: 11.5px;
   min-height: 1.2em;
 }
 
+/* The one number this whole panel exists to report -- given its own small
+   stat-chip treatment (bold accent value + muted label, same pairing as
+   .buildingStatValue/.buildingStatLabel in the building modal) instead of a
+   single flat gray line, so it actually reads as a result rather than a
+   caption. */
 #totalObjectCount {
-  margin-top: 2px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #2c2f37;
+  min-height: 1.2em;
+}
+
+.totalObjectCountValue {
+  color: #8ab4f8;
+  font-weight: 700;
+  font-family: "Consolas", "SF Mono", monospace;
+  font-size: 13px;
+}
+
+.totalObjectCountLabel {
   color: #777;
   font-size: 11px;
-  min-height: 1.2em;
 }
 
 #loadProgressBar {
   display: none;
-  margin-top: 4px;
-  height: 8px;
-  background: #333;
-  border-radius: 4px;
+  margin-top: 8px;
+  height: 6px;
+  background: #2a2d33;
+  border-radius: 999px;
   overflow: hidden;
 }
 
 #loadProgressFill {
   height: 100%;
   width: 0%;
-  background: #3498db;
+  background: linear-gradient(to right, #c96f22, var(--brand));
+  border-radius: 999px;
   transition: width 0.2s ease-out;
 }
 
@@ -585,17 +885,33 @@ body.no-category-selected #map {
 
 .itemLocationRow {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 10px;
   padding: 5px 8px;
   border-bottom: 1px solid #2c2f37;
+}
+
+.itemLocationRow:hover {
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .itemLocationRow:last-child {
   border-bottom: none;
 }
 
+/* Same exact->fuzzy->generic icon chain as the search dropdown (see
+   finditem.js's renderLocationList) -- keeps result lists scannable by
+   shape, not just by reading every label. */
+.itemLocationIcon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  object-fit: contain;
+}
+
 .itemLocationLabel {
+  flex: 1 1 auto;
+  min-width: 0;
   color: #ddd;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -617,7 +933,8 @@ body.no-category-selected #map {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(8, 10, 14, 0.6);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -628,31 +945,57 @@ body.no-category-selected #map {
   width: 480px;
   max-width: 90vw;
   max-height: 80vh;
-  background: #20232a;
-  border: 1px solid #3a3f4a;
-  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-popup);
+  border-radius: 12px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
   padding: 16px 18px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  color: #ddd;
+  color: var(--text);
+  transform: scale(0.96);
+  opacity: 0;
+  animation: buildingModalIn 0.16s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #itemModal, #selectionModal { animation: none; transform: none; opacity: 1; }
 }
 
 #itemModalHeader, #selectionModalHeader {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 11px;
   margin-bottom: 10px;
   padding-bottom: 10px;
-  border-bottom: 1px solid #3a3f4a;
+  border-bottom: 1px solid var(--border-popup);
   flex: none;
+}
+
+/* Same framed-icon treatment as #buildingModalIcon, one size down -- the
+   item modal's list rows are denser than the building modal's stat tiles. */
+#itemModalIcon {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  object-fit: contain;
+  background: var(--inset);
+  border: 1px solid #2c2f37;
+  border-radius: 8px;
+  padding: 4px;
+  box-sizing: border-box;
 }
 
 #itemModalTitle, #selectionModalTitle {
   font-weight: bold;
   font-size: 17px;
   color: #fff;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #itemModalClose, #selectionModalClose {
@@ -678,6 +1021,20 @@ body.no-category-selected #map {
 #itemModalHighlightToggle {
   flex: none;
   width: 100%;
+  margin-top: 4px;
+  padding: 9px 0;
+  border-radius: 8px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--accent-soft);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#itemModalHighlightToggle:hover {
+  background: var(--accent-bg-hover);
+  color: #fff;
 }
 
 /* ---- Building info window -- see finditem.js's Building object. Opened
@@ -899,6 +1256,42 @@ body.no-category-selected #map {
   color: #fff;
 }
 
+/* ---- Right-click context menu -- see contextmenu.js. -------------------- */
+
+#contextMenu {
+  position: fixed;
+  z-index: 1700; /* Above modals (1500) and the tooltip (1000) -- the most immediate, transient UI on screen. */
+  min-width: 190px;
+  max-width: 280px;
+  background: #20232a;
+  border: 1px solid #3a3f4a;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  padding: 6px;
+  font-size: 12.5px;
+  color: #ddd;
+}
+
+.contextMenuItem {
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.contextMenuItem:hover {
+  background: #2f6bd8;
+  color: #fff;
+}
+
+.contextMenuDivider {
+  height: 1px;
+  margin: 4px 2px;
+  background: #333;
+}
+
 /* ---- Rectangle selection (right-drag) -- see selection.js. -------------- */
 
 /* The drag rectangle itself: a fixed-position box tracking the pointer while
@@ -1042,11 +1435,11 @@ body.no-category-selected #map {
   right: 0;
   bottom: 0;
   width: var(--altitude-width);
-  background: #1c1c1c;
-  color: #ddd;
+  background: var(--surface-1);
+  color: var(--text);
   box-sizing: border-box;
   padding: 4px;
-  border-left: 1px solid #3a3a3a;
+  border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1055,11 +1448,19 @@ body.no-category-selected #map {
 }
 
 .altitudeTitle {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #888;
-  flex: none;
+}
+
+.altitudeTitleIcon {
+  color: #5ba3e0;
 }
 
 .altitudeValue {
@@ -1106,7 +1507,7 @@ body.no-category-selected #map {
   transform: translateX(-50%);
   width: 4px;
   padding: 0 8px;
-  background-color: #3498db;
+  background-color: var(--accent);
   background-clip: content-box;
   border-radius: 2px;
   pointer-events: auto;
@@ -1174,12 +1575,34 @@ body.no-category-selected #map {
   box-sizing: border-box;
 }
 
+/* Previously a bare, unstyled native <button> (rendered with the browser's
+   default light-gray chrome, the one visibly "un-themed" control against
+   this app's otherwise all-dark UI) squeezed into a 64px column as a text
+   label. A compact icon button reads as a deliberate control at this width
+   and matches the icon-button treatment used elsewhere (#depotIconButton). */
 #altitudeResetButton {
-  width: 100%;
-  margin-top: 4px;
-  font-size: 11px;
-  padding: 3px 0;
   flex: none;
+  width: 28px;
+  height: 28px;
+  margin-top: 8px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #999;
+  background: #23262c;
+  border: 1px solid #3a3a3a;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+#altitudeResetButton:hover {
+  color: #fff;
+  border-color: #666;
+}
+
+#altitudeResetButton svg {
+  display: block;
 }
 
 .filterGroup {
@@ -1239,7 +1662,7 @@ body.no-category-selected #map {
 }
 
 .toggleSwitch input:checked + .toggleSlider {
-  background: #3498db;
+  background: var(--accent);
 }
 
 .toggleSwitch input:checked + .toggleSlider::before {

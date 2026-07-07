@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-# This file is part of the Satisfactory Save Parser distribution
-#                                  (https://github.com/GreyHak/sat_sav_parse).
-# Copyright (c) 2024-2026 GreyHak (github.com/GreyHak).
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, version 3.
-#
-# This program is distributed in the hope that it will be useful, but
-# WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-# General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <https://www.gnu.org/licenses/>.
-
 # Extracts recipes/items/buildings/buildingCategories out of the game's
 # Docs.json (the Satisfactory Editor SDK reflection dump) into small generated
 # JSON files that are actually cheap to load at runtime/build time. Docs.json
@@ -29,10 +13,15 @@
 # Category rule (kept simple on purpose so new NativeClass groups in future
 # game updates fall into a sane bucket without needing this script to know
 # their name up front):
-#   - NativeClass group is FGSchematic / FGResourceDescriptor / FGCustomizationRecipe
-#     -> skipped entirely (schematics/resources: out of scope for now; customization
-#        recipes are skins/patterns/swatches, not craftable recipes, and mostly
-#        have no real mDisplayName anyway).
+#   - NativeClass group is FGSchematic / FGCustomizationRecipe -> skipped
+#     entirely (schematics aren't placeable/holdable; customization recipes
+#     are skins/patterns/swatches, not craftable recipes, and mostly have no
+#     real mDisplayName anyway).
+#   - NativeClass group is FGResourceDescriptor -> resources.json (raw
+#     resources -- ore/fluid/etc -- are their own small, fixed set: only 13
+#     entries total, all with a real mDisplayName/icon. Kept separate from
+#     items.json rather than folded in since they're not craftable/holdable
+#     the way a normal item is -- see resources.json's own doc comment).
 #   - NativeClass group is FGRecipe -> recipes.json.
 #   - Otherwise, per entry: ClassName starting with "Build_" -> buildings.json,
 #     anything else -> items.json (this naturally covers FGItemDescriptor and
@@ -61,8 +50,9 @@ from pathlib import Path
 DOCS_JSON_PATH = Path(__file__).parent / "Docs.json"
 OUTPUT_DIR = Path(__file__).parent / "generated"
 
-SKIPPED_NATIVE_CLASS_SUFFIXES = ("FGSchematic'", "FGResourceDescriptor'", "FGCustomizationRecipe'")
+SKIPPED_NATIVE_CLASS_SUFFIXES = ("FGSchematic'", "FGCustomizationRecipe'")
 RECIPE_NATIVE_CLASS_SUFFIX = "FGRecipe'"
+RESOURCE_NATIVE_CLASS_SUFFIX = "FGResourceDescriptor'"
 BUILDING_DESCRIPTOR_NATIVE_CLASS_SUFFIX = "FGBuildingDescriptor'"
 
 # Descriptor ClassName -> real buildable ClassName, for the handful of cases
@@ -113,6 +103,15 @@ BLUEPRINT_DESIGNER_GRID_UNIT_CM = 800.0
 # e.g. "Desc_Wall_Concrete_8x1_Tris_C" -- the descriptor puts the size before
 # the Tris/FlipTris tag, the real buildable puts it after (Build_Wall_Concrete_Tris_8x1_C).
 TRIS_SIZE_SWAP_RE = re.compile(r"^Desc_(.+)_(\d+x\d+)_(Tris|FlipTris)_C$")
+# mPersistentBigIcon looks like
+# "Texture2D /Game/FactoryGame/Resource/Parts/IronPlate/UI/IconDesc_IronPlates_256.IconDesc_IronPlates_256"
+# (missing for a handful of entries, given as the literal string "None").
+ICON_PATH_RE = re.compile(r"^Texture2D (/Game/[^.]+)\.")
+
+
+def formatIconPath(raw: str) -> str | None:
+   match = ICON_PATH_RE.match(raw or "")
+   return match.group(1)[len("/Game"):] if match else None
 
 
 def loadDocsJson(path: Path) -> list:
@@ -192,6 +191,7 @@ def extractItem(entry: dict) -> dict:
       "description": entry.get("mDescription", ""),
       "stackSize": entry.get("mStackSize", ""),
       "stackSizeCount": int(entry["mCachedStackSize"]) if entry.get("mCachedStackSize") else None,
+      "icon": formatIconPath(entry.get("mPersistentBigIcon", "")),
    }
 
 
@@ -202,6 +202,9 @@ def extractBuilding(entry: dict) -> dict:
       "dimensions": extractDimensions(entry),
       "clearance": parseClearanceBoxes(entry.get("mClearanceData", "")),
       "adaptiveLength": extractAdaptiveLength(entry),
+      # Filled in later from the FGBuildingDescriptor pass -- Build_*_C
+      # entries never carry mPersistentBigIcon themselves.
+      "icon": None,
    }
 
 
@@ -235,8 +238,12 @@ def extractBuildCategory(entry: dict) -> dict | None:
    }
 
 
-def extractBuildingCategories(docsData: list, buildClassNames: set) -> dict:
+def extractBuildingCategoriesAndIcons(docsData: list, buildClassNames: set) -> tuple:
+   # Building-menu category and icon both live on the FGBuildingDescriptor
+   # companion class (Desc_*_C), not on the buildable itself -- see module
+   # docstring -- so both are resolved to their Build_*_C name in one pass.
    categories = {}
+   icons = {}
    unresolved = []
    for nativeClassGroup in docsData:
       if not nativeClassGroup.get("NativeClass", "").endswith(BUILDING_DESCRIPTOR_NATIVE_CLASS_SUFFIX):
@@ -244,22 +251,27 @@ def extractBuildingCategories(docsData: list, buildClassNames: set) -> dict:
       for entry in nativeClassGroup.get("Classes", []):
          descriptorClassName = entry.get("ClassName")
          category = extractBuildCategory(entry)
-         if not descriptorClassName or not category:
+         icon = formatIconPath(entry.get("mPersistentBigIcon", ""))
+         if not descriptorClassName or (not category and not icon):
             continue
          buildClassName = resolveBuildClassName(descriptorClassName, buildClassNames)
          if buildClassName is None:
             unresolved.append(descriptorClassName)
             continue
-         categories[buildClassName] = category
+         if category:
+            categories[buildClassName] = category
+         if icon:
+            icons[buildClassName] = icon
    if unresolved:
       print(f"buildingCategories: {len(unresolved)} descriptor(s) did not resolve to a buildable, skipped: {unresolved}")
-   return categories
+   return categories, icons
 
 
 def extractAll(docsData: list) -> tuple:
    recipes = {}
    items = {}
    buildings = {}
+   resources = {}
    for nativeClassGroup in docsData:
       nativeClassName = nativeClassGroup.get("NativeClass", "")
       if nativeClassName.endswith(SKIPPED_NATIVE_CLASS_SUFFIXES):
@@ -270,6 +282,12 @@ def extractAll(docsData: list) -> tuple:
             if className and entry.get("mDisplayName"):
                recipes[className] = extractRecipe(entry)
          continue
+      if nativeClassName.endswith(RESOURCE_NATIVE_CLASS_SUFFIX):
+         for entry in nativeClassGroup.get("Classes", []):
+            className = entry.get("ClassName")
+            if className and entry.get("mDisplayName"):
+               resources[className] = extractItem(entry)
+         continue
       for entry in nativeClassGroup.get("Classes", []):
          className = entry.get("ClassName")
          if not className or not entry.get("mDisplayName"):
@@ -278,7 +296,7 @@ def extractAll(docsData: list) -> tuple:
             buildings[className] = extractBuilding(entry)
          else:
             items[className] = extractItem(entry)
-   return (recipes, items, buildings)
+   return (recipes, items, buildings, resources)
 
 
 def writeJson(path: Path, data: dict) -> None:
@@ -291,13 +309,16 @@ def writeJson(path: Path, data: dict) -> None:
 def main() -> None:
    docsPath = Path(sys.argv[1]) if len(sys.argv) > 1 else DOCS_JSON_PATH
    docsData = loadDocsJson(docsPath)
-   recipes, items, buildings = extractAll(docsData)
-   buildingCategories = extractBuildingCategories(docsData, set(buildings.keys()))
+   recipes, items, buildings, resources = extractAll(docsData)
+   buildingCategories, buildingIcons = extractBuildingCategoriesAndIcons(docsData, set(buildings.keys()))
+   for className, icon in buildingIcons.items():
+      buildings[className]["icon"] = icon
    writeJson(OUTPUT_DIR / "recipes.json", recipes)
    writeJson(OUTPUT_DIR / "items.json", items)
    writeJson(OUTPUT_DIR / "buildings.json", buildings)
+   writeJson(OUTPUT_DIR / "resources.json", resources)
    writeJson(OUTPUT_DIR / "buildingCategories.json", buildingCategories)
-   print(f"recipes: {len(recipes)}, items: {len(items)}, buildings: {len(buildings)}, buildingCategories: {len(buildingCategories)}")
+   print(f"recipes: {len(recipes)}, items: {len(items)}, buildings: {len(buildings)}, resources: {len(resources)}, buildingCategories: {len(buildingCategories)}")
 
 
 if __name__ == "__main__":

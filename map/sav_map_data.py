@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-# This file is part of the Satisfactory Save Parser distribution
-#                                  (https://github.com/GreyHak/sat_sav_parse).
-# Copyright (c) 2024-2026 GreyHak (github.com/GreyHak).
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, version 3.
-#
-# This program is distributed in the hope that it will be useful, but
-# WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-# General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
-
 # Builds a compact, pre-bucketed JSON payload describing a parsed save for the
 # interactive map web tool (sav_map_server.py).  All parsing logic is reused
 # from sav_parse.py/sav_to_html.py/sav_data; this module only buckets and
@@ -1244,6 +1228,18 @@ def _textPropertyValue(value):
       return value[4]
    return None
 
+# Every naming convention seen so far for the FGPipeConnectionComponent
+# sub-objects that carry "mPipeNetworkID": plain pipe segments use
+# ".PipelineConnection0"/"1", junctions/pumps/valves use ".Connection0".."3",
+# and machine fluid ports use ".FGPipeConnectionFactory". Tried in order
+# until one resolves (see buildSaveIndex / describeInstance /
+# aggregateSelectionInventory).
+PIPE_CONNECTOR_SUFFIXES = (
+   ".PipelineConnection0", ".PipelineConnection1",
+   ".Connection0", ".Connection1", ".Connection2", ".Connection3",
+   ".FGPipeConnectionFactory",
+)
+
 def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
    # One-time O(n) pass so describeInstance() doesn't rescan the whole save
    # on every click. Cached by sav_map_server.py alongside the map payload.
@@ -1300,6 +1296,7 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
    # confirmed against a dedicated test save (a single pipe holding Nitrogen
    # Gas, fully disconnected from anything else).
    pipeNetworkIdToFluid = {}
+   pipeNetworkIdToTotalFluid = {}
    for instanceName in headersByInstanceName:
       header = headersByInstanceName[instanceName]
       if getattr(header, "typePath", None) != "/Script/FactoryGame.FGPipeNetwork":
@@ -1312,20 +1309,37 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
          continue
       fluidLabel = readableLabel(fluidDescriptor.pathName)
       members = sav_parse.getPropertyValue(networkActorObject.properties, "mFluidIntegrantScriptInterfaces") or []
+      networkId = None
+      totalFluid = 0.0
       for memberReference in members:
          if not hasattr(memberReference, "pathName") or not memberReference.pathName:
             continue
+         # Everything in the network that holds fluid (pipes, pumps, valves,
+         # junctions, tanks) carries its amount in its own mFluidBox (in m3),
+         # so the network's total content is just the members' sum. The
+         # member list is the authoritative source -- a brute-force scan of
+         # all mFluidBox objects finds FEWER (some members' connector
+         # sub-objects use other names), never more.
+         memberObject = objectsByInstanceName.get(memberReference.pathName)
+         if memberObject is not None:
+            memberFluid = sav_parse.getPropertyValue(memberObject.properties, "mFluidBox")
+            if memberFluid:
+               totalFluid += memberFluid
+         if networkId is not None:
+            continue # All members share one ID -- resolving it once is enough.
          # Each reference points at the pipe/machine ACTOR itself, not its
          # connector sub-object -- mPipeNetworkID lives on the connector
-         # (".PipelineConnection0"/"1"/"FGPipeConnectionFactory"), so every
-         # naming convention seen so far is tried.
-         for connectorSuffix in (".PipelineConnection0", ".PipelineConnection1", ".FGPipeConnectionFactory"):
+         # (see PIPE_CONNECTOR_SUFFIXES).
+         for connectorSuffix in PIPE_CONNECTOR_SUFFIXES:
             connectorObject = objectsByInstanceName.get(memberReference.pathName + connectorSuffix)
             if connectorObject is None:
                continue
             networkId = sav_parse.getPropertyValue(connectorObject.properties, "mPipeNetworkID")
             if networkId is not None:
-               pipeNetworkIdToFluid[networkId] = fluidLabel
+               break
+      if networkId is not None:
+         pipeNetworkIdToFluid[networkId] = fluidLabel
+         pipeNetworkIdToTotalFluid[networkId] = totalFluid
 
    # Lightweight buildables (see _findLightweightBuildableGroups) have no
    # real instanceName/Object of their own to look up at tooltip time -- this
@@ -1341,6 +1355,7 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
       "objects": objectsByInstanceName,
       "stationNameByStationInstance": stationNameByStationInstance,
       "pipeNetworkIdToFluid": pipeNetworkIdToFluid,
+      "pipeNetworkIdToTotalFluid": pipeNetworkIdToTotalFluid,
       "lightweightInstancesById": lightweightInstancesById,
       "instanceNamesByTypePath": instanceNamesByTypePath,
       "itemLocationIndex": _collectItemLocationIndex(objectsByInstanceName),
@@ -1355,6 +1370,33 @@ def _resolveComponentObject(saveIndex, properties, propertyName):
    if reference is not None and hasattr(reference, "pathName"):
       return saveIndex["objects"].get(reference.pathName)
    return None
+
+def _conveyorChainSegmentItemPaths(chainActorInfo, beltInstanceName) -> list:
+   # A chain's serialized items (actorSpecificInfo[2], see sav_parse.py's
+   # FGConveyorChainActor branch) are a ring-buffer window: serialized index j
+   # holds the item at ring slot (chainLeadItemIndex + j) % maximumItems, and
+   # the whole window runs lead-to-tail inclusive. Each belt in the chain
+   # carries its own lead/tail ring indices (chainBelts[i][5]/[6]) whose
+   # ranges exactly partition that window (verified across all 127 chains of
+   # a real save: per-belt counts always sum to len(chainItems) with no
+   # gaps/overlaps) -- so this segment's own items are the contiguous slice
+   # below. A lead/tail of -1 means the segment holds nothing.
+   chainBelts = chainActorInfo[1]
+   chainItems = chainActorInfo[2]
+   maximumItems = chainActorInfo[4]
+   chainLeadItemIndex = chainActorInfo[5]
+   if not chainItems or maximumItems <= 0 or chainLeadItemIndex < 0:
+      return []
+   for chainBelt in chainBelts:
+      if getattr(chainBelt[0], "pathName", None) != beltInstanceName:
+         continue
+      (beltLeadItemIndex, beltTailItemIndex) = (chainBelt[5], chainBelt[6])
+      if beltLeadItemIndex < 0 or beltTailItemIndex < 0:
+         return []
+      start = (beltLeadItemIndex - chainLeadItemIndex) % maximumItems
+      count = (beltTailItemIndex - beltLeadItemIndex) % maximumItems + 1
+      return [chainEntry[0] for chainEntry in chainItems[start:start + count]]
+   return []
 
 # Hand-curated, wiki-sourced (satisfactory.wiki.gg) rated power consumption in
 # MW at 100% clock speed. The save itself only stores a *live* power draw
@@ -1604,26 +1646,6 @@ def listSearchableItems() -> list:
    items.sort(key=lambda entry: entry["label"])
    return items
 
-# Icon files are named by readable label (e.g. "icons/items/Iron Plate.png",
-# "icons/buildings/Assembler.png" -- see finditem.js), but the label the map
-# actually shows for something doesn't always have an exact-filename icon:
-# merged multi-material/multi-size building rows in particular (e.g.
-# "Foundation (4 m)") rarely match one of the many per-skin/per-size icon
-# files verbatim. Sending the frontend the list of what icon files actually
-# exist (just the bare labels, no ".png") lets it fuzzy-match a close-enough
-# icon at render time instead of only ever trying one exact filename -- see
-# finditem.js's bestFuzzyIconLabel. Computed once at import time (these are
-# static bundled assets, not something that changes per save).
-def _listIconLabels(iconSubfolder: str) -> list:
-   iconsDir = os.path.join(_MAP_DIR, "static", "map", "icons", iconSubfolder)
-   try:
-      return sorted(os.path.splitext(name)[0] for name in os.listdir(iconsDir) if name.lower().endswith(".png"))
-   except OSError:
-      return []
-
-ITEM_ICON_LABELS = _listIconLabels("items")
-BUILDING_ICON_LABELS = _listIconLabels("buildings")
-
 def aggregateSelectionInventory(saveIndex: dict, instanceNames: list) -> list:
    # Sums everything held across the given selected instances (the
    # rectangle-selection "total inventory" -- see the frontend's
@@ -1633,8 +1655,8 @@ def aggregateSelectionInventory(saveIndex: dict, instanceNames: list) -> list:
    # Returns [{"item":, "label":, "count":, "isFluid":}, ...] sorted by count
    # descending. Solids are keyed/summed by short class name; fluids are
    # merged by readable label (so the same fluid from a tank inventory and a
-   # pipe lands on one row) and all carry raw 1000x-m3 amounts until the final
-   # /1000 -- see _inventoryContents / the mFluidBox unit.
+   # pipe lands on one row) and all carry raw 1000x-m3 amounts until the
+   # final /1000 (mFluidBox, natively m3, is scaled up on entry -- see below).
    objects = saveIndex["objects"]
    pipeNetworkIdToFluid = saveIndex.get("pipeNetworkIdToFluid", {})
    solidCountByShortName: dict[str, float] = {}
@@ -1648,7 +1670,6 @@ def aggregateSelectionInventory(saveIndex: dict, instanceNames: list) -> list:
          solidCountByShortName[shortName] = solidCountByShortName.get(shortName, 0) + amount
 
    seenInstances = set() # A building can appear once per selection; guard against dupes in the id list.
-   seenChains = set()    # One conveyor chain spans many belt segments -- count its items only once.
    for instanceName in instanceNames:
       if instanceName in seenInstances:
          continue
@@ -1678,33 +1699,36 @@ def aggregateSelectionInventory(saveIndex: dict, instanceNames: list) -> list:
             if itemPath:
                addItem(itemPath.rsplit(".", 1)[-1], numItems)
 
-      # Belt segments: in-transit items live on a shared FGConveyorChainActor
-      # (one chain spans many segments, so count each chain once). Per-segment
-      # granularity isn't available -- selecting any segment of a chain counts
-      # that whole chain's items -- see collectSplinePaths / describeInstance.
+      # Belt segments: in-transit items live on a shared FGConveyorChainActor,
+      # but each chain belt records which slice of the chain's items sits on
+      # it (see _conveyorChainSegmentItemPaths) -- so only the items
+      # physically on THIS segment are counted. Selecting several segments of
+      # one line sums exactly the selected stretch, never the whole line.
       chainReference = sav_parse.getPropertyValue(properties, "mConveyorChainActor")
-      if chainReference is not None and getattr(chainReference, "pathName", None) and chainReference.pathName not in seenChains:
-         seenChains.add(chainReference.pathName)
+      if chainReference is not None and getattr(chainReference, "pathName", None):
          chainActor = objects.get(chainReference.pathName)
          if chainActor is not None and getattr(chainActor, "actorSpecificInfo", None):
-            for chainEntry in chainActor.actorSpecificInfo[2]:
-               itemPath = chainEntry[0]
+            for itemPath in _conveyorChainSegmentItemPaths(chainActor.actorSpecificInfo, instanceName):
                if itemPath:
                   addItem(itemPath.rsplit(".", 1)[-1], 1)
 
-      # Pipe segments: current fluid amount is a per-segment mFluidBox float
-      # (same 1000x-m3 unit as inventory fluids); its type comes from the
-      # segment's pipe network (see buildSaveIndex's pipeNetworkIdToFluid).
+      # Pipe segments: current fluid amount is a per-segment mFluidBox float.
+      # Unlike inventory-stack fluids (1000x-m3), mFluidBox is already in m3
+      # -- an Industrial Fluid Buffer's box peaks at its 2400 m3 capacity, a
+      # pipe segment's at its own few-m3 capacity -- so it's scaled up by
+      # 1000 here to join fluidRawByLabel's 1000x-m3 convention. The fluid
+      # type comes from the segment's pipe network (see buildSaveIndex's
+      # pipeNetworkIdToFluid).
       fluidAmount = sav_parse.getPropertyValue(properties, "mFluidBox")
       if fluidAmount:
-         for connectorSuffix in (".PipelineConnection0", ".PipelineConnection1"):
+         for connectorSuffix in PIPE_CONNECTOR_SUFFIXES:
             connectorObject = objects.get(instanceName + connectorSuffix)
             if connectorObject is None:
                continue
             networkId = sav_parse.getPropertyValue(connectorObject.properties, "mPipeNetworkID")
             fluidLabel = pipeNetworkIdToFluid.get(networkId)
             if fluidLabel is not None:
-               fluidRawByLabel[fluidLabel] = fluidRawByLabel.get(fluidLabel, 0) + fluidAmount
+               fluidRawByLabel[fluidLabel] = fluidRawByLabel.get(fluidLabel, 0) + fluidAmount * 1000
                break
 
    items = []
@@ -1971,14 +1995,16 @@ def describeInstance(saveIndex: dict, instanceName: str) -> dict:
             result["powerProductionMW"] = round(production, 1)
 
    # Pipelines/pumps don't have a discrete inventory -- mFluidBox is a plain
-   # float giving the current fluid amount. The fluid *type* isn't on the
-   # segment itself either, only its network ID (see buildSaveIndex's
+   # float giving the current fluid amount in m3. The fluid *type* isn't on
+   # the segment itself either, only its network ID (see buildSaveIndex's
    # pipeNetworkIdToFluid) -- resolved here via whichever connector
-   # sub-object this instance happens to have.
+   # sub-object this instance happens to have. The same network ID also
+   # gives the whole connected network's fluid total (the pipe counterpart
+   # of a belt's itemsOnLine -- see pipeNetworkIdToTotalFluid).
    fluidContent = sav_parse.getPropertyValue(properties, "mFluidBox")
    if fluidContent is not None:
       result["fluidContent"] = round(fluidContent, 1)
-      for connectorSuffix in (".PipelineConnection0", ".PipelineConnection1"):
+      for connectorSuffix in PIPE_CONNECTOR_SUFFIXES:
          connectorObject = saveIndex["objects"].get(instanceName + connectorSuffix)
          if connectorObject is None:
             continue
@@ -1986,6 +2012,9 @@ def describeInstance(saveIndex: dict, instanceName: str) -> dict:
          fluidLabel = saveIndex["pipeNetworkIdToFluid"].get(networkId)
          if fluidLabel is not None:
             result["fluidType"] = fluidLabel
+            networkTotal = saveIndex.get("pipeNetworkIdToTotalFluid", {}).get(networkId)
+            if networkTotal is not None:
+               result["networkFluidContent"] = round(networkTotal, 1)
             break
 
    # Fuel Generators and the Nuclear Power Plant don't use mInputInventory
@@ -2045,16 +2074,31 @@ def describeInstance(saveIndex: dict, instanceName: str) -> dict:
 
    # Belts/lifts have no inventory of their own -- in-transit items live on
    # the shared FGConveyorChainActor (sav_parse.py:698's chainItems, index 2),
-   # referenced by this segment's "mConveyorChainActor" property.
+   # referenced by this segment's "mConveyorChainActor" property. Each chain
+   # belt records which slice of the chain's items sits on it (see
+   # _conveyorChainSegmentItemPaths), so both granularities are reported:
+   # itemsOnBelt = just this segment, itemsOnLine = the whole connected chain
+   # (only emitted when the chain actually spans more than this one segment,
+   # since otherwise it would just repeat itemsOnBelt).
    chainActor = _resolveComponentObject(saveIndex, properties, "mConveyorChainActor")
    if chainActor is not None and getattr(chainActor, "actorSpecificInfo", None):
-      chainItems = chainActor.actorSpecificInfo[2]
-      countByItem: dict[str, int] = {}
-      for (itemPath, itemInstanceId) in chainItems:
-         label = readableLabel(itemPath)
-         countByItem[label] = countByItem.get(label, 0) + 1
-      if countByItem:
-         result["itemsOnBelt"] = [{"item": label, "count": countByItem[label]} for label in countByItem]
+      chainActorInfo = chainActor.actorSpecificInfo
+
+      def countedItemList(itemPaths):
+         countByItem: dict[str, int] = {}
+         for itemPath in itemPaths:
+            label = readableLabel(itemPath)
+            countByItem[label] = countByItem.get(label, 0) + 1
+         return [{"item": label, "count": countByItem[label]} for label in countByItem]
+
+      segmentItems = countedItemList(_conveyorChainSegmentItemPaths(chainActorInfo, instanceName))
+      if segmentItems:
+         result["itemsOnBelt"] = segmentItems
+      if len(chainActorInfo[1]) > 1:
+         lineItems = countedItemList(chainEntry[0] for chainEntry in chainActorInfo[2])
+         if lineItems:
+            result["itemsOnLine"] = lineItems
+            result["lineSegmentCount"] = len(chainActorInfo[1])
 
    result["rawProperties"] = [{"name": name, "value": sav_parse.toString(value)} for (name, value) in properties]
    return result
@@ -2126,7 +2170,6 @@ def buildMapPayload(parsedSave: sav_parse.ParsedSave) -> dict:
       "hub": collectHub(parsedSave.levels),
       "gameSettings": collectGameSettings(parsedSave.levels),
       "itemCatalog": listSearchableItems(),
-      "iconManifest": {"items": ITEM_ICON_LABELS, "buildings": BUILDING_ICON_LABELS},
       "dimensionalDepot": collectDimensionalDepotContents(parsedSave.levels),
       "lines": _annotateLineKinds({
          "powerLines": collectPowerLines(parsedSave.levels),

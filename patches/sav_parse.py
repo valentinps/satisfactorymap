@@ -1,20 +1,9 @@
 #!/usr/bin/env python3
-# This file is part of the Satisfactory Save Parser distribution
-#                                  (https://github.com/GreyHak/sat_sav_parse).
-# Copyright (c) 2024-2026 GreyHak (github.com/GreyHak).
+# Forked from parser/sav_parse.py (GreyHak/sat_sav_parse, GPLv3) with local
+# fixes/perf rewrites not yet merged upstream -- see README.md's "Parser
+# dependency" section. This file's licensing is covered by this repo's own
+# LICENSE, not the upstream distribution's per-file header.
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, version 3.
-#
-# This program is distributed in the hope that it will be useful, but
-# WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-# General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
-
 # Potentially Helpful References:
 # - https://satisfactory.wiki.gg/wiki/Save_files#Save_file_format
 # - https://github.com/moritz-h/satisfactory-3d-map
@@ -860,6 +849,13 @@ def parseObjectReference(offset: int, data) -> tuple[int, ObjectReference]:
    return (offset, objectReference)
 
 def getLevelSize(headerSaveVersion, offset: int, data, persistentLevelFlag: bool = False):
+   # Returns the level's size in BYTES (not an object count). Progress is
+   # tracked in bytes because object headers and object bodies take wildly
+   # different amounts of work to parse: a header is a few dozen bytes while
+   # a body can be kilobytes of property tree. Counting each as "1 tick"
+   # made the bar race through the header half (0-50%) and then appear to
+   # stall once the body half began -- byte-weighting keeps the rate even.
+   levelStartOffset = offset
    if persistentLevelFlag:
       levelName = None
    else:
@@ -890,7 +886,7 @@ def getLevelSize(headerSaveVersion, offset: int, data, persistentLevelFlag: bool
          (offset, count) = parseUint32(offset, data)
          offset += count * (8+8+4)
 
-   return (offset, actorAndComponentCount * 2)
+   return (offset, offset - levelStartOffset)
 
 class ProgressBar():
    prior = None
@@ -925,6 +921,10 @@ class ProgressBar():
          print(f"{self.prefix}[{self.fillChar*self.width}] {self.completedChar} {self.total}/{self.total}", flush=True)
 
 def parseLevel(headerSaveVersion, persistentLevelUE5Version: int, offset: int, data, persistentLevelFlag: bool = False, progressBar = ProgressBar):
+   # Progress is reported in bytes consumed, matching getLevelSize's
+   # byte-based totals -- see the comment there for why counts don't work.
+   levelStartOffset = offset
+   reportedBytes = 0
    if persistentLevelFlag:
       levelName = None
    else:
@@ -936,6 +936,7 @@ def parseLevel(headerSaveVersion, persistentLevelUE5Version: int, offset: int, d
 
    # ActorHeaders and ComponentHeaders
    actorAndComponentObjectHeaders = []
+   prevProgressOffset = offset
    for idx in range(actorAndComponentCount):
       (offset, headerType) = parseUint32(offset, data) # line 1606/1608/1611
 
@@ -949,7 +950,9 @@ def parseLevel(headerSaveVersion, persistentLevelUE5Version: int, offset: int, d
       offset = objectHeader.parse(offset, data)
       actorAndComponentObjectHeaders.append(objectHeader)
       if progressBar is not None:
-         progressBar.add()
+         progressBar.add(offset - prevProgressOffset)
+         reportedBytes += offset - prevProgressOffset
+      prevProgressOffset = offset
 
    levelPersistentFlag = None
    if persistentLevelFlag:
@@ -1000,14 +1003,23 @@ def parseLevel(headerSaveVersion, persistentLevelUE5Version: int, offset: int, d
    (objectDataOffset, objectCount) = parseUint32(objectDataOffset, data) # line 1645/1646
    if objectCount != actorAndComponentCount:
       raise ParseError(f"Object count mismatch: objectCount={objectCount} != actorAndComponentCount={actorAndComponentCount}")
+   prevProgressOffset = objectDataOffset
    for idx in range(actorAndComponentCount):
       object = Object()
       objectDataOffset = object.parse(headerSaveVersion, objectUE5Version, objectDataOffset, data, actorAndComponentObjectHeaders[idx]) # SCIM readEntity
       objects.append(object)
       if progressBar is not None:
-         progressBar.add()
+         progressBar.add(objectDataOffset - prevProgressOffset)
+         reportedBytes += objectDataOffset - prevProgressOffset
+      prevProgressOffset = objectDataOffset
    if objectDataOffset - objectStartOffset != allObjectsSize:
       raise ParseError(f"Object size mismatch: expect={allObjectsSize} != actual={objectDataOffset - objectStartOffset}")
+
+   # Bytes not covered by the per-header/per-object deltas above
+   # (collectables, size fields, version data) -- reported as one lump so
+   # this level's contribution sums exactly to getLevelSize's byte total.
+   if progressBar is not None and (offset - levelStartOffset) > reportedBytes:
+      progressBar.add((offset - levelStartOffset) - reportedBytes)
 
    return (offset, Level(levelName, actorAndComponentObjectHeaders, levelPersistentFlag, collectables1, objects, levelSaveVersion, collectables2, saveObjectVersionData))
 

@@ -35,18 +35,28 @@ var FindItem = {};
   var depotButton = document.getElementById("depotIconButton");
 
   var MAX_SUGGESTIONS_PER_KIND = 5;
-  // Item icons are stored under readable name (see static/map/icons/items/,
-  // e.g. "Iron Plate.png") -- the same catalog label the search matches on,
-  // so the file name is just the label. Not every catalog item has one; a
-  // missing image is hidden per-row (see onerror in renderSuggestions).
-  // Buildings have their own equivalent set under icons/buildings/, keyed
-  // the same way -- covers every unique-shaped building (machines, special
-  // buildings) but not every material skin of a multi-skin piece (those
-  // just fall back to no icon, same graceful-miss handling as items).
+  // Item/building icons are stored under ClassName (see static/map/icons/items/,
+  // e.g. "Desc_IronPlate_C.png", and icons/buildings/, e.g. "Build_WorkBench_C.png")
+  // -- extracted straight from the game's own per-class icon (docs/generated/
+  // items.json|buildings.json's "icon" field, see docs/copy_icons.py) rather
+  // than a hand-picked file per readable label, so the lookup is always exact,
+  // never a guess. Not every catalog entry has one (a couple of buildings, see
+  // SCHEMA.md); a missing image just falls back to a generic glyph (see
+  // attachIconWithFallback).
   var ITEM_ICON_BASE = "icons/items/";
   var BUILDING_ICON_BASE = "icons/buildings/";
 
+  // typePath as carried on building catalog/location entries is the save's
+  // full asset path (e.g. ".../Build_Foo.Build_Foo_C") -- the icon files are
+  // keyed by just the trailing short ClassName, same convention used
+  // everywhere else in the map (see sav_map_data._shortClassName).
+  function shortClassName(path) {
+    var pos = path.lastIndexOf(".");
+    return pos === -1 ? path : path.slice(pos + 1);
+  }
+
   var overlay = document.getElementById("itemModalOverlay");
+  var modalIcon = document.getElementById("itemModalIcon");
   var modalTitle = document.getElementById("itemModalTitle");
   var modalSummary = document.getElementById("itemModalSummary");
   var modalList = document.getElementById("itemModalList");
@@ -115,117 +125,51 @@ var FindItem = {};
     '</svg>'
   );
 
-  // {items: [...bare labels...], buildings: [...]} -- every icon file that
-  // actually exists under icons/items/ and icons/buildings/ (see
-  // sav_map_data.ITEM_ICON_LABELS/BUILDING_ICON_LABELS), populated by
-  // FindItem.build. Used only as the fuzzy-match candidate pool when an
-  // exact-filename guess 404s -- see bestFuzzyIconLabel.
-  var iconManifest = { items: [], buildings: [] };
+  // Same crate glyph the top bar's #depotIconButton uses -- shown as the
+  // modal header icon for the Dimensional Depot view (and its row inside an
+  // item's location list), which has no item/building icon of its own.
+  var DEPOT_ICON_URL = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="26" height="26">' +
+    '<path d="M12 3 L20 8 L20 16 L12 21 L4 16 L4 8 Z" fill="none" stroke="#8ab4f8" stroke-width="1.6" stroke-linejoin="round"/>' +
+    '<path d="M12 8 V16 M12 8 L8 6 M12 8 L16 6" stroke="#8ab4f8" stroke-width="1.4" fill="none" stroke-linecap="round"/>' +
+    '</svg>'
+  );
 
-  // Turns a label into a bag of comparable tokens: lowercased, "<N> m" (the
-  // "(4 m)" size suffix docs/generated/buildings.json displayNames use, see
-  // SCHEMA.md) collapsed to "<N>m" (the convention the actual icon filenames
-  // use, e.g. "Foundation 4m (Concrete).png"), then every other run of
-  // punctuation/whitespace turned into a token boundary.
-  function tokenizeIconLabel(label) {
-    return label
-      .toLowerCase()
-      .replace(/(\d+)\s*m\b/g, "$1m")
-      .replace(/[^a-z0-9]+/g, " ")
-      .trim()
-      .split(/\s+/)
-      .filter(function(t) { return t.length > 0; });
-  }
+  // A tiny, hand-curated set of classes with no real per-class icon of their
+  // own in Docs.json (see SCHEMA.md's buildings.json section) but a visually
+  // close sibling that does -- redirected to that sibling's real icon rather
+  // than dropping straight to the generic glyph. Deliberately short and
+  // explicit, not a fuzzy/generic lookup: every entry is a specific, verified
+  // "this class borrows that class's icon" fact, not a guess.
+  var BUILDING_ICON_REDIRECTS = {
+    // "Pillar Top" (the metal pillar family's capping piece) has no icon of
+    // its own -- borrows the middle segment's, the closest visual match.
+    Build_PillarTop_C: "Build_PillarMiddle_C",
+  };
 
-  // Finds the closest available icon label for a target label that has no
-  // exact-filename icon -- e.g. building categories/tooltips/search entries
-  // all go through sav_map_data.readableLabel, which strips ANY trailing
-  // "(...)" from a name (originally just to drop the noisy "(full/original/
-  // path)" pathNameToReadableName appends for unmapped names -- see there),
-  // so a merged row like "Foundation (4 m)" surfaces here as bare
-  // "Foundation", with every size/material distinction gone. No icon file is
-  // named just "Foundation.png" (every real one also bakes in a size and
-  // material skin, e.g. "Foundation 4m (Concrete).png"), so this has to
-  // reconstruct a plausible specific icon from a deliberately-vague name.
-  //
-  // A candidate only qualifies at all if it contains EVERY token of the
-  // target somewhere in its own name (order-independent) -- "Foundation"
-  // must not fall back to "Foundation Stairs.png" just because they share a
-  // word; if nothing contains the full target, there's nothing close enough
-  // and attachIconWithFallback drops to the default glyph instead. Among
-  // qualifying candidates, ranked by:
-  //   1. Starts with the target's own words in order ("Foundation 4m
-  //      (Concrete)" over "Frame Foundation" for a bare "Foundation" target,
-  //      even though "Frame Foundation" is Jaccard-*closer* in length --
-  //      order matters more than brevity here).
-  //   2. Fewest extra/unrelated words beyond the target (prefer the more
-  //      specific, less-decorated match).
-  //   3. Largest embedded "<N>m" size token -- "take the biggest size
-  //      variant" per request, the deciding tiebreak once 1 and 2 are equal
-  //      (the common case: the target has no size of its own, so every size
-  //      of the same family ties on both of the above).
-  function bestFuzzyIconLabel(targetLabel, candidateLabels) {
-    var targetTokens = tokenizeIconLabel(targetLabel);
-    if (targetTokens.length === 0 || !candidateLabels || candidateLabels.length === 0) {
-      return null;
-    }
-
-    var best = null;
-    var bestKey = null; // [isPrefixMatch (0/1), -extraTokenCount, sizeNum], compared lexicographically.
-    candidateLabels.forEach(function(candidate) {
-      var candTokens = tokenizeIconLabel(candidate);
-      if (candTokens.length < targetTokens.length) {
-        return;
-      }
-      var candSet = {};
-      candTokens.forEach(function(t) { candSet[t] = true; });
-      var hasEveryTargetToken = targetTokens.every(function(t) { return candSet[t]; });
-      if (!hasEveryTargetToken) {
-        return;
-      }
-
-      var isPrefixMatch = targetTokens.every(function(t, i) { return candTokens[i] === t; });
-      var extraTokenCount = candTokens.length - targetTokens.length;
-      var sizeNum = -1;
-      candTokens.forEach(function(t) {
-        var m = /^(\d+)m$/.exec(t);
-        if (m) sizeNum = Math.max(sizeNum, parseInt(m[1], 10));
-      });
-      var key = [isPrefixMatch ? 1 : 0, -extraTokenCount, sizeNum];
-
-      if (!bestKey || key[0] > bestKey[0] || (key[0] === bestKey[0] && (key[1] > bestKey[1] ||
-          (key[1] === bestKey[1] && key[2] > bestKey[2])))) {
-        best = candidate;
-        bestKey = key;
-      }
-    });
-    return best;
-  }
-
-  // Sets img's icon, falling back from an exact-filename guess to the best
-  // fuzzy match to, failing that, a generic glyph -- shared by every place an
-  // item/building icon shows up (suggestion rows, the building modal header).
-  // Never leaves img visibly broken: the default glyph is a data URI, so it
-  // can't itself 404.
-  function attachIconWithFallback(img, kind, label) {
+  // Sets img's icon from the item's/building's own ClassName (redirected
+  // through BUILDING_ICON_REDIRECTS first, if that class is in it), falling
+  // back to a generic glyph if there's still no icon to show -- shared by
+  // every place an item/building icon shows up (suggestion rows, the
+  // building modal header). Never leaves img visibly broken: the default
+  // glyph is a data URI, so it can't itself 404.
+  function attachIconWithFallback(img, kind, classNameOrPath) {
     var iconBase = kind === "building" ? BUILDING_ICON_BASE : ITEM_ICON_BASE;
-    var manifestLabels = kind === "building" ? iconManifest.buildings : iconManifest.items;
     var defaultIconUrl = kind === "building" ? DEFAULT_BUILDING_ICON_URL : DEFAULT_ITEM_ICON_URL;
-    var triedFuzzy = false;
     img.style.visibility = "visible";
+    var className = classNameOrPath && (kind === "building" ? shortClassName(classNameOrPath) : classNameOrPath);
+    if (kind === "building" && className && BUILDING_ICON_REDIRECTS.hasOwnProperty(className)) {
+      className = BUILDING_ICON_REDIRECTS[className];
+    }
     img.onerror = function() {
-      if (!triedFuzzy) {
-        triedFuzzy = true;
-        var fuzzyLabel = bestFuzzyIconLabel(label, manifestLabels);
-        if (fuzzyLabel) {
-          img.src = iconBase + encodeURIComponent(fuzzyLabel + ".png");
-          return;
-        }
-      }
       img.onerror = null; // The default glyph is a data URI -- it cannot itself fail.
       img.src = defaultIconUrl;
     };
-    img.src = iconBase + encodeURIComponent(label + ".png");
+    if (className) {
+      img.src = iconBase + encodeURIComponent(className) + ".png";
+    } else {
+      img.onerror(); // No class-keyed icon to try at all -- go straight to the default.
+    }
   }
 
   var catalog = []; // [{kind:"item", label, itemPath}, {kind:"building", label, typePaths, category, subcategory, row}, ...]
@@ -248,10 +192,25 @@ var FindItem = {};
     return e;
   }
 
+  // rows: [label, countText, iconKind?, classNameOrPath?] -- iconKind
+  // ("item"/"building") prepends the matching icon (see attachIconWithFallback),
+  // looked up by classNameOrPath (a short item ClassName, or a building's full
+  // typePath). Omitted iconKind keeps the old plain text row.
   function renderLocationList(container, rows) {
     container.innerHTML = "";
     rows.forEach(function(pair) {
       var row = el("div", "itemLocationRow");
+      if (pair[2]) {
+        var img = document.createElement("img");
+        img.className = "itemLocationIcon";
+        img.alt = "";
+        if (pair[0] === "Dimensional Depot") {
+          img.src = DEPOT_ICON_URL; // Neither an item nor a building -- no catalog icon to look up.
+        } else {
+          attachIconWithFallback(img, pair[2], pair[3]);
+        }
+        row.appendChild(img);
+      }
       row.appendChild(el("span", "itemLocationLabel", pair[0]));
       row.appendChild(el("span", "itemLocationCount", pair[1]));
       container.appendChild(row);
@@ -268,14 +227,16 @@ var FindItem = {};
   // Distinguished from real buildings by typePath being null (see
   // findItemLocations -- only static/pseudo locations lack one); grouping
   // the Dimensional Depot's own single row by label is a harmless no-op
-  // since there's only ever one of it.
-  function groupLocationsForDisplay(locations) {
+  // since there's only ever one of it. Every grouped pseudo-location is a
+  // pickup of the searched item itself, so itemPath (the one item this whole
+  // result is for) is the right icon for all of them.
+  function groupLocationsForDisplay(locations, itemPath) {
     var buildingRows = [];
     var groupedTotals = {};
     var groupedOrder = [];
     locations.forEach(function(loc) {
       if (loc.typePath) {
-        buildingRows.push({ label: loc.label, count: loc.count });
+        buildingRows.push({ label: loc.label, count: loc.count, iconKind: "building", iconClassName: loc.typePath });
         return;
       }
       if (!groupedTotals.hasOwnProperty(loc.label)) {
@@ -285,7 +246,7 @@ var FindItem = {};
       groupedTotals[loc.label] += loc.count;
     });
     var rows = buildingRows.concat(groupedOrder.map(function(label) {
-      return { label: label, count: groupedTotals[label] };
+      return { label: label, count: groupedTotals[label], iconKind: "item", iconClassName: itemPath };
     }));
     rows.sort(function(a, b) { return b.count - a.count; });
     return rows;
@@ -447,6 +408,7 @@ var FindItem = {};
   // button while a filter is still active.
   function fillModalFromResult(result) {
     modalTitle.textContent = result.label;
+    attachIconWithFallback(modalIcon, "item", result.itemPath);
     var unit = result.isFluid ? " m³" : "";
     if (result.locations.length === 0) {
       modalSummary.textContent = "Not found in any inventory.";
@@ -456,8 +418,8 @@ var FindItem = {};
     }
     modalSummary.textContent = result.totalCount.toLocaleString() + unit +
       " across " + result.locations.length.toLocaleString() + " location" + (result.locations.length === 1 ? "" : "s") + ".";
-    renderLocationList(modalList, groupLocationsForDisplay(result.locations).map(function(row) {
-      return [row.label, row.count.toLocaleString() + unit];
+    renderLocationList(modalList, groupLocationsForDisplay(result.locations, result.itemPath).map(function(row) {
+      return [row.label, row.count.toLocaleString() + unit, row.iconKind, row.iconClassName];
     }));
     var hasPlottable = result.locations.some(function(loc) { return loc.position; });
     modalHighlightToggle.style.display = hasPlottable ? "block" : "none";
@@ -480,7 +442,7 @@ var FindItem = {};
     var chipColor = Filters.buildingCategoryColor(entry.category);
     buildingModalCategory.style.background = chipColor + "26"; // ~15% alpha tint, hex-appended (2-digit alpha).
     buildingModalCategory.style.color = chipColor;
-    attachIconWithFallback(buildingModalIcon, "building", entry.label);
+    attachIconWithFallback(buildingModalIcon, "building", entry.typePaths[0]);
     banner.style.display = "none";
     buildingOverlay.style.display = "flex";
   }
@@ -570,7 +532,7 @@ var FindItem = {};
     if (info.inventory && info.inventory.length > 0) {
       buildingModalInventoryLabel.style.display = "block";
       renderLocationList(buildingModalInventory, info.inventory.map(function(entryRow) {
-        return [entryRow.label, entryRow.count.toLocaleString() + (entryRow.isFluid ? " m³" : "")];
+        return [entryRow.label, entryRow.count.toLocaleString() + (entryRow.isFluid ? " m³" : ""), "item", entryRow.item];
       }));
     } else {
       buildingModalInventoryLabel.style.display = "none";
@@ -620,6 +582,7 @@ var FindItem = {};
       return;
     }
     openModal(label);
+    attachIconWithFallback(modalIcon, "item", itemPath);
     modalSummary.textContent = "Searching...";
     modalList.innerHTML = "";
     modalHighlightToggle.style.display = "none";
@@ -701,12 +664,20 @@ var FindItem = {};
     return btn;
   }
 
+  // A catalog entry's icon lookup key -- an item's own short ClassName, or
+  // the first of a merged building row's typePaths (same-shape/different-
+  // material skins visually differ too, but one representative icon per row
+  // is all a single <img> can show).
+  function catalogIconClassName(entry) {
+    return entry.kind === "building" ? entry.typePaths[0] : entry.itemPath;
+  }
+
   function suggestionRow(entry, index) {
     var row = el("div", "searchSuggestionRow");
     var img = document.createElement("img");
     img.className = "searchSuggestionIcon";
     img.alt = "";
-    attachIconWithFallback(img, entry.kind, entry.label);
+    attachIconWithFallback(img, entry.kind, catalogIconClassName(entry));
     row.appendChild(img);
     row.appendChild(el("span", "searchSuggestionLabel", entry.label));
     if (entry.kind === "building") {
@@ -875,6 +846,9 @@ var FindItem = {};
   depotButton.addEventListener("click", function() {
     var depotItems = window.MapApp.currentDepotItems || [];
     openModal("Dimensional Depot");
+    modalIcon.onerror = null;
+    modalIcon.src = DEPOT_ICON_URL;
+    modalIcon.style.visibility = "visible";
     modalHighlightToggle.style.display = "none";
     if (depotItems.length === 0) {
       modalSummary.textContent = "Empty (or no save loaded yet).";
@@ -884,7 +858,7 @@ var FindItem = {};
     var total = depotItems.reduce(function(s, entry) { return s + entry.count; }, 0);
     modalSummary.textContent = total.toLocaleString() + " items across " + depotItems.length + " types.";
     renderLocationList(modalList, depotItems.map(function(entry) {
-      return [entry.label, entry.count.toLocaleString()];
+      return [entry.label, entry.count.toLocaleString(), "item", entry.itemPath];
     }));
   });
 
@@ -930,8 +904,6 @@ var FindItem = {};
     buildingEntries.forEach(function(entry) { buildingCatalogByLabel[entry.label] = entry; });
 
     catalog = itemEntries.concat(buildingEntries);
-
-    iconManifest = payload.iconManifest || { items: [], buildings: [] };
 
     window.MapApp.currentDepotItems = payload.dimensionalDepot || [];
   };

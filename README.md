@@ -31,13 +31,40 @@ The server opens a landing page in your browser where you can choose how to load
 
 Each restart lands on the mode-selection page; it does not remember your last choice.
 
-## Building footprints
+## Generating game data
 
 Buildings render as boxes sized from `docs/generated/buildings.json` (see
-`docs/generated/SCHEMA.md`), which is extracted from the game's own
-`Docs.json` and bundled in this repo — no extra download needed. Buildings
-missing size data there (a small number of logic-only buildables) fall back
-to a plain circle marker on the map.
+`docs/generated/SCHEMA.md`), extracted from the game's own `Docs.json`.
+Buildings missing size data there (a small number of logic-only buildables)
+fall back to a plain circle marker on the map.
+
+Neither `docs/Docs.json` nor the generated JSON files under `docs/generated/`
+(`buildings.json`, `items.json`, `resources.json`, `recipes.json`,
+`buildingCategories.json`) are committed — get `Docs.json` from your game
+install at `Satisfactory\CommunityResources\Docs\en-US.json`, copy it to
+`docs/Docs.json`, then regenerate the rest (also whenever the game updates):
+
+```bash
+py docs/extract_docs_json.py
+```
+
+## Generating icons
+
+Item/building icons under `map/static/map/icons/` are not committed either —
+they're copied out of a full game asset extraction (e.g. via
+[FModel](https://fmodel.app/)) keyed by `ClassName`, using the generated JSON
+above to know which PNGs are needed:
+
+```bash
+py docs/copy_icons.py path/to/extraction/Content
+```
+
+The path argument is the extraction's `Content` folder. This only copies the
+handful of PNGs actually referenced by `items.json`/`resources.json`/
+`buildings.json` (a few hundred files), not the full extraction dump (tens of
+thousands of unrelated assets), so the extraction itself can be deleted
+afterwards. Run `docs/extract_docs_json.py` first if `docs/generated/` is
+missing/stale — `copy_icons.py` reads the icon paths from there.
 
 ## Parser dependency
 

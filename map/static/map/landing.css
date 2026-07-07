@@ -4,7 +4,7 @@ html, body {
   margin: 0;
   min-height: 100%;
   background: #111316;
-  font-family: sans-serif;
+  font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
   font-size: 13px;
   color: #ddd;
 }
@@ -15,13 +15,26 @@ html, body {
   padding: 52px 20px 40px;
 }
 
+/* Matches the map page's logo wordmark (see map.css #logoButton): a muted
+   small-caps kicker over the FICSIT-orange name. */
 .title {
-  font-size: 20px;
-  font-weight: bold;
-  color: #fff;
-  margin: 0 0 32px 0;
+  font-size: 24px;
+  font-weight: 700;
+  color: #f2913d;
+  margin: 0 0 36px 0;
   text-align: center;
   letter-spacing: 0.01em;
+}
+
+.title::before {
+  content: "Satisfactory";
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: #6a7180;
+  margin-bottom: 4px;
 }
 
 /* ── Three cards ── */
@@ -43,6 +56,17 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.card:hover {
+  border-color: #3d4356;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card, .card:hover { transition: none; transform: none; }
 }
 
 /* ── Card header ── */
@@ -56,7 +80,7 @@ html, body {
   width: 28px;
   height: 28px;
   flex: none;
-  color: #6b8cba;
+  color: #f2913d;
 }
 
 .card-title {
@@ -156,17 +180,21 @@ html, body {
 .btn {
   width: 100%;
   padding: 9px;
-  background: #1e2d42;
-  color: #8ab4f8;
-  border: 1px solid #2e4a6a;
+  background: #3d2d1c;
+  color: #ffc38a;
+  border: 1px solid #6b4a26;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
-  font-weight: 500;
-  transition: background 0.12s;
+  font-weight: 600;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
-.btn:hover:not(:disabled) { background: #253550; }
+.btn:hover:not(:disabled) {
+  background: #4a361f;
+  border-color: #8a5e2e;
+  color: #ffd7ae;
+}
 
 .btn:disabled {
   opacity: 0.35;

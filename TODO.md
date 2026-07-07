@@ -1,14 +1,6 @@
 TODO
 
-Redo all of the categories to match in game building menu for buildings. Extra categories include: collectables, hard drives, entities
-
 Add some highlighting for dots/line elements on hover
-
-Fix inventory of pipes/belts: right now hovering a belt shows the content of the entire line, however it is also interesting to know the content of the specific segment hovered/selected. Both should be in the tooltip, the selector tool should only select the segment of the conveyor that is in the selection and show the inventory of that part only too
-
-Rework "Reset" button and bottom panel styles, add a button to stop the auto refresh of saves for the modes that use it.
-
-Give bounding box for pipe junction 1x1 will do, like conveyor lifts
 
 Add buildings to search bar, the search bar will be used for many purposes, adding buildings means we can show/hide the specific building directly from the suggestions using a fancy integration of your choice. When clicking that suggestion (or pressing enter) it should open a window, similar to the item window, that shows meaningful information about the building related to that save: count, shared inventory, count per recipe, total power cost, again in a fancy UI.
 

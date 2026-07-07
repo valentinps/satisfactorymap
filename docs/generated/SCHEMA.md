@@ -42,7 +42,8 @@ lookups already work with.
   "displayName": "Iron Plate",
   "description": "Used for crafting.\r\nOne of the most basic parts.",
   "stackSize": "SS_BIG",
-  "stackSizeCount": 200
+  "stackSizeCount": 200,
+  "icon": "/FactoryGame/Resource/Parts/IronPlate/UI/IconDesc_IronPlates_256"
 }
 ```
 
@@ -55,6 +56,36 @@ lookups already work with.
   number of items per stack for that enum, already computed by the game data
   so you don't need your own enum-to-count table.
 - `description` keeps the game's literal `\r\n` line breaks.
+- `icon` is `mPersistentBigIcon` reformatted from the game's raw
+  `Texture2D /Game/FactoryGame/...UI/IconDesc_Foo_256.IconDesc_Foo_256` into
+  an asset path rooted at `/FactoryGame/...` (the `/Game` prefix and the
+  trailing `.IconDesc_Foo_256` repeat are stripped). `null` if the source
+  entry had no icon (rare).
+
+## resources.json
+
+```json
+"Desc_Coal_C": {
+  "displayName": "Coal",
+  "description": "...",
+  "stackSize": "SS_HUGE",
+  "stackSizeCount": 500,
+  "icon": "/FactoryGame/Resource/RawResources/Coal/UI/IconDesc_CoalOre_256"
+}
+```
+
+Same shape as `items.json` (it's the exact same extractor function), but for
+the `FGResourceDescriptor` group specifically -- raw ore/stone/fluid resources
+(Coal, the 5 metal ores, Limestone, Sulfur, Raw Quartz, SAM, Crude Oil,
+Nitrogen Gas, Water -- 13 total, every one with a real `mDisplayName`/icon).
+Kept out of `items.json` since these aren't crafted/held the way a normal
+inventory item is (they come from resource nodes, not a recipe), but they
+still show up in the Dimensional Depot/building inventory lists, so they need
+an icon too. Geyser (`Desc_Geyser_C` as used elsewhere in this codebase, e.g.
+`sav_data.resourcePurity`) is NOT here -- it's a synthetic key this parser
+invented for a resource node type that has no real `FGResourceDescriptor` (or
+any other Docs.json entry) backing it at all; consumers needing an icon for
+it use a hardcoded glyph instead (see filters.js).
 
 ## buildings.json
 
@@ -64,9 +95,15 @@ lookups already work with.
   "description": "...",
   "dimensions": { "Width": 800.0, "Height": 400.0, "AngularDepth": 0.0 },
   "clearance": [{ "min": {...}, "max": {...}, "rotated": false }],
-  "adaptiveLength": {}
+  "adaptiveLength": {},
+  "icon": "/FactoryGame/Buildable/Factory/..."
 }
 ```
+
+`icon` is resolved the same way as `items.json`'s (see above), but sourced
+from the buildable's `Desc_*_C` companion descriptor -- `Build_*_C` entries
+never carry `mPersistentBigIcon` themselves. `null` for the ~2 buildings
+(out of 546) whose descriptor has no icon in the source data.
 
 ### The three size fields, and why there are three
 

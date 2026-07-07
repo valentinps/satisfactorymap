@@ -22,5 +22,16 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Local git worktrees (superpowers:using-git-worktrees)
-.worktrees/
+# Game data dump (copy from your game install's
+# Satisfactory\CommunityResources\Docs\en-US.json) and the JSON generated
+# from it via docs/extract_docs_json.py; see README.md's "Generating game
+# data" section. docs/generated/SCHEMA.md itself is hand-written, not
+# generated, and stays tracked.
+Docs.json
+docs/generated/*.json
+
+# Icon PNGs (regenerate via docs/copy_icons.py; see README.md's
+# "Generating icons" section).
+map/static/map/icons/
+
+.claude

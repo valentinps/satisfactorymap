@@ -8,7 +8,10 @@
 </head>
 <body class="no-category-selected">
 <div id="topBar">
-  <button id="logoButton" title="Back to mode selection">Satisfactory<br>Save Map</button>
+  <button id="logoButton" title="Back to mode selection">
+    <span class="logoKicker">Satisfactory</span>
+    <span class="logoName">Save Map</span>
+  </button>
   <div id="mainSearchWrap">
     <div id="searchBox">
       <svg id="searchIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18">
@@ -33,13 +36,34 @@
       <button id="checkAllButton" title="Show everything on the map">Check all</button>
       <button id="uncheckAllButton" title="Hide everything on the map">Uncheck all</button>
     </div>
+    <!-- Only shown once at least one object has been individually hidden via
+         the right-click context menu (see contextmenu.js/MapApp.hideObject)
+         -- "Check all" above doesn't reach these, since they aren't tied to
+         any sidebar checkbox at all. -->
+    <button id="resetHiddenButton" style="display:none"></button>
     <div id="categoryNavColumn"></div>
 
     <div id="sidebarFooter">
       <div id="loadPanel">
-        <label for="saveSelect">Save file</label>
+        <label for="saveSelect" id="loadPanelHeader">
+          <svg class="loadPanelIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+            <path d="M8 3v5h8V3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+          </svg>
+          <span>Save File</span>
+        </label>
         <select id="saveSelect"></select>
-        <button id="loadButton">Load</button>
+        <button id="loadButton">Load save</button>
+        <!-- Opt-in watcher (see data.js) -- off by default; when enabled, the
+             save folder is re-checked every few seconds and a newer save is
+             loaded automatically. Replaces the old always-on --auto polling. -->
+        <div id="autoRefreshRow" title="Automatically load the newest save when one appears">
+          <span id="autoRefreshLabel">Auto-reload new saves</span>
+          <label class="toggleSwitch">
+            <input type="checkbox" id="autoRefreshToggle">
+            <span class="toggleSlider"></span>
+          </label>
+        </div>
         <div id="loadStatus"></div>
         <div id="loadProgressBar"><div id="loadProgressFill"></div></div>
         <div id="totalObjectCount"></div>
@@ -59,7 +83,12 @@
 <div id="map"></div>
 
 <div id="altitudePanel" style="display:none">
-  <div class="altitudeTitle">Altitude</div>
+  <div class="altitudeTitle">
+    <svg class="altitudeTitleIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11">
+      <path d="M3 17.5 8.5 11l4 4L17 8l4 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span>Altitude</span>
+  </div>
   <div id="altitudeMaxLabel" class="altitudeValue"></div>
   <div class="altitudeTrackWrap">
     <div class="altitudeTrackBg"></div>
@@ -68,7 +97,12 @@
     <input type="range" id="altitudeMinSlider" class="altitudeRangeInput" title="Minimum altitude">
   </div>
   <div id="altitudeMinLabel" class="altitudeValue"></div>
-  <button id="altitudeResetButton">Reset</button>
+  <button id="altitudeResetButton" title="Reset altitude filter">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12">
+      <path d="M3 12a9 9 0 1 1 2.6 6.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <polyline points="3 7 3 12 8 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
 </div>
 
 <div id="activeFilterBanner" style="display:none">
@@ -84,6 +118,7 @@
 <div id="itemModalOverlay" style="display:none">
   <div id="itemModal">
     <div id="itemModalHeader">
+      <img id="itemModalIcon" alt="">
       <span id="itemModalTitle"></span>
       <button id="itemModalClose" title="Close">&times;</button>
     </div>
@@ -118,6 +153,11 @@
   </div>
 </div>
 
+<!-- Right-click context menu (see contextmenu.js) -- shown on a plain
+     right-click (no drag) over a map object; a real right-drag still opens
+     the rectangle selection below instead. -->
+<div id="contextMenu" style="display:none"></div>
+
 <!-- Right-drag rectangle selection (see selection.js). -->
 <div id="selectionRect" style="display:none"></div>
 
@@ -148,6 +188,7 @@
 <script src="tooltip.js"></script>
 <script src="finditem.js"></script>
 <script src="selection.js"></script>
+<script src="contextmenu.js"></script>
 <script src="data.js"></script>
 </body>
 </html>

@@ -261,17 +261,28 @@ var Tooltip = {};
     if (detail.powerStoredMWh !== undefined) powerRows.push(["Charge", detail.powerStoredMWh + " MWh"]);
     appendRowSection(root, "Power", powerRows);
 
+    // mFluidBox amounts arrive in m³ (see sav_map_data.py's describeInstance).
+    // "This segment" is the hovered pipe/pump's own content; "Whole network"
+    // sums every fluid-holding member of its connected pipe network -- the
+    // pipe counterpart of a belt's segment/line item split below.
     var fluidRows = [];
     if (detail.fluidType) fluidRows.push(["Fluid type", detail.fluidType]);
-    if (detail.fluidContent !== undefined) fluidRows.push(["Fluid content", detail.fluidContent]);
+    if (detail.fluidContent !== undefined) fluidRows.push(["This segment", detail.fluidContent + " m³"]);
+    if (detail.networkFluidContent !== undefined) fluidRows.push(["Whole network", detail.networkFluidContent + " m³"]);
     appendRowSection(root, "Fluid", fluidRows);
 
     // Each inventory already carries its own title (Input/Output/Storage/...)
     // so these are siblings of the sections above, not nested inside any of
     // them -- nesting a titled box inside another titled box read as an
     // unrelated sub-grouping rather than "also part of this instance".
+    // Belts report two granularities: itemsOnBelt is just the hovered
+    // segment; itemsOnLine is the whole connected conveyor chain, only sent
+    // when the chain spans more than this one segment (see describeInstance).
+    var lineTitle = "In Transit (whole line" +
+      (detail.lineSegmentCount ? ", " + detail.lineSegmentCount + " segments" : "") + ")";
     [
-      inventorySection("Items In Transit", detail.itemsOnBelt),
+      inventorySection("In Transit (this segment)", detail.itemsOnBelt),
+      inventorySection(lineTitle, detail.itemsOnLine),
       inventorySection("Input Inventory", detail.inputInventory),
       inventorySection("Output Inventory", detail.outputInventory),
       inventorySection("Storage", detail.storageInventory),

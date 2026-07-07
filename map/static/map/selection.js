@@ -145,9 +145,27 @@ var SelectionTool = {};
     return { total: counters.total, byLabel: byLabel, labelOrder: labelOrder, ids: ids };
   }
 
+  // A plain right-click (no drag) opens the context menu for whatever's
+  // under the cursor (see ContextMenu/contextmenu.js) instead of starting a
+  // rectangle selection -- same hitTest/tolerance convention map.js's own
+  // hover/click handlers already use.
+  function maybeShowContextMenu(clientX, clientY) {
+    if (!window.ContextMenu || !window.MapApp || !MapApp.layer) {
+      return;
+    }
+    var latLng = MapApp.map.mouseEventToLatLng({ clientX: clientX, clientY: clientY });
+    var toleranceScreenPx = 8;
+    var toleranceMapUnits = toleranceScreenPx / Math.pow(2, MapApp.map.getZoom());
+    var hit = MapApp.layer.hitTest(latLng.lng, latLng.lat, toleranceMapUnits);
+    if (hit) {
+      ContextMenu.show(clientX, clientY, hit);
+    }
+  }
+
   function finishSelection(start, end) {
     if (Math.abs(end.x - start.x) < MIN_DRAG_PX && Math.abs(end.y - start.y) < MIN_DRAG_PX) {
       clearSelection();
+      maybeShowContextMenu(end.x, end.y);
       return;
     }
     var a = clientToMapXY(start.x, start.y);

@@ -7,13 +7,14 @@
 
   var PROGRESS_POLL_MS = 400;
 
-  // How often to re-glob the save directory for a newer file while in
-  // --auto mode (see sav_map_server.py's AUTO_LOAD_LATEST). Cheap on the
-  // server side (just glob + stat), so a short interval is fine.
+  // How often to re-glob the save directory for a newer file while the
+  // on-screen "Auto-reload new saves" toggle is on. Cheap on the server
+  // side (just glob + stat), so a short interval is fine.
   var AUTO_WATCH_POLL_MS = 10000;
 
   var saveSelect = document.getElementById("saveSelect");
   var loadButton = document.getElementById("loadButton");
+  var autoRefreshToggle = document.getElementById("autoRefreshToggle");
   var loadStatus = document.getElementById("loadStatus");
   var progressBar = document.getElementById("loadProgressBar");
   var progressFill = document.getElementById("loadProgressFill");
@@ -255,7 +256,7 @@
         var loadedSave = lastSaves.filter(function(save) { return save.filename === filename; })[0];
         currentLoadedMtime = loadedSave ? loadedSave.mtime : Date.now() / 1000;
         var statusText = "Loaded: " + payload.sessionName + " (" + payload.saveDatetime + ")";
-        setStatus(autoLoadEnabled ? statusText + " -- watching for newer saves" : statusText);
+        setStatus(autoRefreshToggle.checked ? statusText + " -- watching for newer saves" : statusText);
       })
       .catch(function(error) {
         clearInterval(pollTimer);
@@ -291,9 +292,32 @@
     });
   }
 
+  // The auto-reload watcher is opt-in via the on-screen toggle, and always
+  // starts OFF -- even in --auto mode (which still auto-loads the latest
+  // save ONCE on page open, see the config fetch below). Turning it on
+  // checks immediately, then keeps polling; turning it off stops cleanly.
+  var autoWatchTimer = null;
+
+  function setAutoRefresh(enabled) {
+    if (enabled && autoWatchTimer === null) {
+      autoWatchTimer = setInterval(checkForNewerSave, AUTO_WATCH_POLL_MS);
+      checkForNewerSave();
+      if (currentLoadedMtime !== null) {
+        setStatus(loadStatus.textContent + " -- watching for newer saves");
+      }
+    } else if (!enabled && autoWatchTimer !== null) {
+      clearInterval(autoWatchTimer);
+      autoWatchTimer = null;
+      setStatus(loadStatus.textContent.replace(" -- watching for newer saves", ""));
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", function() {
     MapApp.init();
     loadButton.addEventListener("click", loadSelectedSave);
+    autoRefreshToggle.addEventListener("change", function() {
+      setAutoRefresh(autoRefreshToggle.checked);
+    });
 
     // The logo/title button doubles as "back to mode selection" -- resets
     // server-side mode and returns to the landing page.
@@ -320,9 +344,6 @@
             loadSelectedSave();
           }
         });
-        if (autoLoadEnabled) {
-          setInterval(checkForNewerSave, AUTO_WATCH_POLL_MS);
-        }
       })
       .catch(function() { loadSaveList(); }); // --auto is opt-in; a config fetch failure just falls back to manual loading.
   });
