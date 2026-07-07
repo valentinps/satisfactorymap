@@ -1757,7 +1757,7 @@ var MapApp = {};
     var map = L.map("map", {
       crs: L.CRS.Simple,
       minZoom: -3,
-      maxZoom: 6, // map_highres.png is ~2.44x blank_map20.png's resolution; bumped from 4 so that extra detail is actually reachable.
+      maxZoom: 7, // map_highres.png is 8192px (game-native fused map, see docs/extract_map_image.py), ~1.64x the old 5000px upscale; bumped from 6 so the extra detail is actually reachable.
       attributionControl: false,
       maxBoundsViscosity: 0.8,
       // The canvas overlay only redraws on moveend/zoomend (see BucketedCanvasLayer),
@@ -1774,7 +1774,7 @@ var MapApp = {};
       inertia: false,
     });
 
-    var mapSize = 5000;
+    var mapSize = 8192;
     var margin = mapSize * 0.5;
     var bounds = [[0, 0], [mapSize, mapSize]];
     map.setMaxBounds([[-margin, -margin], [mapSize + margin, mapSize + margin]]);

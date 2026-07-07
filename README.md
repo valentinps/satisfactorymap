@@ -15,7 +15,7 @@ If you cloned without `--recurse-submodules`:
 git submodule update --init
 ```
 
-You also need `map_highres.png` in the repo root (not versioned due to file size).
+You also need `map_highres.png` in the repo root (not versioned due to file size) — see "Generating the map image" below.
 
 ## Usage
 
@@ -47,6 +47,21 @@ install at `Satisfactory\CommunityResources\Docs\en-US.json`, copy it to
 ```bash
 py docs/extract_docs_json.py
 ```
+
+## Generating the map image
+
+`map_highres.png` is not committed either — it's fused from the game's own
+4-corner sliced map render, the same way icons are extracted (via a full game
+asset extraction, e.g. [FModel](https://fmodel.app/)):
+
+```bash
+py docs/extract_map_image.py path/to/extraction/Content
+```
+
+The path argument is the extraction's `Content` folder, same as
+`copy_icons.py`. The tiles live at
+`FactoryGame/Interface/UI/Assets/MapTest/SlicedMap/Map_X-Y.png` within it;
+the script stitches the four of them into `map_highres.png` in the repo root.
 
 ## Generating icons
 
