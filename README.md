@@ -6,7 +6,7 @@ Interactive web-based map viewer for [Satisfactory](https://www.satisfactorygame
 
 ```bash
 git clone --recurse-submodules https://github.com/valentinps/satisfactorymap.git
-cd sat_sav_parse
+cd satisfactorymap
 pip install -r requirements.txt
 ```
 
