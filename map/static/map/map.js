@@ -1272,12 +1272,23 @@ var MapApp = {};
           if (!lineInAltitudeRange) {
             continue;
           }
-          // Hit-tested against the straight chord between consecutive
-          // spline points, not the rendered curve itself -- close enough
-          // given the generous hover/click tolerance, and avoids needing
-          // point-to-bezier distance math.
+          // Stride-7 segments are hit-tested against the same cubic bezier
+          // the renderer draws (see _tracePolylinePath) -- the straight
+          // chord alone can sit many screen px away from the visible curve
+          // on sharp bends, making the drawn line unhoverable there while
+          // empty space along the invisible chord lit up instead.
           for (var i = 0; i + lineStride + 1 < pts.length; i += lineStride) {
-            var d = _pointToSegmentDistance(x, y, pts[i], pts[i + 1], pts[i + lineStride], pts[i + lineStride + 1]);
+            var segAx = pts[i], segAy = pts[i + 1];
+            var segBx = pts[i + lineStride], segBy = pts[i + lineStride + 1];
+            var d;
+            if (lineStride >= 7) {
+              d = _pointToBezierDistance(x, y, segAx, segAy,
+                segAx + pts[i + 4] / 3, segAy + pts[i + 5] / 3, // prev vertex's leave tangent -> control point 1
+                segBx - pts[i + lineStride + 2] / 3, segBy - pts[i + lineStride + 3] / 3, // cur vertex's arrive tangent -> control point 2
+                segBx, segBy, toleranceMapUnits);
+            } else {
+              d = _pointToSegmentDistance(x, y, segAx, segAy, segBx, segBy);
+            }
             var lineScore = d / toleranceMapUnits;
             if (lineScore < bestLineScore) {
               bestLineScore = lineScore;
@@ -1518,6 +1529,25 @@ var MapApp = {};
         if (y > maxY) maxY = y;
         if (z < minZ) minZ = z;
         if (z > maxZ) maxZ = z;
+        if (stride >= 7) {
+          // The drawn bezier stays inside its control points' hull, which
+          // bulges outside the vertex-only bbox on curved segments -- fold
+          // both of this vertex's control points in so a curve's bulge is
+          // neither culled from drawing at the viewport edge nor rejected
+          // by hitTest's bbox check. (Slightly conservative: the first
+          // vertex's arrive / last vertex's leave control points are never
+          // drawn, but including them only over-inflates, never clips.)
+          var apx = x - pts[k + 2] / 3, apy = y - pts[k + 3] / 3;
+          var lpx = x + pts[k + 4] / 3, lpy = y + pts[k + 5] / 3;
+          if (apx < minX) minX = apx;
+          if (apx > maxX) maxX = apx;
+          if (apy < minY) minY = apy;
+          if (apy > maxY) maxY = apy;
+          if (lpx < minX) minX = lpx;
+          if (lpx > maxX) maxX = lpx;
+          if (lpy < minY) minY = lpy;
+          if (lpy > maxY) maxY = lpy;
+        }
       }
       bounds[L_] = { minX: minX, maxX: maxX, minY: minY, maxY: maxY, minZ: minZ, maxZ: maxZ };
     }
@@ -1671,6 +1701,39 @@ var MapApp = {};
   // pin shape.
   function _iconRadiusForZoom(zoom) {
     return Math.min(32, 16 + Math.max(0, zoom) * 4);
+  }
+
+  // Distance from (px,py) to the cubic bezier drawn for one stride-7
+  // segment (control points already converted from Hermite tangents by the
+  // caller -- keep in sync with _tracePolylinePath). A bezier never leaves
+  // its control points' convex hull, and its deviation from the chord is at
+  // most 3/4 of the control points' -- so when both control points sit
+  // within flatTolerance of the chord, the plain chord distance is already
+  // accurate to well within the hover tolerance and the flattening below is
+  // skipped. Curvier segments get flattened into 8 sub-chords, whose
+  // residual error (deviation/64) is negligible at any curvature belts or
+  // rails actually produce.
+  function _pointToBezierDistance(px, py, ax, ay, c1x, c1y, c2x, c2y, bx, by, flatTolerance) {
+    if (_pointToSegmentDistance(c1x, c1y, ax, ay, bx, by) < flatTolerance &&
+        _pointToSegmentDistance(c2x, c2y, ax, ay, bx, by) < flatTolerance) {
+      return _pointToSegmentDistance(px, py, ax, ay, bx, by);
+    }
+    var best = Infinity;
+    var prevX = ax, prevY = ay;
+    for (var s = 1; s <= 8; s++) {
+      var t = s / 8;
+      var mt = 1 - t;
+      var w0 = mt * mt * mt, w1 = 3 * mt * mt * t, w2 = 3 * mt * t * t, w3 = t * t * t;
+      var curX = w0 * ax + w1 * c1x + w2 * c2x + w3 * bx;
+      var curY = w0 * ay + w1 * c1y + w2 * c2y + w3 * by;
+      var d = _pointToSegmentDistance(px, py, prevX, prevY, curX, curY);
+      if (d < best) {
+        best = d;
+      }
+      prevX = curX;
+      prevY = curY;
+    }
+    return best;
   }
 
   function _pointToSegmentDistance(px, py, ax, ay, bx, by) {
