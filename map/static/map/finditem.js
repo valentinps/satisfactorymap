@@ -78,6 +78,7 @@ var FindItem = {};
   var buildingModalInventoryLabel = document.getElementById("buildingModalInventoryLabel");
   var buildingModalInventory = document.getElementById("buildingModalInventory");
   var buildingModalHighlightToggle = document.getElementById("buildingModalHighlightToggle");
+  var buildingModalVisibilityToggle = document.getElementById("buildingModalVisibilityToggle");
 
   var banner = document.getElementById("activeFilterBanner");
   var bannerLabel = document.getElementById("activeFilterLabel");
@@ -436,6 +437,7 @@ var FindItem = {};
       highlightedBuildingEntry.row.checkbox.checked = highlightedBuildingEntry.row.buckets[0].visible;
     }
     highlightedBuildingEntry = null;
+    refreshBuildingModalEye(); // The checkbox resync above may have flipped the modal's eye state.
     modalHighlightToggle.textContent = "Show only these on map";
     buildingModalHighlightToggle.textContent = "Show only this on map";
     banner.style.display = "none";
@@ -537,6 +539,7 @@ var FindItem = {};
     highlightedBuildingEntry = entry;
     highlighting = true;
     buildingModalHighlightToggle.textContent = "Show all layers again";
+    refreshBuildingModalEye(); // The isolate just forced this row's checkbox on.
     MapApp.layer.requestRedraw();
   }
 
@@ -611,7 +614,33 @@ var FindItem = {};
 
   // ---- Building info modal --------------------------------------------------
 
+  // The building modal's header eye -- same show/hide control as the
+  // building's search-suggestion row, bound to whichever entry the modal is
+  // currently showing. Hidden when that entry has no live sidebar checkbox
+  // (nothing to flip).
+  var currentBuildingModalEntry = null;
+
+  function refreshBuildingModalEye() {
+    var entry = currentBuildingModalEntry;
+    if (!entry || !entry.row.checkbox) {
+      buildingModalVisibilityToggle.style.display = "none";
+      return;
+    }
+    buildingModalVisibilityToggle.style.display = "flex";
+    refreshVisibilityToggle(buildingModalVisibilityToggle, entry);
+  }
+
+  buildingModalVisibilityToggle.addEventListener("click", function() {
+    var entry = currentBuildingModalEntry;
+    if (entry && entry.row.checkbox) {
+      entry.row.checkbox.click(); // Same path as the suggestion-row eye -- the sidebar's own change handler does the redraw.
+    }
+    refreshBuildingModalEye();
+  });
+
   function openBuildingModal(entry) {
+    currentBuildingModalEntry = entry;
+    refreshBuildingModalEye();
     buildingModalTitle.textContent = entry.label;
     buildingModalCategory.textContent = entry.subcategory ? entry.category + " › " + entry.subcategory : entry.category;
     var chipColor = Filters.buildingCategoryColor(entry.category);
@@ -805,6 +834,16 @@ var FindItem = {};
     }
   }
 
+  // Repaints any show/hide eye button (suggestion row or the building
+  // modal's) from the entry's current checkbox state -- glyph, blue-shown/
+  // pink-hidden class, and tooltip all in one place.
+  function refreshVisibilityToggle(btn, entry) {
+    var isShown = !entry.row.checkbox || entry.row.checkbox.checked;
+    btn.classList.toggle("isShown", isShown);
+    btn.innerHTML = isShown ? EYE_OPEN_SVG : EYE_OFF_SVG;
+    btn.title = isShown ? "Hide " + entry.label + " on the map" : "Show " + entry.label + " on the map";
+  }
+
   // The show/hide eye button on a building suggestion row -- see the header
   // comment. Reads/writes entry.row.checkbox directly (the same real DOM
   // checkbox the sidebar row owns, see filters.js's appendLeafRow), so this
@@ -812,13 +851,10 @@ var FindItem = {};
   function makeVisibilityToggle(entry) {
     var btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "searchSuggestionToggle";
+    btn.className = "visibilityToggle";
 
     function refresh() {
-      var isShown = !entry.row.checkbox || entry.row.checkbox.checked;
-      btn.classList.toggle("isShown", isShown);
-      btn.innerHTML = isShown ? EYE_OPEN_SVG : EYE_OFF_SVG;
-      btn.title = isShown ? "Hide " + entry.label + " on the map" : "Show " + entry.label + " on the map";
+      refreshVisibilityToggle(btn, entry);
     }
     refresh();
 

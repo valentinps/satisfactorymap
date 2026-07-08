@@ -542,6 +542,12 @@ var Filters = {};
   // high end. Writes the result to --nav-col-width (which #map/#sidebar/
   // #categoryNavPanel all derive from) and pokes Leaflet to catch the resize.
   function autoSizeNavPanel() {
+    // A hand-dragged width (see panels.js's resize handles, persisted across
+    // sessions) always wins over the automatic fit -- otherwise every save
+    // load would snap the panel back and silently undo the user's resize.
+    if (window.Panels && Panels.storedNavWidth() !== null) {
+      return;
+    }
     var navColumn = document.getElementById("categoryNavColumn");
     if (!navColumn || navColumn.children.length === 0) {
       return;

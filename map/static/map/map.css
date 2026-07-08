@@ -1,9 +1,11 @@
 :root {
-  --top-bar-height: 56px;
   --nav-col-width: clamp(240px, 19vw, 340px);
   --detail-col-width: 280px;
   --altitude-width: 64px;
-  --logo-width: 128px;
+  /* One shared feel for the floating panels: how they slide/settle, and the
+     lifted-off-the-map shadow every floating control shares. */
+  --panel-ease: cubic-bezier(0.2, 0, 0, 1);
+  --float-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
 
   /* ---- Color system: slate surfaces, one blue accent for everything
      interactive, FICSIT orange reserved for the brand + the "get a save
@@ -87,25 +89,65 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   outline-offset: 1px;
 }
 
-/* ---- Top bar: logo/mode button, the item search bar, Dimensional Depot
-   icon button -- spans the full page width, above the sidebar/map/altitude
-   panel, all of which sit below it (see their own top: var(--top-bar-height)
-   rules further down). */
+/* ---- Top controls: no bar anymore -- a transparent, non-blocking overlay
+   row of individually floating controls sitting directly over the map
+   (Spotlight-style): menu + logo top-left, the search field centered, the
+   per-save status buttons top-right. pointer-events:none on the row itself
+   so the map stays pannable between the controls; each control re-enables
+   its own pointer events below. Right padding leaves room for the altitude
+   rail docked at the right edge. */
 #topBar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  height: var(--top-bar-height);
-  background: linear-gradient(to bottom, #1a1d23, var(--surface-0));
-  border-bottom: 1px solid var(--border);
-  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
   box-sizing: border-box;
   display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px 0 14px;
+  padding-right: calc(var(--altitude-width) + 12px);
+  z-index: 60; /* Above the sidebar overlay (40) so the suggestions dropdown paints over it. */
+  pointer-events: none;
+  background: none;
+}
+
+#menuButton, #logoButton, #searchBox, .topIconButton {
+  pointer-events: auto;
+}
+
+/* Top-left hamburger -- shows/hides the whole sidebar overlay (panels.js). */
+#menuButton {
+  flex: none;
+  width: 42px;
+  height: 42px;
+  display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 12px;
-  z-index: 10;
+  justify-content: center;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-popup);
+  border-radius: 10px;
+  box-shadow: var(--float-shadow);
+  cursor: pointer;
+}
+
+#menuButton:hover {
+  background: var(--raised-hover);
+  border-color: var(--border-hover);
+  color: var(--text-bright);
+}
+
+/* While the panel is hidden, the button stays quietly accented so it's
+   findable as "the way to get the panel back". */
+#menuButton.panelHidden {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--accent-soft);
+}
+
+#menuButton svg {
+  display: block;
 }
 
 /* The one brand moment in the chrome: a two-line FICSIT-orange wordmark
@@ -113,18 +155,18 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
    a real button -- it navigates back to mode selection. */
 #logoButton {
   flex: none;
-  width: var(--logo-width);
-  height: 40px;
+  height: 42px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
   gap: 1px;
-  padding: 0 11px;
-  background: transparent;
-  border: 1px solid transparent;
+  padding: 0 14px 0 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-popup);
   border-left: 3px solid var(--brand);
-  border-radius: 6px;
+  border-radius: 10px;
+  box-shadow: var(--float-shadow);
   cursor: pointer;
   box-sizing: border-box;
   text-align: left;
@@ -149,8 +191,8 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
 }
 
 #logoButton:hover {
-  background: var(--raised);
-  border-color: var(--border);
+  background: var(--raised-hover);
+  border-color: var(--border-hover);
   border-left-color: var(--brand-bright);
 }
 
@@ -162,43 +204,46 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   color: var(--muted);
 }
 
-/* Spotlight-style search: a constrained-width box centered in the top bar
-   (not stretched edge-to-edge), with a search glyph inside it and a custom
-   suggestions dropdown (see #searchSuggestions) anchored directly beneath --
-   replacing the native <datalist>, whose dropdown the browser positioned and
-   styled itself (badly, and with no room for item icons). */
+/* Spotlight-style search: a free-floating pill centered over the map (no
+   band behind it), with a search glyph inside it and a custom suggestions
+   dropdown (see #searchSuggestions) anchored directly beneath -- replacing
+   the native <datalist>, whose dropdown the browser positioned and styled
+   itself (badly, and with no room for item icons). */
 #mainSearchWrap {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
   justify-content: center;
+  pointer-events: none;
 }
 
 #searchBox {
   position: relative;
   width: 100%;
-  max-width: 540px;
+  max-width: 560px;
   display: flex;
   align-items: center;
 }
 
 #searchIcon {
   position: absolute;
-  left: 15px;
-  color: #888;
+  left: 16px;
+  color: #8a92a3;
   pointer-events: none;
 }
 
 #mainSearchInput {
   width: 100%;
   box-sizing: border-box;
+  height: 42px;
   font-family: var(--font);
   font-size: 15px;
-  padding: 9px 16px 9px 42px;
+  padding: 0 18px 0 44px;
   border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--raised);
+  border: 1px solid var(--border-popup);
+  background: var(--surface-2);
   color: #eee;
+  box-shadow: var(--float-shadow);
   transition: border-color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
 }
 
@@ -210,7 +255,7 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   outline: none;
   border-color: var(--accent);
   background: #262a31;
-  box-shadow: 0 0 0 3px rgba(91, 163, 224, 0.18);
+  box-shadow: var(--float-shadow), 0 0 0 3px rgba(91, 163, 224, 0.18);
 }
 
 #mainSearchInput::placeholder {
@@ -280,36 +325,62 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   color: #6a7180;
 }
 
-/* Show/hide toggle on a building suggestion row -- flips the exact same
+/* Show/hide eye toggle -- on building suggestion rows AND in the building
+   modal's header (#buildingModalVisibilityToggle). Flips the exact same
    sidebar checkbox this building's row owns (see filters.js's
    buildingSearchEntries), so it stays in perfect sync with the sidebar no
-   matter which one is clicked. stopPropagation'd so it never also triggers
-   the row's own click-to-open-modal behavior. */
-.searchSuggestionToggle {
+   matter which one is clicked. stopPropagation'd on suggestion rows so it
+   never also triggers the row's click-to-open-modal behavior.
+   A real filled chip in both states (not a bare gray glyph): accent blue
+   while shown, and the app's "hidden from view" pink while hidden, so the
+   state is legible at a glance. */
+.visibilityToggle {
   flex: none;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: #5c6270;
+  border: 1px solid #6b2b47;
+  border-radius: 8px;
+  background: var(--hidden-pink-bg);
+  color: var(--hidden-pink-soft);
   cursor: pointer;
 }
 
-.searchSuggestionToggle:hover {
-  background: rgba(255, 255, 255, 0.09);
-  color: #eee;
+.visibilityToggle:hover {
+  border-color: var(--hidden-pink);
+  color: #fff;
 }
 
-.searchSuggestionToggle.isShown {
-  color: #5ba3e0;
+.visibilityToggle.isShown {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--accent-soft);
 }
 
-.searchSuggestionToggle svg {
+.visibilityToggle.isShown:hover {
+  background: var(--accent-bg-hover);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* On the keyboard/hover-highlighted (solid blue) suggestion row, the chip's
+   own tints would vanish into the background -- switch to a white outline. */
+.searchSuggestionRow.active .visibilityToggle {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.55);
+  color: #fff;
+}
+
+.visibilityToggle svg {
   display: block;
+}
+
+/* The modal header's eye sits next to a 44px icon -- one size up. */
+#buildingModalVisibilityToggle {
+  width: 34px;
+  height: 34px;
 }
 
 .searchSuggestionEmpty {
@@ -319,44 +390,55 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   font-size: 13px;
 }
 
-/* The top bar's per-save status buttons (Dimensional Depot + the progression
-   views -- see index.html's #topBarStatusButtons). Each shows a real game
-   icon extracted by game_data/copy_icons.py. */
+/* The per-save status buttons (Dimensional Depot + the progression views --
+   see index.html's #topBarStatusButtons), grouped into one floating pill at
+   the top right. Each button gets its own lighter tile inside the pill --
+   the game-icon PNGs are mostly dark, so sitting them directly on the dark
+   chrome made them near-invisible. */
 #topBarStatusButtons {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-popup);
+  border-radius: 12px;
+  box-shadow: var(--float-shadow);
 }
 
 .topIconButton {
   flex: none;
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--raised);
-  border: 1px solid var(--border);
+  background: #363d49;
+  border: 1px solid #454c5a;
   border-radius: 8px;
   cursor: pointer;
 }
 
 .topIconButton:hover {
-  background: var(--raised-hover);
-  border-color: var(--border-hover);
+  background: #424a59;
+  border-color: #5a6272;
 }
 
 .topIconButton img {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   object-fit: contain;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
 }
 
+/* The map owns the whole viewport (minus the altitude rail docked right) --
+   the sidebar and top controls float OVER it, so showing/hiding/resizing
+   panels never moves or re-fits the map. */
 #map {
   position: absolute;
-  top: var(--top-bar-height);
-  left: calc(var(--nav-col-width) + var(--detail-col-width));
+  top: 0;
+  left: 0;
   right: var(--altitude-width);
   bottom: 0;
   background: #000;
@@ -369,26 +451,20 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   isolation: isolate;
 }
 
-/* No level-1 category selected -- the whole detail column (content pane)
-   collapses away entirely rather than sitting there empty, and the map
-   expands to fill the freed space. Toggled on <body> by filters.js's
-   selectCategory/deselectAllCategories, which also calls
-   MapApp.map.invalidateSize() right after so Leaflet actually notices its
-   container resized (a plain CSS width/left change doesn't fire that on
-   its own). <body> ships WITH this class already set (see index.html) so
-   the empty detail column never flashes on screen during the initial load
-   before filters.js runs -- nothing is ever selected until a save is
-   loaded and the user clicks a category anyway. */
+/* No level-1 category selected -- the detail column (content pane) collapses
+   to zero width rather than sitting there empty. Toggled on <body> by
+   filters.js's selectCategory/deselectAllCategories. Animated via the width
+   transitions on #sidebar/#categoryDetailColumn (the sidebar floats over the
+   map, so the map itself never moves). <body> ships WITH this class already
+   set (see index.html) so the empty detail column never flashes on screen
+   during the initial load before filters.js runs -- nothing is ever selected
+   until a save is loaded and the user clicks a category anyway. */
 body.no-category-selected #categoryDetailColumn {
-  display: none;
+  width: 0;
 }
 
 body.no-category-selected #sidebar {
   width: var(--nav-col-width);
-}
-
-body.no-category-selected #map {
-  left: var(--nav-col-width);
 }
 
 .leaflet-container {
@@ -428,19 +504,40 @@ body.no-category-selected #map {
    detail pane (shown only when a category is selected). A flex ROW so the
    two columns sit side by side and each runs full height; the footer lives
    INSIDE the nav panel (not spanning the whole sidebar), so it stays at the
-   nav panel's width and doesn't stretch when the detail pane appears. */
+   nav panel's width and doesn't stretch when the detail pane appears.
+   Floats OVER the map as a rounded card (starting below the top-left menu/
+   logo cluster) -- toggling or resizing it never moves the map. The width
+   transition animates the detail column opening/closing; the transform/
+   opacity pair is the menu button's show/hide slide. */
 #sidebar {
   position: absolute;
-  top: var(--top-bar-height);
-  left: 0;
+  top: 66px;
+  left: 12px;
   width: calc(var(--nav-col-width) + var(--detail-col-width));
-  bottom: 0;
+  bottom: 12px;
   background: var(--surface-1);
   color: var(--text);
   box-sizing: border-box;
   display: flex;
   flex-direction: row;
   overflow: hidden;
+  border: 1px solid var(--border-popup);
+  border-radius: 14px;
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.5);
+  z-index: 40;
+  transition: width 0.18s var(--panel-ease),
+              transform 0.28s var(--panel-ease),
+              opacity 0.22s ease;
+}
+
+#sidebar.hidden {
+  transform: translateX(calc(-100% - 24px));
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #sidebar, #categoryDetailColumn { transition: none; }
 }
 
 /* Level-1 categories -- a plain list of names (see filters.js's
@@ -460,6 +557,64 @@ body.no-category-selected #map {
   flex-direction: column;
   overflow: hidden;
   border-right: 1px solid var(--border);
+}
+
+/* Drag-to-resize handles (see panels.js) -- invisible 7px grab strips that
+   light up as a thin accent stripe on hover/drag. Positioned over the two
+   column right edges as direct children of #sidebar: the nav handle
+   straddles the nav/detail border; the detail handle hugs the sidebar's
+   right edge. */
+.panelResizeHandle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  z-index: 5;
+  touch-action: none;
+}
+
+#navResizeHandle {
+  left: calc(var(--nav-col-width) - 4px);
+}
+
+#detailResizeHandle {
+  right: 0;
+}
+
+/* With the detail column closed, its handle would sit exactly on top of the
+   nav handle at the sidebar's right edge -- there is nothing to resize, so
+   it goes away entirely. */
+body.no-category-selected #detailResizeHandle {
+  display: none;
+}
+
+.panelResizeHandle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 3px;
+  background: transparent;
+  transition: background-color 0.12s ease;
+}
+
+.panelResizeHandle:hover::before,
+.panelResizeHandle.dragging::before {
+  background: var(--accent);
+}
+
+/* Kill the width transitions while a handle is being dragged -- the panel
+   must track the pointer 1:1, not ease toward it. */
+body.panelResizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.panelResizing #sidebar,
+body.panelResizing #categoryDetailColumn {
+  transition: none;
 }
 
 #categoryNavHeader {
@@ -512,11 +667,16 @@ body.no-category-selected #map {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: width 0.18s var(--panel-ease);
 }
 
+/* Fixed at the column's full open width (the column itself clips it) so the
+   open/close animation slides the content in as one piece instead of
+   reflowing the text at every frame. */
 #categoryDetailPane {
   flex: 1 1 auto;
   min-height: 0;
+  width: var(--detail-col-width);
   overflow-y: auto;
   padding: 6px 8px;
   box-sizing: border-box;
@@ -1480,7 +1640,7 @@ body.no-category-selected #map {
    contained, so a plain z-index here sits cleanly on top). */
 #activeFilterBanner {
   position: absolute;
-  top: calc(var(--top-bar-height) + 14px);
+  top: 68px; /* Just below the floating search pill. */
   left: 50%;
   transform: translateX(-50%);
   z-index: 500;
@@ -1536,7 +1696,7 @@ body.no-category-selected #map {
    horizontal slider would in the same sidebar width. */
 #altitudePanel {
   position: absolute;
-  top: var(--top-bar-height);
+  top: 0;
   right: 0;
   bottom: 0;
   width: var(--altitude-width);
@@ -2347,9 +2507,13 @@ body.no-category-selected #map {
 }
 
 /* Entries the save hasn't unlocked/purchased yet -- kept in the list (seeing
-   what's missing is the point of a progression view) but visibly dimmed. */
-.progressionRow.locked {
-  opacity: 0.45;
+   what's missing is the point of a progression view) but visibly dimmed.
+   Only the icon + name dim: the right-hand cost/status text and the cost
+   expander are exactly what a locked row exists to communicate, so they
+   stay at full opacity and readable. */
+.progressionRow.locked .progressionRowIcon,
+.progressionRow.locked .progressionRowLabel {
+  opacity: 0.55;
 }
 
 .progressionRowIcon {
@@ -2378,26 +2542,27 @@ body.no-category-selected #map {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  color: #8a919e;
+  font-size: 13px;
+  color: #c3c9d4;
 }
 
 /* "▸ cost" expander on rows whose requirement list is too long to show
    inline -- unfolds .progressionCostList below the row's main line. */
 .progressionCostToggle {
   flex: none;
-  background: none;
-  border: 1px solid #3a3f4a;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid #4a505c;
   border-radius: 5px;
-  color: #8a919e;
-  font-size: 11px;
-  padding: 2px 8px;
+  color: #c3c9d4;
+  font-size: 12px;
+  padding: 3px 9px;
   cursor: pointer;
 }
 
 .progressionCostToggle:hover {
-  color: #ddd;
-  border-color: #4a505c;
+  color: #fff;
+  border-color: #6a7180;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .progressionCostToggle .chev {
@@ -2420,21 +2585,21 @@ body.no-category-selected #map {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
-  color: #aab0bb;
+  font-size: 13px;
+  color: #d3d8e0;
 }
 
 .progressionCostIcon {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   flex: none;
   object-fit: contain;
 }
 
 .progressionCostAmount {
   flex: none;
-  color: #8ab4f8;
-  font-weight: 500;
+  color: #9ec4fa;
+  font-weight: 600;
 }
 
 .progressionRowStatus.done {

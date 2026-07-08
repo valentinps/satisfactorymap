@@ -1891,6 +1891,11 @@ var MapApp = {};
       minZoom: -3,
       maxZoom: 7, // map_highres.png is 8192px (game-native fused map, see game_data/extract_map_image.py), ~1.64x the old 5000px upscale; bumped from 6 so the extra detail is actually reachable.
       attributionControl: false,
+      // The map now spans the full viewport with the sidebar and top
+      // controls floating over it -- Leaflet's default top-left slot sits
+      // underneath both, so the zoom control lives bottom-right instead
+      // (next to the altitude rail, over nothing but map).
+      zoomControl: false,
       maxBoundsViscosity: 0.8,
       // The canvas overlay only redraws on moveend/zoomend (see BucketedCanvasLayer),
       // so Leaflet's animated zoom would visibly scale the image first and snap
@@ -1905,6 +1910,7 @@ var MapApp = {};
       // immediately instead of after an extra coast-to-stop delay.
       inertia: false,
     });
+    L.control.zoom({ position: "bottomright" }).addTo(map);
 
     var mapSize = 8192;
     var margin = mapSize * 0.5;
