@@ -32,6 +32,21 @@ lookups already work with.
   to resolve in `buildings.json`.
 - `durationSeconds` is `null` if the field was missing/empty (shouldn't happen
   for real recipes, but the source data isn't assumed reliable).
+- `variablePowerRangeMW` (optional, `[min, max]` in MW at 100% clock speed) --
+  present only on variable-power recipes, where the recipe itself drives the
+  machine's draw (oscillating between min and max over each production cycle)
+  instead of the building's own rated figure: every Particle Accelerator/
+  Converter/Quantum Encoder recipe (~43 total). Computed from the source's
+  `mVariablePowerConsumptionConstant`/`Factor` as
+  `[Constant, Constant + Factor]`; constant-power recipes carry the
+  do-nothing defaults `Constant=0`/`Factor<=1` and get no field.
+  Source-data glitch: the phase-5 Space Elevator part recipes made in the
+  Blender/Manufacturer *also* carry real-looking `mVariablePowerConsumption*`
+  values, but the game ignores them there (confirmed in-game: those machines
+  hold their flat 75/55 MW) -- only `FGBuildableManufacturerVariablePower`
+  machines apply recipe-driven power, so the extractor strips the field from
+  recipes not produced in one (identified as the buildings carrying
+  `powerConsumptionRangeMW`, see `buildings.json` below).
 - Only real craftable recipes (`FGRecipe` group). Customization recipes
   (paint/pattern/swatch unlocks) are skipped entirely -- not real crafting.
 
@@ -104,6 +119,31 @@ it use a hardcoded glyph instead (see filters.js).
 from the buildable's `Desc_*_C` companion descriptor -- `Build_*_C` entries
 never carry `mPersistentBigIcon` themselves. `null` for the ~2 buildings
 (out of 546) whose descriptor has no icon in the source data.
+
+### Power consumption (optional fields)
+
+Rated power draw in MW at 100% clock speed, from `mPowerConsumption` /
+`mEstimatedMininumPowerConsumption`/`mEstimatedMaximumPowerConsumption`
+(sic -- the "Mininum" typo is the game's own field name). At most one of the
+two fields is present:
+
+- `powerConsumptionMW` (number) -- steady rated draw, for the ~36 buildings
+  with a non-zero `mPowerConsumption` (production machines, but also train/
+  truck/drone stations, lights, pumps, the AWESOME Sink, etc).
+- `powerConsumptionRangeMW` (`[min, max]`) -- for the three machines whose
+  draw oscillates over each production cycle (Particle Accelerator,
+  Converter, Quantum Encoder): they have `mPowerConsumption=0` and instead
+  carry the game's own estimated min/max across their recipes. The actual
+  range while producing depends on the active recipe -- see `recipes.json`'s
+  `variablePowerRangeMW`, which overrides this building-level estimate.
+
+Both fields are omitted for buildings with no (or zero) draw: the source data
+has an explicit `mPowerConsumption: 0` on plenty of non-consumers (generators,
+storage, valves, junctions, the Resource Well Extractor satellite), so a zero
+is treated the same as the field being absent rather than emitted as a
+misleading "0 MW" rating. Clock-speed scaling is non-linear (exponent
+~1.321929, the source's `mPowerConsumptionExponent`) -- see
+`POWER_CLOCK_SPEED_EXPONENT` in `map/sav_map_data.py`.
 
 ### The three size fields, and why there are three
 

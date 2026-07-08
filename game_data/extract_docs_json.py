@@ -185,13 +185,25 @@ def extractAdaptiveLength(entry: dict) -> dict:
 
 
 def extractRecipe(entry: dict) -> dict:
-   return {
+   recipe = {
       "displayName": entry.get("mDisplayName", ""),
       "ingredients": parseItemAmountList(entry.get("mIngredients", "")),
       "product": parseItemAmountList(entry.get("mProduct", "")),
       "producedIn": shortClassNamesFromPathList(entry.get("mProducedIn", "")),
       "durationSeconds": float(entry["mManufactoringDuration"]) if entry.get("mManufactoringDuration") else None,
    }
+   # Variable-power recipes: the machine's draw oscillates over the production
+   # cycle between mVariablePowerConsumptionConstant and Constant+Factor MW,
+   # overriding the building's own base mPowerConsumption. Constant-power
+   # recipes carry the do-nothing defaults Constant=0/Factor<=1 (a couple use
+   # Factor=0 instead of 1) and get no field at all. Note: recipes made only
+   # in constant-power machines get this field stripped again in a later pass
+   # -- see stripVariablePowerFromConstantPowerMachines.
+   variableConstant = float(entry["mVariablePowerConsumptionConstant"]) if entry.get("mVariablePowerConsumptionConstant") else 0.0
+   variableFactor = float(entry["mVariablePowerConsumptionFactor"]) if entry.get("mVariablePowerConsumptionFactor") else 0.0
+   if variableFactor > 1.0:
+      recipe["variablePowerRangeMW"] = [variableConstant, variableConstant + variableFactor]
+   return recipe
 
 
 # e.g. "BlueprintGeneratedClass /Game/FactoryGame/Schematics/Research/Quartz_RS/
@@ -247,7 +259,7 @@ def extractItem(entry: dict) -> dict:
 
 
 def extractBuilding(entry: dict) -> dict:
-   return {
+   building = {
       "displayName": entry.get("mDisplayName", ""),
       "description": entry.get("mDescription", ""),
       "dimensions": extractDimensions(entry),
@@ -257,6 +269,22 @@ def extractBuilding(entry: dict) -> dict:
       # entries never carry mPersistentBigIcon themselves.
       "icon": None,
    }
+   # Rated power consumption in MW at 100% clock speed. The three machines
+   # whose draw oscillates continuously (Particle Accelerator, Converter,
+   # Quantum Encoder) have mPowerConsumption=0 and instead expose the game's
+   # own min/max estimate across their recipes -- kept as a range here. Both
+   # fields are omitted when there's no (or zero) draw: mPowerConsumption is
+   # an explicit 0 on plenty of non-consumers (generators, storage, valves,
+   # the Resource Well Extractor satellite), so a zero is treated the same as
+   # the field being absent rather than emitted as a misleading "0 MW" entry.
+   estimatedMax = float(entry["mEstimatedMaximumPowerConsumption"]) if entry.get("mEstimatedMaximumPowerConsumption") else 0.0
+   basePower = float(entry["mPowerConsumption"]) if entry.get("mPowerConsumption") else 0.0
+   if estimatedMax > 0.0:
+      estimatedMin = float(entry["mEstimatedMininumPowerConsumption"]) if entry.get("mEstimatedMininumPowerConsumption") else 0.0
+      building["powerConsumptionRangeMW"] = [estimatedMin, estimatedMax]
+   elif basePower > 0.0:
+      building["powerConsumptionMW"] = basePower
+   return building
 
 
 def resolveBuildClassName(descriptorClassName: str, buildClassNames: set) -> str | None:
@@ -357,6 +385,27 @@ def extractAll(docsData: list) -> tuple:
    return (recipes, items, buildings, resources, schematics)
 
 
+def stripVariablePowerFromConstantPowerMachines(recipes: dict, buildings: dict) -> None:
+   # The mVariablePowerConsumption* fields also carry real-looking values on a
+   # couple of recipes made in ordinary constant-power machines -- the phase-5
+   # Space Elevator parts in the Blender/Manufacturer -- but the game ignores
+   # them there (confirmed in-game: those machines hold their flat 75/55 MW
+   # while producing them). Only FGBuildableManufacturerVariablePower machines
+   # actually apply recipe-driven variable power, and those are exactly the
+   # buildings extracted with a powerConsumptionRangeMW (the game's estimated
+   # min/max across recipes only exists for variable-power machines), so the
+   # field is dropped from any recipe none of whose producers is one.
+   for recipe in recipes.values():
+      if "variablePowerRangeMW" not in recipe:
+         continue
+      producesInVariablePowerMachine = any(
+         "powerConsumptionRangeMW" in buildings.get(producer, {})
+         for producer in recipe.get("producedIn", [])
+      )
+      if not producesInVariablePowerMachine:
+         del recipe["variablePowerRangeMW"]
+
+
 def writeJson(path: Path, data: dict) -> None:
    path.parent.mkdir(parents=True, exist_ok=True)
    with open(path, "w", encoding="utf-8") as handle:
@@ -368,6 +417,7 @@ def main() -> None:
    docsPath = Path(sys.argv[1]) if len(sys.argv) > 1 else DOCS_JSON_PATH
    docsData = loadDocsJson(docsPath)
    recipes, items, buildings, resources, schematics = extractAll(docsData)
+   stripVariablePowerFromConstantPowerMachines(recipes, buildings)
    buildingCategories, buildingIcons = extractBuildingCategoriesAndIcons(docsData, set(buildings.keys()))
    for className, icon in buildingIcons.items():
       buildings[className]["icon"] = icon

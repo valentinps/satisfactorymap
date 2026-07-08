@@ -524,6 +524,15 @@ var Filters = {};
   Filters.getBuildingSearchEntries = function() { return buildingSearchEntries; };
   Filters.buildingCategoryColor = function(category) { return BUILDING_CATEGORY_COLORS[category] || BUILDING_CATEGORY_COLORS.Unknown; };
 
+  // Vehicle counterpart of buildingSearchEntries: one row per vehicle type in
+  // the save, plus the single "Train" row (whole consists -- individual
+  // locomotives/freight cars are deliberately not searchable, matching how
+  // the sidebar groups them). Same row objects the Vehicles sidebar section
+  // renders, so entry.row.checkbox is live here too.
+  var vehicleSearchEntries = [];
+  Filters.getVehicleSearchEntries = function() { return vehicleSearchEntries; };
+  Filters.vehicleColor = function() { return VEHICLE_COLOR; };
+
   // Leaflet doesn't notice its container resized just because a CSS
   // width/left value changed -- invalidateSize() is the real API for that,
   // and it's what actually fires the "resize" event BucketedCanvasLayer
@@ -1014,14 +1023,17 @@ var Filters = {};
         boxBucket.companionPinBucket = pinBucket;
         pinBucket.companionBoxBucket = boxBucket;
       }
-      rows.push({ label: vehicleType.label, count: count, color: VEHICLE_COLOR, buckets: buckets, iconUrl: url });
+      rows.push({ label: vehicleType.label, count: count, color: VEHICLE_COLOR, buckets: buckets, iconUrl: url,
+                  typePaths: [vehicleType.typePath] });
     });
 
     var trainRow = buildTrainRow(payload);
     if (trainRow) {
+      trainRow.isTrain = true; // Summarized per consist via /api/vehicle-info?types=train, not per typePath.
       rows.push(trainRow);
     }
 
+    vehicleSearchEntries = rows;
     if (rows.length === 0) {
       return;
     }
@@ -1324,6 +1336,7 @@ var Filters = {};
     detailPane.innerHTML = "";
     categoryEntries = [];
     buildingSearchEntries = [];
+    vehicleSearchEntries = [];
     bucketLayerCheckbox = {};
     bucketLayerLabel = {};
     bucketCategoryCheckbox = {};

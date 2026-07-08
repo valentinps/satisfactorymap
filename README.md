@@ -19,8 +19,9 @@ The repo does not ship the game-derived data (item/building JSONs, icons, the
 map image) — it's extracted from the game's own files and too large/derivative
 to version. Get it one of two ways:
 
-- **You have a `game_data.zip` archive** (from someone who already extracted
-  everything): unpack it and you're done —
+- **Quick setup — download the pre-extracted archive**:
+  [game_data.zip on Google Drive](https://drive.google.com/file/d/16JshnM65xrTpwxwbYs2iHmoog2AKDGZN/view?usp=sharing),
+  then unpack it and you're done —
   ```bash
   py game_data/package_game_data.py unpack path/to/game_data.zip
   ```

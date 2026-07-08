@@ -2341,69 +2341,59 @@ def _pipeNetworkBottleneck(saveIndex, memberNames, hoveredTypePath) -> dict | No
    # exact slow segments, so judging intent takes one look.
    return _flowBottleneck(saveIndex, memberNames, hoveredTypePath, _pipeFlowLimitPerMinute, "network", "m³/min")
 
-# Hand-curated, wiki-sourced (satisfactory.wiki.gg) rated power consumption in
-# MW at 100% clock speed. The save itself only stores a *live* power draw
+# Rated power consumption in MW at 100% clock speed, straight from the game's
+# own Docs.json via game_data/generated/buildings.json and recipes.json (see
+# game_data/SCHEMA.md). The save itself only stores a *live* power draw
 # (FGPowerInfoComponent.mTargetConsumption, see describeInstance below) which
 # ramps down to 0.1MW whenever a machine is idle or output-blocked, so it
 # can't answer "how much power does this use when actually running" -- that
-# rated figure is static per building+recipe and isn't serialized anywhere in
-# the save, hence this table. Checked as substrings against the instance's
-# typePath, first match wins (mirrors CATEGORY_RULES below).
-# Particle Accelerator (typePath substring "HadronCollider") is handled
-# separately below since its rated power depends on the active recipe.
-# Converter and Quantum Encoder get a (min, max) range instead of a single
-# value because their actual draw oscillates continuously over each
-# production cycle rather than holding at one steady value.
-BASE_POWER_MW_BY_TYPEPATH_SUBSTRING = (
-   ("QuantumEncoder", (0.1, 2000.0)),
-   ("Converter", (100.0, 400.0)),
-   ("Smelter", 4.0),
-   ("Foundry", 16.0),
-   ("Constructor", 4.0),
-   ("Manufacturer", 55.0),
-   ("Assembler", 15.0),
-   ("Refinery", 30.0),
-   ("Blender", 75.0),
-   ("Packager", 10.0),
-   ("MinerMk1", 5.0),
-   ("MinerMk2", 15.0),
-   ("MinerMk3", 45.0),
-   ("OilPump", 40.0),
-   ("WaterPump", 20.0),
-   ("FrackingSmasher", 150.0),  # Resource Well Pressurizer
-   ("FrackingExtractor", 0.0),  # Resource Well Extractor satellite -- doesn't require power
-)
+# rated figure is static per building+recipe and only exists in the game data.
+# Two layers, recipe first:
+#   - recipes.json's variablePowerRangeMW: variable-power recipes (every
+#     Particle Accelerator/Converter/Quantum Encoder recipe -- only those
+#     machines apply recipe-driven power, see the extractor's
+#     stripVariablePowerFromConstantPowerMachines) drive the machine's draw
+#     themselves, overriding its base figure.
+#   - buildings.json's powerConsumptionMW (steady draw) or
+#     powerConsumptionRangeMW (the game's own min/max estimate across recipes,
+#     for the three machines whose draw oscillates over the production cycle
+#     -- used as the fallback when no recipe is set).
+def _loadRatedPowerMWByClassName() -> dict:
+   ratings = {}
+   for (className, entry) in _RAW_BUILDINGS_JSON.items():
+      powerRange = entry.get("powerConsumptionRangeMW")
+      if powerRange:
+         ratings[className] = (powerRange[0], powerRange[1])
+      elif entry.get("powerConsumptionMW"):
+         ratings[className] = entry["powerConsumptionMW"]
+   return ratings
 
-# The Particle Accelerator's rated power range (MW at 100% clock) depends on
-# its active recipe, but every recipe collapses into exactly one of two tiers
-# (per the wiki) -- matched here by keyword against the recipe's own
-# typePath/pathName. Falls back to the lighter tier (the more common one) if
-# no recipe is set yet.
-PARTICLE_ACCELERATOR_POWER_RANGES_MW = (
-   (("DarkMatter", "Ficsonium", "NuclearPasta"), (500.0, 1500.0)),
-   ((), (250.0, 750.0)),
-)
+_RATED_POWER_MW_BY_CLASSNAME = _loadRatedPowerMWByClassName()
+
+_VARIABLE_POWER_RANGE_MW_BY_RECIPE = {
+   recipeClassName: (entry["variablePowerRangeMW"][0], entry["variablePowerRangeMW"][1])
+   for (recipeClassName, entry) in _RECIPES_JSON.items()
+   if entry.get("variablePowerRangeMW")
+}
 
 # Power consumption does NOT scale linearly with clock speed -- this exponent
-# (changed from 1.6 to 1.321928 in patch 0.7) is confirmed against the wiki's
-# own stated examples (50% clock -> 40% power, 200% clock -> 250% power) and
-# independently verified against the Particle Accelerator's overclocking
-# table, which scales its min/max/mean identically using this same exponent.
-POWER_CLOCK_SPEED_EXPONENT = 1.321928
+# (changed from 1.6 to ~1.32 in patch 0.7) is Docs.json's own per-building
+# mPowerConsumptionExponent, kept as one constant rather than extracted per
+# building: it's 1.321929 on every overclockable consumer, and the buildings
+# still carrying the legacy 1.6 (or nothing) are all non-overclockable
+# (stations/lights/jump pads/...), so their clock never leaves 100% and the
+# exponent never applies. Confirmed against the wiki's stated examples
+# (50% clock -> 40% power, 200% clock -> 250% power).
+POWER_CLOCK_SPEED_EXPONENT = 1.321929
 
 def _ratedPowerForTypePath(typePath, recipePathName):
    if typePath is None:
       return None
-   if "HadronCollider" in typePath:
-      haystack = recipePathName or ""
-      for keywords, mwRange in PARTICLE_ACCELERATOR_POWER_RANGES_MW:
-         if any(keyword in haystack for keyword in keywords):
-            return mwRange
-      return PARTICLE_ACCELERATOR_POWER_RANGES_MW[-1][1]
-   for substring, ratedMW in BASE_POWER_MW_BY_TYPEPATH_SUBSTRING:
-      if substring in typePath:
-         return ratedMW
-   return None
+   if recipePathName:
+      recipeRange = _VARIABLE_POWER_RANGE_MW_BY_RECIPE.get(_shortClassName(recipePathName))
+      if recipeRange is not None:
+         return recipeRange
+   return _RATED_POWER_MW_BY_CLASSNAME.get(_shortClassName(typePath))
 
 def _scaleRatedPowerForClockSpeed(ratedMW, clockSpeedFraction):
    factor = clockSpeedFraction ** POWER_CLOCK_SPEED_EXPONENT
@@ -2468,6 +2458,38 @@ INVENTORY_PROPERTY_NAMES = (
    "mInventoryPotential",
 )
 
+# Wheeled vehicles (Tractor/Truck/Fluid Truck/Explorer/Factory Cart) carry NO
+# inventory reference property at all -- unlike drones and freight cars
+# (mStorageInventory) or buildings (the names above), their cargo trunk and
+# fuel slot exist only as child component objects tied to the actor by
+# instance-name convention ("<vehicle>.StorageInventory" /
+# "<vehicle>.FuelInventory" -- the same convention PIPE_CONNECTOR_SUFFIXES
+# relies on). Without this fallback their contents were invisible to
+# tooltips, item search, and selection totals alike.
+VEHICLE_INVENTORY_COMPONENT_SUFFIXES = (".StorageInventory", ".FuelInventory")
+
+def _inventoryComponentObjects(objectsByInstanceName: dict, instanceName: str, properties) -> list:
+   # Every inventory component hanging off this instance: the ones its
+   # reference properties point at, plus the name-convention vehicle ones --
+   # deduped by pathName since a component can be BOTH referenced and
+   # name-matching (a drone's mStorageInventory points at its own
+   # ".StorageInventory" child).
+   componentsByPathName = {}
+   for propertyName in INVENTORY_PROPERTY_NAMES:
+      reference = sav_parse.getPropertyValue(properties, propertyName)
+      if reference is None or not hasattr(reference, "pathName"):
+         continue
+      componentObject = objectsByInstanceName.get(reference.pathName)
+      if componentObject is not None:
+         componentsByPathName[reference.pathName] = componentObject
+   for componentSuffix in VEHICLE_INVENTORY_COMPONENT_SUFFIXES:
+      pathName = instanceName + componentSuffix
+      if pathName not in componentsByPathName:
+         componentObject = objectsByInstanceName.get(pathName)
+         if componentObject is not None:
+            componentsByPathName[pathName] = componentObject
+   return list(componentsByPathName.values())
+
 def _collectItemLocationIndex(objectsByInstanceName: dict) -> dict:
    # One O(n) pass across every object in the save (not just known storage
    # buildings -- confirmed against a 762k-object save that checking all 9
@@ -2479,13 +2501,7 @@ def _collectItemLocationIndex(objectsByInstanceName: dict) -> dict:
    index: dict[str, list] = {}
    for (instanceName, object) in objectsByInstanceName.items():
       countByItem: dict[str, float] = {}
-      for propertyName in INVENTORY_PROPERTY_NAMES:
-         reference = sav_parse.getPropertyValue(object.properties, propertyName)
-         if reference is None or not hasattr(reference, "pathName"):
-            continue
-         componentObject = objectsByInstanceName.get(reference.pathName)
-         if componentObject is None:
-            continue
+      for componentObject in _inventoryComponentObjects(objectsByInstanceName, instanceName, object.properties):
          stacks = sav_parse.getPropertyValue(componentObject.properties, "mInventoryStacks")
          if stacks is None:
             continue
@@ -2638,14 +2654,8 @@ def aggregateSelectionInventory(saveIndex: dict, instanceNames: list) -> list:
          continue
       properties = object.properties
 
-      # Building/player inventories.
-      for propertyName in INVENTORY_PROPERTY_NAMES:
-         reference = sav_parse.getPropertyValue(properties, propertyName)
-         if reference is None or not hasattr(reference, "pathName"):
-            continue
-         componentObject = objects.get(reference.pathName)
-         if componentObject is None:
-            continue
+      # Building/player/vehicle inventories.
+      for componentObject in _inventoryComponentObjects(objects, instanceName, properties):
          stacks = sav_parse.getPropertyValue(componentObject.properties, "mInventoryStacks")
          if stacks is None:
             continue
@@ -2705,7 +2715,7 @@ def collectBuildingInfo(saveIndex: dict, typePaths: list) -> dict:
    # entry (see filters.js's mergedMaterialLabel), every instance across all
    # of those typePaths combined. Reuses aggregateSelectionInventory for the
    # "shared inventory" (everything currently sitting in these buildings'
-   # inventories, added up) and the same rated-power table describeInstance
+   # inventories, added up) and the same rated-power lookup describeInstance
    # uses for a single instance, just summed per instance here instead.
    instanceNamesByTypePath = saveIndex.get("instanceNamesByTypePath", {})
    objects = saveIndex["objects"]
@@ -2795,6 +2805,157 @@ def collectBuildingInfo(saveIndex: dict, typePaths: list) -> dict:
    if hasPowerProducer:
       result["powerProductionMW"] = round(totalPowerProductionMW, 1)
    return result
+
+def _sumInventoryComponentStacks(componentObjects: list) -> list:
+   # Sums mInventoryStacks across an explicit list of inventory components
+   # into the same row shape aggregateSelectionInventory produces (solids
+   # merged by short class name, fluids by readable label at their 1000x
+   # inventory-stack scale) so the frontend renders both identically.
+   solidCountByShortName: dict[str, float] = {}
+   fluidRawByLabel: dict[str, float] = {}
+   for componentObject in componentObjects:
+      stacks = sav_parse.getPropertyValue(componentObject.properties, "mInventoryStacks")
+      if stacks is None:
+         continue
+      for stack in stacks:
+         item = sav_parse.getPropertyValue(stack[0], "Item")
+         numItems = sav_parse.getPropertyValue(stack[0], "NumItems")
+         if not item or not numItems:
+            continue
+         itemPath = item[0] if isinstance(item, (list, tuple)) else item
+         if not itemPath:
+            continue
+         shortName = itemPath.rsplit(".", 1)[-1]
+         if _isFluidItemPath(shortName):
+            label = readableLabel(shortName)
+            fluidRawByLabel[label] = fluidRawByLabel.get(label, 0) + numItems
+         else:
+            solidCountByShortName[shortName] = solidCountByShortName.get(shortName, 0) + numItems
+   items = [
+      {"item": shortName, "label": readableLabel(shortName), "count": count, "isFluid": False}
+      for (shortName, count) in solidCountByShortName.items()
+   ]
+   items.extend(
+      {"item": label, "label": label, "count": round(raw / 1000, 1), "isFluid": True}
+      for (label, raw) in fluidRawByLabel.items()
+   )
+   items.sort(key=lambda entry: entry["count"], reverse=True)
+   return items
+
+def _vehicleStorageComponent(objects: dict, instanceName: str, properties):
+   # A vehicle's cargo trunk: drones reference it (mStorageInventory), wheeled
+   # vehicles only have the name-linked child component.
+   reference = sav_parse.getPropertyValue(properties, "mStorageInventory")
+   if reference is not None and getattr(reference, "pathName", None):
+      componentObject = objects.get(reference.pathName)
+      if componentObject is not None:
+         return componentObject
+   return objects.get(instanceName + ".StorageInventory")
+
+def collectVehicleInfo(saveIndex: dict, typePaths: list) -> dict:
+   # The vehicle counterpart of collectBuildingInfo, for the search bar's
+   # road-vehicle/drone entries: fleet size, everything sitting in their
+   # cargo trunks summed, the fuel loaded across their fuel slots, and the
+   # fleet-status counts the save can answer cheaply -- how many are
+   # assigned to an autopilot route (wheeled), how many are currently docked
+   # at a port (drones).
+   instanceNamesByTypePath = saveIndex.get("instanceNamesByTypePath", {})
+   objects = saveIndex["objects"]
+   count = 0
+   automatedCount = 0
+   dockedCount = 0
+   hasDockingState = False
+   cargoComponents = []
+   fuelComponents = []
+   for typePath in typePaths:
+      for instanceName in instanceNamesByTypePath.get(typePath, []):
+         count += 1
+         object = objects.get(instanceName)
+         if object is None:
+            continue
+         properties = object.properties
+         storageComponent = _vehicleStorageComponent(objects, instanceName, properties)
+         if storageComponent is not None:
+            cargoComponents.append(storageComponent)
+         fuelComponent = objects.get(instanceName + ".FuelInventory")
+         if fuelComponent is not None:
+            fuelComponents.append(fuelComponent)
+         # A wheeled vehicle put on a route keeps a live reference to the
+         # path segment it's currently following; manually driven/parked
+         # vehicles never carry it.
+         if sav_parse.getPropertyValue(properties, "mCurrentVehiclePathSegment") is not None:
+            automatedCount += 1
+         # EDroneDockingState enum struct -- string-matched rather than
+         # unpacking the parser's nested TextProperty-style struct layers.
+         dockingState = sav_parse.getPropertyValue(properties, "mCurrentDockingState")
+         if dockingState is not None:
+            hasDockingState = True
+            if "DS_DOCKED" in sav_parse.toString(dockingState):
+               dockedCount += 1
+   result = {
+      "count": count,
+      "inventory": _sumInventoryComponentStacks(cargoComponents),
+   }
+   fuelInventory = _sumInventoryComponentStacks(fuelComponents)
+   if fuelInventory:
+      result["fuelInventory"] = fuelInventory
+   if automatedCount:
+      result["automatedCount"] = automatedCount
+   if hasDockingState:
+      result["dockedCount"] = dockedCount
+   return result
+
+def collectTrainInfo(saveIndex: dict) -> dict:
+   # The train counterpart of collectVehicleInfo, per assembled consist
+   # rather than per actor (the search bar deliberately exposes one "Train"
+   # entry, not Locomotive/Freight Car): train and car totals, the
+   # locomotive/wagon split, how consists are composed ("1 loco + 4 wagons"
+   # x3 -- includes stray uncoupled cars as single-car consists, same as the
+   # map's Train pins), and every freight car's cargo summed.
+   objects = saveIndex["objects"]
+   trains = _trainConsistsFromMaps(saveIndex["headers"], objects)
+   carCount = 0
+   locomotiveCount = 0
+   wagonCount = 0
+   compositionCounts: dict[tuple, int] = {}
+   cargoComponents = []
+   for train in trains:
+      locomotives = sum(1 for car in train["cars"] if car["typePath"] == LOCOMOTIVE_TYPE_PATH)
+      wagons = len(train["cars"]) - locomotives
+      carCount += len(train["cars"])
+      locomotiveCount += locomotives
+      wagonCount += wagons
+      compositionCounts[(locomotives, wagons)] = compositionCounts.get((locomotives, wagons), 0) + 1
+      for car in train["cars"]:
+         if car["typePath"] != FREIGHT_WAGON_TYPE_PATH:
+            continue
+         carObject = objects.get(car["id"])
+         if carObject is None:
+            continue
+         storageComponent = _vehicleStorageComponent(objects, car["id"], carObject.properties)
+         if storageComponent is not None:
+            cargoComponents.append(storageComponent)
+
+   def compositionLabel(locomotives, wagons):
+      parts = []
+      if locomotives:
+         parts.append(f"{locomotives} loco{'s' if locomotives != 1 else ''}")
+      if wagons:
+         parts.append(f"{wagons} wagon{'s' if wagons != 1 else ''}")
+      return " + ".join(parts) if parts else "empty"
+
+   consistBreakdown = [
+      {"label": compositionLabel(locomotives, wagons), "count": compositionCounts[(locomotives, wagons)]}
+      for (locomotives, wagons) in sorted(compositionCounts, key=lambda key: (key[0] + key[1], key[0]))
+   ]
+   return {
+      "count": len(trains),
+      "carCount": carCount,
+      "locomotiveCount": locomotiveCount,
+      "wagonCount": wagonCount,
+      "consistBreakdown": consistBreakdown,
+      "inventory": _sumInventoryComponentStacks(cargoComponents),
+   }
 
 def describeInstance(saveIndex: dict, instanceName: str) -> dict:
    # Lightweight buildables (foundations/walls/ramps/beams/decorative pieces)
@@ -2940,19 +3101,14 @@ def describeInstance(saveIndex: dict, instanceName: str) -> dict:
    if progress is not None:
       result["productionProgressPercent"] = round(progress * 100, 1)
 
-   # Train stations/platforms report a negligible mTargetConsumption (~0.1MW,
-   # presumably signal/lighting power) that isn't a meaningful figure for
-   # this building type, so it's omitted entirely rather than shown as noise.
-   isTrainPlatform = typePath is not None and ("TrainStation" in typePath or "TrainDockingStation" in typePath or "TrainPlatformEmpty" in typePath)
-   if not isTrainPlatform:
-      ratedPowerMW = _ratedPowerForTypePath(typePath, recipePathName)
-      scaled = _scaleRatedPowerForClockSpeed(ratedPowerMW, clockSpeedFraction) if ratedPowerMW is not None else None
-      isRangedBuilding = isinstance(scaled, tuple)
-      if isRangedBuilding:
-         result["basePowerConsumptionRangeMW"] = [scaled[0], scaled[1]]
-         result["basePowerConsumptionMeanMW"] = scaled[2]
-      elif scaled is not None:
-         result["basePowerConsumptionMW"] = scaled
+   ratedPowerMW = _ratedPowerForTypePath(typePath, recipePathName)
+   scaled = _scaleRatedPowerForClockSpeed(ratedPowerMW, clockSpeedFraction) if ratedPowerMW is not None else None
+   isRangedBuilding = isinstance(scaled, tuple)
+   if isRangedBuilding:
+      result["basePowerConsumptionRangeMW"] = [scaled[0], scaled[1]]
+      result["basePowerConsumptionMeanMW"] = scaled[2]
+   elif scaled is not None:
+      result["basePowerConsumptionMW"] = scaled
 
    # Power Storage (battery) buildings hold their current charge in a plain
    # "mPowerStore" float (MWh) directly on the actor -- not inside the
@@ -3032,8 +3188,20 @@ def describeInstance(saveIndex: dict, instanceName: str) -> dict:
    if outputInventory:
       result["outputInventory"] = outputInventory
    storageInventory = _inventoryContents(_resolveComponentObject(saveIndex, properties, "mStorageInventory"))
+   if not storageInventory:
+      # Wheeled vehicles' cargo trunk: a name-linked child component with no
+      # reference property (see VEHICLE_INVENTORY_COMPONENT_SUFFIXES).
+      storageInventory = _inventoryContents(saveIndex["objects"].get(instanceName + ".StorageInventory"))
    if storageInventory:
       result["storageInventory"] = storageInventory
+
+   # Wheeled vehicles' fuel slot, same name-linked convention. Gated on the
+   # absence of mFuelInventory so a generator's fuel (already shown as part
+   # of inputInventory above via that reference) isn't repeated here.
+   if sav_parse.getPropertyValue(properties, "mFuelInventory") is None:
+      fuelInventory = _inventoryContents(saveIndex["objects"].get(instanceName + ".FuelInventory"))
+      if fuelInventory:
+         result["fuelInventory"] = fuelInventory
 
    # Splitters/Mergers (plain, Smart/Programmable, Priority, and their
    # Lift-mounted variants) hold in-transit items in a single "mBufferInventory"

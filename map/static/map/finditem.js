@@ -1,8 +1,12 @@
-// Drives the top bar's search (items AND buildings) and the Dimensional
-// Depot icon button. Item results and Depot contents show in the shared
-// #itemModalOverlay dialog (see below); building results get their own
+// Drives the top bar's search (items, buildings AND vehicles) and the
+// Dimensional Depot icon button. Item results and Depot contents show in the
+// shared #itemModalOverlay dialog (see below); building results get their own
 // richer #buildingModalOverlay (count/recipes/power/inventory -- see
-// sav_map_data.collectBuildingInfo, queried via /api/building-info).
+// sav_map_data.collectBuildingInfo, queried via /api/building-info), which
+// vehicle results reuse with fleet stats/consist-mix/fuel/cargo instead (see
+// collectVehicleInfo/collectTrainInfo, queried via /api/vehicle-info --
+// trains are searchable only as one whole-consist "Train" entry, matching
+// the sidebar, never as individual locomotives/freight cars).
 //
 // Item search looks up one item across every inventory in the save (see
 // sav_map_data.findItemLocations / collectItemLocationIndex, queried via
@@ -177,9 +181,10 @@ var FindItem = {};
     }
   }
 
-  var catalog = []; // [{kind:"item", label, itemPath}, {kind:"building", label, typePaths, category, subcategory, row}, ...]
+  var catalog = []; // [{kind:"item", label, itemPath}, {kind:"building", label, typePaths, category, subcategory, row}, {kind:"vehicle", label, typePaths, isTrain, iconUrl, row}, ...]
   var itemCatalogByLabel = {}; // label -> itemPath, for an exact-match Enter on a fully typed item name.
   var buildingCatalogByLabel = {}; // label -> building catalog entry, same for a fully typed building name.
+  var vehicleCatalogByLabel = {}; // label -> vehicle catalog entry, same for a fully typed vehicle name.
   var currentSuggestions = []; // The subset currently shown in the dropdown (flat, in display order, kinds mixed).
   var currentRowElements = []; // Row DOM elements parallel to currentSuggestions (group-label divs aren't part of this).
   var activeIndex = -1; // Highlighted suggestion row (keyboard/hover), -1 = none.
@@ -642,11 +647,21 @@ var FindItem = {};
     currentBuildingModalEntry = entry;
     refreshBuildingModalEye();
     buildingModalTitle.textContent = entry.label;
-    buildingModalCategory.textContent = entry.subcategory ? entry.category + " › " + entry.subcategory : entry.category;
-    var chipColor = Filters.buildingCategoryColor(entry.category);
+    var chipColor;
+    buildingModalIcon.classList.toggle("vehicleModalIcon", entry.kind === "vehicle");
+    if (entry.kind === "vehicle") {
+      buildingModalCategory.textContent = entry.isTrain ? "Vehicles › Railway" : "Vehicles";
+      chipColor = Filters.vehicleColor();
+      buildingModalIcon.onerror = function() { buildingModalIcon.onerror = null; buildingModalIcon.src = DEFAULT_BUILDING_ICON_URL; };
+      buildingModalIcon.src = entry.iconUrl;
+      buildingModalIcon.style.visibility = "visible";
+    } else {
+      buildingModalCategory.textContent = entry.subcategory ? entry.category + " › " + entry.subcategory : entry.category;
+      chipColor = Filters.buildingCategoryColor(entry.category);
+      attachIconWithFallback(buildingModalIcon, "building", entry.typePaths[0]);
+    }
     buildingModalCategory.style.background = chipColor + "26"; // ~15% alpha tint, hex-appended (2-digit alpha).
     buildingModalCategory.style.color = chipColor;
-    attachIconWithFallback(buildingModalIcon, "building", entry.typePaths[0]);
     banner.style.display = "none";
     buildingOverlay.style.display = "flex";
   }
@@ -692,9 +707,45 @@ var FindItem = {};
     return mw.toLocaleString(undefined, { maximumFractionDigits: 1 }) + " MW";
   }
 
+  // One horizontal-bar breakdown section (the building modal's "Recipe mix",
+  // the train modal's "Consist mix") appended into the recipes area --
+  // rows: [{label, count}], scaled against the largest count.
+  function appendBarSection(title, rows, barColor) {
+    buildingModalRecipes.appendChild(el("div", "buildingModalSectionLabel", title));
+    var maxCount = rows.reduce(function(m, r) { return Math.max(m, r.count); }, 1);
+    rows.forEach(function(barRow) {
+      var row = el("div", "recipeBarRow");
+      row.appendChild(el("span", "recipeBarLabel", barRow.label));
+      var track = el("div", "recipeBarTrack");
+      var fill = el("div", "recipeBarFill");
+      fill.style.width = Math.max(3, (barRow.count / maxCount) * 100) + "%";
+      fill.style.background = barColor;
+      track.appendChild(fill);
+      row.appendChild(track);
+      row.appendChild(el("span", "recipeBarCount", barRow.count.toLocaleString()));
+      buildingModalRecipes.appendChild(row);
+    });
+  }
+
+  // The modal's bottom item list ("Combined inventory" for buildings,
+  // "Combined cargo" for vehicles/trains) -- rows in
+  // aggregateSelectionInventory's {label, count, isFluid, item} shape.
+  function fillModalInventory(labelText, rows) {
+    if (rows && rows.length > 0) {
+      buildingModalInventoryLabel.textContent = labelText;
+      buildingModalInventoryLabel.style.display = "block";
+      renderLocationList(buildingModalInventory, rows.map(function(entryRow) {
+        return [entryRow.label, entryRow.count.toLocaleString() + (entryRow.isFluid ? " m³" : ""), "item", entryRow.item];
+      }));
+    } else {
+      buildingModalInventoryLabel.style.display = "none";
+      buildingModalInventory.innerHTML = "";
+    }
+  }
+
   // Fills the building modal's stats/recipe-mix/inventory from a
   // collectBuildingInfo() result WITHOUT touching the highlight -- reusable
-  // both for a fresh search (showBuildingResult) and for reopening from the
+  // both for a fresh search (runInfoSearchFor) and for reopening from the
   // banner's "Details" button while an isolate is still active.
   function fillBuildingModalFromInfo(entry, info) {
     buildingModalSummary.textContent = info.count.toLocaleString() + " placed across the save.";
@@ -716,49 +767,58 @@ var FindItem = {};
 
     buildingModalRecipes.innerHTML = "";
     if (info.recipes && info.recipes.length > 0) {
-      var chipColor = Filters.buildingCategoryColor(entry.category);
-      buildingModalRecipes.appendChild(el("div", "buildingModalSectionLabel", "Recipe mix"));
-      var maxCount = info.recipes.reduce(function(m, r) { return Math.max(m, r.count); }, 1);
-      info.recipes.forEach(function(recipeRow) {
-        var row = el("div", "recipeBarRow");
-        row.appendChild(el("span", "recipeBarLabel", recipeRow.label));
-        var track = el("div", "recipeBarTrack");
-        var fill = el("div", "recipeBarFill");
-        fill.style.width = Math.max(3, (recipeRow.count / maxCount) * 100) + "%";
-        fill.style.background = chipColor;
-        track.appendChild(fill);
-        row.appendChild(track);
-        row.appendChild(el("span", "recipeBarCount", recipeRow.count.toLocaleString()));
-        buildingModalRecipes.appendChild(row);
-      });
+      appendBarSection("Recipe mix", info.recipes, Filters.buildingCategoryColor(entry.category));
     }
 
-    if (info.inventory && info.inventory.length > 0) {
-      buildingModalInventoryLabel.style.display = "block";
-      renderLocationList(buildingModalInventory, info.inventory.map(function(entryRow) {
-        return [entryRow.label, entryRow.count.toLocaleString() + (entryRow.isFluid ? " m³" : ""), "item", entryRow.item];
-      }));
-    } else {
-      buildingModalInventoryLabel.style.display = "none";
-      buildingModalInventory.innerHTML = "";
-    }
-
+    fillModalInventory("Combined inventory", info.inventory);
     buildingModalHighlightToggle.style.display = info.count > 0 ? "block" : "none";
   }
 
-  function showBuildingResult(entry, info) {
-    lastBuilding = { entry: entry, info: info };
-    lastKind = "building";
-    clearHighlight();
-    fillBuildingModalFromInfo(entry, info);
-    buildingModalHighlightToggle.textContent = "Show only this on map";
+  // Vehicle counterpart of fillBuildingModalFromInfo, from a
+  // collectVehicleInfo()/collectTrainInfo() result: fleet stat tiles, the
+  // train consist-mix bars, a "Fuel loaded" list, and the combined cargo.
+  function fillVehicleModalFromInfo(entry, info) {
+    var vehicleColor = Filters.vehicleColor();
+    buildingModalStats.innerHTML = "";
+    buildingModalRecipes.innerHTML = "";
+
+    if (entry.isTrain) {
+      buildingModalSummary.textContent = info.count.toLocaleString() + " train" + (info.count === 1 ? "" : "s") +
+        " on the rails, " + info.carCount.toLocaleString() + " cars total.";
+      buildingModalStats.appendChild(statTile(info.count.toLocaleString(), "Trains"));
+      buildingModalStats.appendChild(statTile(info.carCount.toLocaleString(), "Cars"));
+      buildingModalStats.appendChild(statTile(info.locomotiveCount.toLocaleString(), "Locomotives"));
+      buildingModalStats.appendChild(statTile(info.wagonCount.toLocaleString(), "Freight cars"));
+      if (info.consistBreakdown && info.consistBreakdown.length > 0) {
+        appendBarSection("Consist mix", info.consistBreakdown, vehicleColor);
+      }
+    } else {
+      buildingModalSummary.textContent = info.count.toLocaleString() + " in the save.";
+      buildingModalStats.appendChild(statTile(info.count.toLocaleString(), "Count"));
+      if (info.automatedCount !== undefined) {
+        buildingModalStats.appendChild(statTile(info.automatedCount.toLocaleString() + " / " + info.count.toLocaleString(), "On autopilot"));
+      }
+      if (info.dockedCount !== undefined) {
+        buildingModalStats.appendChild(statTile(info.dockedCount.toLocaleString() + " / " + info.count.toLocaleString(), "Docked at port"));
+      }
+    }
+
+    if (info.fuelInventory && info.fuelInventory.length > 0) {
+      buildingModalRecipes.appendChild(el("div", "buildingModalSectionLabel", "Fuel loaded"));
+      var fuelList = el("div", "itemLocationList");
+      renderLocationList(fuelList, info.fuelInventory.map(function(entryRow) {
+        return [entryRow.label, entryRow.count.toLocaleString() + (entryRow.isFluid ? " m³" : ""), "item", entryRow.item];
+      }));
+      buildingModalRecipes.appendChild(fuelList);
+    }
+
+    fillModalInventory(entry.isTrain ? "Combined cargo (all freight cars)" : "Combined cargo", info.inventory);
+    buildingModalHighlightToggle.style.display = info.count > 0 ? "block" : "none";
   }
 
-  function runBuildingSearchFor(entry) {
-    var filename = window.MapApp.currentFile;
-    if (!filename) {
-      return;
-    }
+  // Blanks every modal section, fetches, then fills via the given fill
+  // function -- the shared skeleton of runBuildingSearchFor/runVehicleSearchFor.
+  function runInfoSearchFor(entry, url, fillFromInfo) {
     openBuildingModal(entry);
     buildingModalSummary.textContent = "Loading…";
     buildingModalStats.innerHTML = "";
@@ -766,18 +826,43 @@ var FindItem = {};
     buildingModalInventoryLabel.style.display = "none";
     buildingModalInventory.innerHTML = "";
     buildingModalHighlightToggle.style.display = "none";
-    fetch("/api/building-info?file=" + encodeURIComponent(filename) + "&types=" + encodeURIComponent(entry.typePaths.join(",")))
+    fetch(url)
       .then(function(response) { return response.json(); })
       .then(function(info) {
         if (info.error) {
           buildingModalSummary.textContent = info.error;
           return;
         }
-        showBuildingResult(entry, info);
+        lastBuilding = { entry: entry, info: info };
+        lastKind = "building";
+        clearHighlight();
+        fillFromInfo(entry, info);
+        buildingModalHighlightToggle.textContent = "Show only this on map";
       })
       .catch(function(error) {
         buildingModalSummary.textContent = "Search failed: " + error;
       });
+  }
+
+  function runBuildingSearchFor(entry) {
+    var filename = window.MapApp.currentFile;
+    if (!filename) {
+      return;
+    }
+    runInfoSearchFor(entry,
+      "/api/building-info?file=" + encodeURIComponent(filename) + "&types=" + encodeURIComponent(entry.typePaths.join(",")),
+      fillBuildingModalFromInfo);
+  }
+
+  function runVehicleSearchFor(entry) {
+    var filename = window.MapApp.currentFile;
+    if (!filename) {
+      return;
+    }
+    var typesParam = entry.isTrain ? "train" : entry.typePaths.join(",");
+    runInfoSearchFor(entry,
+      "/api/vehicle-info?file=" + encodeURIComponent(filename) + "&types=" + encodeURIComponent(typesParam),
+      fillVehicleModalFromInfo);
   }
 
   function runSearchFor(itemPath, label) {
@@ -829,6 +914,8 @@ var FindItem = {};
     hideSuggestions();
     if (entry.kind === "building") {
       runBuildingSearchFor(entry);
+    } else if (entry.kind === "vehicle") {
+      runVehicleSearchFor(entry);
     } else {
       runSearchFor(entry.itemPath, entry.label);
     }
@@ -888,10 +975,18 @@ var FindItem = {};
     var img = document.createElement("img");
     img.className = "searchSuggestionIcon";
     img.alt = "";
-    attachIconWithFallback(img, entry.kind, catalogIconClassName(entry));
+    if (entry.kind === "vehicle") {
+      // Vehicle glyphs live under icons/vehicles/ and are carried on the
+      // entry itself (see filters.js) -- no ClassName-keyed lookup to do.
+      img.onerror = function() { img.onerror = null; img.src = DEFAULT_BUILDING_ICON_URL; };
+      img.src = entry.iconUrl;
+      img.classList.add("searchSuggestionVehicleIcon");
+    } else {
+      attachIconWithFallback(img, entry.kind, catalogIconClassName(entry));
+    }
     row.appendChild(img);
     row.appendChild(el("span", "searchSuggestionLabel", entry.label));
-    if (entry.kind === "building") {
+    if (entry.kind === "building" || entry.kind === "vehicle") {
       row.appendChild(makeVisibilityToggle(entry));
     }
     // mousedown (not click) + preventDefault so selecting doesn't first
@@ -931,20 +1026,22 @@ var FindItem = {};
     }
     var itemMatches = matchCatalog(catalog.filter(function(e) { return e.kind === "item"; }), q);
     var buildingMatches = matchCatalog(catalog.filter(function(e) { return e.kind === "building"; }), q);
-    currentSuggestions = itemMatches.concat(buildingMatches);
+    var vehicleMatches = matchCatalog(catalog.filter(function(e) { return e.kind === "vehicle"; }), q);
+    currentSuggestions = itemMatches.concat(buildingMatches, vehicleMatches);
 
     suggestionsEl.innerHTML = "";
     currentRowElements = [];
     if (currentSuggestions.length === 0) {
-      suggestionsEl.appendChild(el("div", "searchSuggestionEmpty", "No matching item or building."));
+      suggestionsEl.appendChild(el("div", "searchSuggestionEmpty", "No matching item, building or vehicle."));
       suggestionsEl.style.display = "block";
       activeIndex = -1;
       return;
     }
 
-    var showGroupLabels = itemMatches.length > 0 && buildingMatches.length > 0;
+    var nonEmptyKinds = [itemMatches, buildingMatches, vehicleMatches].filter(function(m) { return m.length > 0; }).length;
+    var showGroupLabels = nonEmptyKinds > 1;
     var index = 0;
-    [["Items", itemMatches], ["Buildings", buildingMatches]].forEach(function(group) {
+    [["Items", itemMatches], ["Buildings", buildingMatches], ["Vehicles", vehicleMatches]].forEach(function(group) {
       var groupEntries = group[1];
       if (groupEntries.length === 0) {
         return;
@@ -992,6 +1089,9 @@ var FindItem = {};
       } else if (buildingCatalogByLabel.hasOwnProperty(typedLabel)) {
         hideSuggestions();
         runBuildingSearchFor(buildingCatalogByLabel[typedLabel]);
+      } else if (vehicleCatalogByLabel.hasOwnProperty(typedLabel)) {
+        hideSuggestions();
+        runVehicleSearchFor(vehicleCatalogByLabel[typedLabel]);
       }
     } else if (e.key === "Escape") {
       hideSuggestions();
@@ -1049,7 +1149,8 @@ var FindItem = {};
       overlay.style.display = "flex";
     } else if (lastKind === "building" && lastBuilding) {
       openBuildingModal(lastBuilding.entry);
-      fillBuildingModalFromInfo(lastBuilding.entry, lastBuilding.info);
+      var fillFromInfo = lastBuilding.entry.kind === "vehicle" ? fillVehicleModalFromInfo : fillBuildingModalFromInfo;
+      fillFromInfo(lastBuilding.entry, lastBuilding.info);
       buildingModalHighlightToggle.textContent = "Show all layers again";
     }
   });
@@ -1119,7 +1220,16 @@ var FindItem = {};
     buildingCatalogByLabel = {};
     buildingEntries.forEach(function(entry) { buildingCatalogByLabel[entry.label] = entry; });
 
-    catalog = itemEntries.concat(buildingEntries);
+    // One entry per Vehicles sidebar row (see filters.js's vehicleSearchEntries):
+    // Tractor/Truck/Drone/... plus the single whole-consist "Train" row --
+    // individual locomotives/freight cars are deliberately not searchable.
+    var vehicleEntries = (Filters.getVehicleSearchEntries ? Filters.getVehicleSearchEntries() : []).map(function(row) {
+      return { kind: "vehicle", label: row.label, typePaths: row.typePaths, isTrain: row.isTrain, iconUrl: row.iconUrl, row: row };
+    });
+    vehicleCatalogByLabel = {};
+    vehicleEntries.forEach(function(entry) { vehicleCatalogByLabel[entry.label] = entry; });
+
+    catalog = itemEntries.concat(buildingEntries, vehicleEntries);
 
     window.MapApp.currentDepotItems = payload.dimensionalDepot || [];
   };

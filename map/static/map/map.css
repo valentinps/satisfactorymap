@@ -304,6 +304,17 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   object-fit: contain;
 }
 
+/* Vehicle glyphs (icons/vehicles/*.png) are the game's white-on-transparent
+   monochrome icons -- backed by the same solid vehicle-orange circle their
+   map pins use (filters.js's VEHICLE_COLOR) so they hold up on any row state
+   and read as vehicles next to the full-color item/building icons. */
+.searchSuggestionVehicleIcon {
+  background: #f39c12;
+  border-radius: 50%;
+  padding: 4px;
+  box-sizing: border-box;
+}
+
 .searchSuggestionLabel {
   flex: 1 1 auto;
   min-width: 0;
@@ -1354,6 +1365,14 @@ body.panelResizing #categoryDetailColumn {
   border-radius: 8px;
   padding: 4px;
   box-sizing: border-box;
+}
+
+/* Vehicle-orange circle behind the white monochrome vehicle glyphs -- same
+   reasoning as .searchSuggestionVehicleIcon above. */
+#buildingModalIcon.vehicleModalIcon {
+  background: #f39c12;
+  border-radius: 50%;
+  padding: 7px;
 }
 
 #buildingModalHeadings {

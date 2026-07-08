@@ -388,6 +388,7 @@ var Tooltip = {};
       inventorySection("Input Inventory", detail.inputInventory),
       inventorySection("Output Inventory", detail.outputInventory),
       inventorySection("Storage", detail.storageInventory),
+      inventorySection("Fuel", detail.fuelInventory),
       inventorySection("Buffer", detail.bufferInventory),
       inventorySection(detail.trainCars ? "Total Cargo (all cars)" : "Cargo", detail.cargoInventory),
       inventorySection("Inventory", detail.playerInventory),
