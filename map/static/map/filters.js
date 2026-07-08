@@ -254,11 +254,15 @@ var Filters = {};
     });
   }
 
-  function makeIconBucket(key, label, color, points, ids, tooltipKind, tooltipInfo, url, opacity, pinFillColor) {
+  function makeIconBucket(key, label, color, points, ids, tooltipKind, tooltipInfo, url, opacity, pinFillColor, pointStride) {
     return MapApp.layer.addBucket({
       key: key, label: label, color: color, visible: true,
       renderType: "icon",
-      pointStride: 3,
+      // Almost always 3 ([x, y, z]); vehicles pass 4 so their pin bucket can
+      // share the exact same [x, y, yaw, z] points array as their box bucket
+      // (every icon consumer -- draw, grid, hit-test -- reads x/y directly
+      // and altitude at stride-1, so the extra yaw column is just skipped).
+      pointStride: pointStride || 3,
       points: new Float32Array(points),
       ids: ids || null,
       tooltipKind: tooltipKind || "none",
@@ -974,22 +978,112 @@ var Filters = {};
   function buildVehiclesSection(navList, detailPane, payload) {
     var rows = [];
     (payload.vehicles || []).forEach(function(vehicleType) {
-      var count = pointCount(vehicleType.points, 3);
+      var count = pointCount(vehicleType.points, 4);
       if (count === 0) {
         return;
       }
       var url = VEHICLE_ICON_BASE + encodeURIComponent(vehicleType.icon);
-      var bucket = makeIconBucket(
+      var buckets = [];
+      // The vehicle's actual oriented box (hand-curated size -- see
+      // sav_map_data.VEHICLE_FOOTPRINTS_METERS_BY_TYPE_PATH), drawn under
+      // the pin. Shares the pin bucket's ids/points, so it's excluded from
+      // rectangle selection or every vehicle would be counted twice.
+      var boxBucket = null;
+      if (vehicleType.footprintPixels) {
+        boxBucket = makePointBucket(
+          "vehiclebox:" + vehicleType.typePath, vehicleType.label, VEHICLE_COLOR, vehicleType.points,
+          "rect", 4, vehicleType.ids, "server", null, vehicleType.footprintPixels);
+        boxBucket.excludeFromSelection = true;
+        // The road/rail a vehicle drives on sits at essentially the
+        // vehicle's own altitude -- without this clearance the path line
+        // always won the hover along the box's whole midline (see hitTest's
+        // line-vs-box rule). 5m is above any vehicle's own height but well
+        // below a genuine bridge deck one clearance level up.
+        boxBucket.lineHitClearanceM = 5;
+        buckets.push(boxBucket);
+      }
+      var pinBucket = makeIconBucket(
         "vehicle:" + vehicleType.typePath, vehicleType.label, VEHICLE_COLOR, vehicleType.points,
-        vehicleType.ids, "server", null, url, 1, VEHICLE_COLOR);
-      rows.push({ label: vehicleType.label, count: count, color: VEHICLE_COLOR, buckets: [bucket], iconUrl: url });
+        vehicleType.ids, "server", null, url, 1, VEHICLE_COLOR, 4);
+      buckets.push(pinBucket);
+      // Hovering either representation lights up (and keeps visible) both:
+      // the box redraws its pin on top of the highlight fill, the pin
+      // retraces its box -- see map.js's _redrawHighlight. Same index in
+      // both buckets, since they share the exact same points/ids arrays.
+      if (boxBucket) {
+        boxBucket.companionPinBucket = pinBucket;
+        pinBucket.companionBoxBucket = boxBucket;
+      }
+      rows.push({ label: vehicleType.label, count: count, color: VEHICLE_COLOR, buckets: buckets, iconUrl: url });
     });
+
+    var trainRow = buildTrainRow(payload);
+    if (trainRow) {
+      rows.push(trainRow);
+    }
+
     if (rows.length === 0) {
       return;
     }
     var total = rows.reduce(function(s, r) { return s + r.count; }, 0);
     renderTopLevelCategory(navList, detailPane, "Vehicles (" + total + ")", "icon", VEHICLE_COLOR, rows,
       { iconUrl: VEHICLE_ICON_BASE + "Truck.png" });
+  }
+
+  // One pin per assembled train (at its lead car), plus every car's oriented
+  // box, as a single "Train" row. The pin's id is the abstract BP_Train_C
+  // consist actor -- describeInstance resolves it to the train's name,
+  // consist composition, and total cargo -- while each car's box keeps the
+  // car's own id, so clicking a specific wagon still describes that wagon.
+  // Hovering/clicking the pin lights up the whole consist: the pin bucket's
+  // trainCarHighlights maps each train id to its cars' indices in the shared
+  // cars bucket (see map.js's _redrawHighlight).
+  function buildTrainRow(payload) {
+    var trains = payload.trains;
+    if (!trains || !trains.consists || trains.consists.length === 0) {
+      return null;
+    }
+    var pinPoints = [];
+    var pinIds = [];
+    var carPoints = [];
+    var carIds = [];
+    var carHighlightsByTrainId = {};
+    var pinIndexByLeadCarIndex = {};
+    trains.consists.forEach(function(consist, consistIndex) {
+      pinPoints.push(consist.pin[0], consist.pin[1], consist.pin[2]);
+      pinIds.push(consist.id);
+      // The pin sits at the consist's lead car (see sav_map_data.collectTrains).
+      pinIndexByLeadCarIndex[carIds.length] = consistIndex;
+      var indices = [];
+      for (var i = 0; i < consist.cars.ids.length; i++) {
+        indices.push(carIds.length + i);
+      }
+      carHighlightsByTrainId[consist.id] = indices;
+      carIds = carIds.concat(consist.cars.ids);
+      for (var p = 0; p < consist.cars.points.length; p++) {
+        carPoints.push(consist.cars.points[p]);
+      }
+    });
+    var url = VEHICLE_ICON_BASE + "Train.png";
+    var carsBucket = makePointBucket(
+      "trainCars", "Train Car", VEHICLE_COLOR, carPoints, "rect", 4, carIds,
+      "server", null, trains.carFootprintPixels);
+    // Same reasoning as the road vehicles' boxes above: the rail under a car
+    // registers at the car's own altitude, and it must not steal the hover.
+    carsBucket.lineHitClearanceM = 5;
+    var pinBucket = makeIconBucket(
+      "trains", "Train", VEHICLE_COLOR, pinPoints, pinIds, "server", null, url, 1, VEHICLE_COLOR);
+    // The pin is the abstract consist actor; its cars (selectable above) are
+    // the physical objects, so counting both would double-count every train.
+    pinBucket.excludeFromSelection = true;
+    pinBucket.trainCarHighlights = { bucket: carsBucket, indicesById: carHighlightsByTrainId };
+    // Highlighting a LEAD car's box would otherwise swallow the train's pin
+    // sitting on it (non-lead cars have no pin of their own -- the sparse
+    // map leaves them undefined, which _redrawHighlight skips).
+    carsBucket.companionPinBucket = pinBucket;
+    carsBucket.companionPinIndexByPoint = pinIndexByLeadCarIndex;
+    return { label: "Train", count: trains.consists.length, color: VEHICLE_COLOR,
+             buckets: [carsBucket, pinBucket], iconUrl: url };
   }
 
   // ---- Building categories (from game_data/generated/buildingCategories.json, plus Unknown) ----
@@ -1201,7 +1295,10 @@ var Filters = {};
     });
     total += pointCount(payload.players.points, 3);
     (payload.creatures || []).forEach(function(creatureType) { total += pointCount(creatureType.points, 3); });
-    (payload.vehicles || []).forEach(function(vehicleType) { total += pointCount(vehicleType.points, 3); });
+    (payload.vehicles || []).forEach(function(vehicleType) { total += pointCount(vehicleType.points, 4); });
+    // Trains count their physical cars (locomotives/freight cars), not the
+    // abstract one-pin-per-consist entries -- this is a placed-object tally.
+    ((payload.trains || {}).consists || []).forEach(function(consist) { total += consist.cars.ids.length; });
     total += pointCount(payload.hub.points, 3);
     Object.keys(payload.collectables).forEach(function(key) {
       var c = payload.collectables[key];

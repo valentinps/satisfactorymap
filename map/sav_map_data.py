@@ -632,30 +632,198 @@ VEHICLE_ICONS_BY_TYPE_PATH = {
    "/Game/FactoryGame/Buildable/Vehicle/Train/Wagon/BP_FreightWagon.BP_FreightWagon_C": "Train.png",
 }
 
+# Vehicles aren't buildables, so Docs.json carries no mClearanceData/mWidth
+# for them (see buildings.json -- checked: no BP_Truck/BP_Locomotive entries
+# at all) and footprintPixels() can't cover them. Hand-curated top-down boxes
+# instead, (length along local +X = driving direction, width along local Y),
+# in meters, wiki-sourced/eyeballed against in-game foundation grid -- these
+# draw the vehicle's oriented rectangle under its icon pin, so close-enough
+# visual sizes are fine. Locomotive/Freight Car use the game's 16m
+# car-spacing on track as their length.
+VEHICLE_FOOTPRINTS_METERS_BY_TYPE_PATH = {
+   "/Game/FactoryGame/Buildable/Vehicle/Explorer/BP_Explorer.BP_Explorer_C": (7.0, 4.5),
+   "/Game/FactoryGame/Buildable/Vehicle/Golfcart/BP_Golfcart.BP_Golfcart_C": (3.2, 2.2),
+   "/Game/FactoryGame/Buildable/Vehicle/Golfcart/BP_GolfcartGold.BP_GolfcartGold_C": (3.2, 2.2),
+   "/Game/FactoryGame/Buildable/Vehicle/Tractor/BP_Tractor.BP_Tractor_C": (8.5, 5.5),
+   "/Game/FactoryGame/Buildable/Vehicle/Truck/BP_Truck.BP_Truck_C": (10.5, 5.5),
+   "/Game/FactoryGame/Buildable/Vehicle/Truck/BP_FluidTruck.BP_FluidTruck_C": (10.5, 5.5),
+   "/Game/FactoryGame/Buildable/Vehicle/Cyberwagon/Testa_BP_WB.Testa_BP_WB_C": (6.5, 3.5),
+   "/Game/FactoryGame/Buildable/Factory/DroneStation/BP_DroneTransport.BP_DroneTransport_C": (9.0, 9.0),
+   "/Game/FactoryGame/Buildable/Vehicle/Train/Locomotive/BP_Locomotive.BP_Locomotive_C": (16.0, 5.4),
+   "/Game/FactoryGame/Buildable/Vehicle/Train/Wagon/BP_FreightWagon.BP_FreightWagon_C": (16.0, 5.4),
+}
+
+TRAIN_TYPE_PATH = "/Game/FactoryGame/Buildable/Vehicle/Train/-Shared/BP_Train.BP_Train_C"
+LOCOMOTIVE_TYPE_PATH = "/Game/FactoryGame/Buildable/Vehicle/Train/Locomotive/BP_Locomotive.BP_Locomotive_C"
+FREIGHT_WAGON_TYPE_PATH = "/Game/FactoryGame/Buildable/Vehicle/Train/Wagon/BP_FreightWagon.BP_FreightWagon_C"
+RAILCAR_TYPE_PATHS = {LOCOMOTIVE_TYPE_PATH, FREIGHT_WAGON_TYPE_PATH}
+
+def _vehicleFootprintPixels(typePath):
+   footprint = VEHICLE_FOOTPRINTS_METERS_BY_TYPE_PATH.get(typePath)
+   if footprint is None:
+      return None
+   (lengthMeters, widthMeters) = footprint
+   return [metersToPixelLength(lengthMeters / 2), metersToPixelLength(widthMeters / 2)]
+
 def collectVehicles(levels) -> list:
-   # Same typePath/label/points/ids shape as collectCreatures (stride-3
-   # points, tooltipKind "server" on the frontend -- describeInstance
-   # resolves a vehicle's position/inventory generically), plus the icon
-   # filename under icons/vehicles/ for the map pin.
+   # Same typePath/label/points/ids shape as collectBuildings' buckets
+   # (stride-4 [x, y, yaw, z] points, tooltipKind "server" on the frontend --
+   # describeInstance resolves a vehicle's position/inventory generically),
+   # plus the icon filename under icons/vehicles/ for the map pin and the
+   # hand-curated footprintPixels so the frontend can draw the vehicle's
+   # oriented box under that pin. Locomotives/Freight Cars are deliberately
+   # NOT here anymore -- they're grouped into per-consist entries by
+   # collectTrains instead of being plotted as anonymous per-car pins.
    typeBuckets: dict[str, dict] = {}
    for level in levels:
       for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and header.typePath in VEHICLE_ICONS_BY_TYPE_PATH:
+         if isinstance(header, sav_parse.ActorHeader) and header.typePath in VEHICLE_ICONS_BY_TYPE_PATH \
+               and header.typePath not in RAILCAR_TYPE_PATHS:
             bucket = typeBuckets.get(header.typePath)
             if bucket is None:
                bucket = {"label": readableLabel(header.typePath), "icon": VEHICLE_ICONS_BY_TYPE_PATH[header.typePath],
-                         "points": [], "ids": []}
+                         "points": [], "ids": [], "footprintPixels": _vehicleFootprintPixels(header.typePath)}
                typeBuckets[header.typePath] = bucket
             (px, py) = projectXY(header.position)
             bucket["points"].append(px)
             bucket["points"].append(py)
+            bucket["points"].append(_renderedYaw(header.rotation))
             bucket["points"].append(worldZToMeters(header.position[2]))
             bucket["ids"].append(header.instanceName)
    return [
       {"typePath": typePath, "label": bucket["label"], "icon": bucket["icon"],
-       "points": bucket["points"], "ids": bucket["ids"]}
+       "points": bucket["points"], "ids": bucket["ids"], "footprintPixels": bucket["footprintPixels"]}
       for (typePath, bucket) in sorted(typeBuckets.items(), key=lambda entry: entry[1]["label"])
    ]
+
+# --- Trains -------------------------------------------------------------------
+# A placed train is several physical actors (locomotives + freight cars, each
+# its own ActorHeader with position/rotation) tied together by one abstract
+# BP_Train_C consist actor (see EXCLUDED_BUILDING_TYPE_PATHS -- it sits at the
+# world origin, so it's never plotted directly). The consist object's
+# properties link to its cars: "FirstVehicle"/"LastVehicle" object references
+# (no "m" prefix, unlike most gameplay properties -- confirmed against a real
+# save), and each railroad vehicle carries its coupled neighbors NOT as
+# properties but in its binary trailing data: sav_parse.py's
+# BP_Locomotive/BP_FreightWagon branch decodes it as actorSpecificInfo =
+# [trainList, previousCoupling, nextCoupling] (ObjectReferences, empty
+# pathName when that end is uncoupled). Walking from FirstVehicle through
+# whichever coupling points at a not-yet-visited car enumerates the consist
+# in physical order regardless of individual cars' orientation. A train whose
+# links don't resolve degrades to its cars showing up as single-car consists,
+# never disappearing entirely.
+
+def _trainConsistsFromMaps(headersByInstanceName: dict, objectsByInstanceName: dict) -> list:
+   # Shared core for collectTrains (map payload) and buildSaveIndex (tooltip
+   # lookups). Returns [{"id": trainInstanceName, "label": strOrNone,
+   # "cars": [{"id", "typePath", "position", "rotation"}, ...]}, ...] with
+   # every railcar in the save appearing exactly once -- cars claimed by a
+   # BP_Train_C consist in consist order, plus a single-car consist for any
+   # orphan the walk never reached.
+   def carEntry(carInstanceName):
+      header = headersByInstanceName.get(carInstanceName)
+      if header is None or getattr(header, "typePath", None) not in RAILCAR_TYPE_PATHS:
+         return None
+      return {"id": carInstanceName, "typePath": header.typePath,
+              "position": header.position, "rotation": header.rotation}
+
+   trains = []
+   claimed = set()
+   railcarIds = []
+   for (instanceName, header) in headersByInstanceName.items():
+      typePath = getattr(header, "typePath", None)
+      if typePath in RAILCAR_TYPE_PATHS:
+         railcarIds.append(instanceName)
+      elif typePath != TRAIN_TYPE_PATH:
+         continue
+      else:
+         trainObject = objectsByInstanceName.get(instanceName)
+         if trainObject is None:
+            continue
+         first = sav_parse.getPropertyValue(trainObject.properties, "FirstVehicle") \
+            or sav_parse.getPropertyValue(trainObject.properties, "mFirstVehicle")
+         last = sav_parse.getPropertyValue(trainObject.properties, "LastVehicle") \
+            or sav_parse.getPropertyValue(trainObject.properties, "mLastVehicle")
+         ordered = []
+         seen = set()
+         current = first.pathName if first is not None and getattr(first, "pathName", None) else None
+         while current and current not in seen and len(ordered) < 100: # A consist is at most a few dozen cars -- the cap only guards against a malformed coupling cycle.
+            seen.add(current)
+            ordered.append(current)
+            carObject = objectsByInstanceName.get(current)
+            current = None
+            couplings = getattr(carObject, "actorSpecificInfo", None) if carObject is not None else None
+            if isinstance(couplings, list) and len(couplings) == 3:
+               for coupled in couplings[1:]:
+                  coupledName = getattr(coupled, "pathName", None)
+                  if coupledName and coupledName not in seen:
+                     current = coupledName
+                     break
+         # A one-car train has FirstVehicle == LastVehicle; anything the walk
+         # missed (unknown coupling property names) at least gets its endpoint.
+         lastName = last.pathName if last is not None and getattr(last, "pathName", None) else None
+         if lastName and lastName not in seen:
+            ordered.append(lastName)
+         cars = []
+         for carInstanceName in ordered:
+            entry = carEntry(carInstanceName)
+            if entry is not None and carInstanceName not in claimed:
+               claimed.add(carInstanceName)
+               cars.append(entry)
+         if cars:
+            label = _textPropertyValue(sav_parse.getPropertyValue(trainObject.properties, "mTrainName"))
+            trains.append({"id": instanceName, "label": label, "cars": cars})
+   for carInstanceName in railcarIds:
+      if carInstanceName not in claimed:
+         entry = carEntry(carInstanceName)
+         if entry is not None:
+            trains.append({"id": carInstanceName, "label": None, "cars": [entry]})
+   return trains
+
+def _headerAndObjectMaps(levels):
+   headersByInstanceName = {}
+   objectsByInstanceName = {}
+   for level in levels:
+      for header in level.actorAndComponentObjectHeaders:
+         headersByInstanceName[header.instanceName] = header
+      for object in level.objects:
+         objectsByInstanceName[object.instanceName] = object
+   return (headersByInstanceName, objectsByInstanceName)
+
+def collectTrains(levels) -> dict:
+   # One entry per assembled train (not per car): a single pin at the lead
+   # car, plus every car's oriented box so the frontend can draw and
+   # group-highlight the whole consist. Cars keep their own ids -- clicking a
+   # car's box describes that car; clicking the pin describes the whole train
+   # (see describeInstance's BP_Train_C branch).
+   (headersByInstanceName, objectsByInstanceName) = _headerAndObjectMaps(levels)
+   consists = []
+   for train in _trainConsistsFromMaps(headersByInstanceName, objectsByInstanceName):
+      carPoints = []
+      carIds = []
+      carKinds = []
+      for car in train["cars"]:
+         (px, py) = projectXY(car["position"])
+         carPoints.append(px)
+         carPoints.append(py)
+         carPoints.append(_renderedYaw(car["rotation"]))
+         carPoints.append(worldZToMeters(car["position"][2]))
+         carIds.append(car["id"])
+         carKinds.append(readableLabel(car["typePath"]))
+      leadPosition = train["cars"][0]["position"]
+      (pinX, pinY) = projectXY(leadPosition)
+      consists.append({
+         "id": train["id"], "label": train["label"],
+         "pin": [pinX, pinY, worldZToMeters(leadPosition[2])],
+         "cars": {"points": carPoints, "ids": carIds, "kinds": carKinds},
+      })
+   consists.sort(key=lambda entry: (entry["label"] is None, entry["label"] or ""))
+   return {
+      "consists": consists,
+      # Locomotive and Freight Car boxes are the same size -- one shared
+      # footprint for the frontend's single train-cars bucket.
+      "carFootprintPixels": _vehicleFootprintPixels(LOCOMOTIVE_TYPE_PATH),
+   }
 
 # The HUB (Build_TradingPost_C) isn't in the SCIM footprint dataset and is a
 # one-of-a-kind landmark rather than an ordinary building, so it gets its own
@@ -2005,9 +2173,21 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
       for (idx, instance) in enumerate(instances):
          lightweightInstancesById[f"LightweightBuildable:{typePath}:{idx}"] = {"typePath": typePath}
 
+   # Train consists (BP_Train_C -> its locomotives/freight cars in physical
+   # order), for describeInstance's whole-train tooltip. Orphan single-car
+   # entries (see _trainConsistsFromMaps) are skipped: their id is the car's
+   # own instanceName, which describeInstance's ordinary per-actor path
+   # already describes in more detail than the train branch would.
+   trainInfoByInstanceName = {}
+   for train in _trainConsistsFromMaps(headersByInstanceName, objectsByInstanceName):
+      trainHeader = headersByInstanceName.get(train["id"])
+      if getattr(trainHeader, "typePath", None) == TRAIN_TYPE_PATH:
+         trainInfoByInstanceName[train["id"]] = train
+
    return {
       "headers": headersByInstanceName,
       "objects": objectsByInstanceName,
+      "trainInfoByInstanceName": trainInfoByInstanceName,
       "stationNameByStationInstance": stationNameByStationInstance,
       "pipeNetworkIdToFluid": pipeNetworkIdToFluid,
       "pipeNetworkIdToTotalFluid": pipeNetworkIdToTotalFluid,
@@ -2644,6 +2824,40 @@ def describeInstance(saveIndex: dict, instanceName: str) -> dict:
       "position": getattr(header, "position", None),
    }
 
+   # A whole train consist (the pin the frontend draws once per train --
+   # see collectTrains). The BP_Train_C actor itself sits at the world
+   # origin holding nothing but links, so everything shown is aggregated
+   # from its member cars: the consist composition in physical order, and
+   # every freight car's cargo summed into one total.
+   trainInfo = saveIndex.get("trainInfoByInstanceName", {}).get(instanceName)
+   if trainInfo is not None:
+      result["label"] = trainInfo["label"] or "Train"
+      result["position"] = trainInfo["cars"][0]["position"] # The lead car's, not the consist actor's meaningless (0,0,0).
+      result["trainCars"] = [
+         {"kind": readableLabel(car["typePath"]), "instanceName": car["id"]}
+         for car in trainInfo["cars"]
+      ]
+      totalByItem: dict[str, dict] = {}
+      for car in trainInfo["cars"]:
+         carObject = saveIndex["objects"].get(car["id"])
+         if carObject is None:
+            continue
+         # Freight cars keep cargo in mStorageInventory; mInventory is tried
+         # too in case the property name differs across game versions.
+         carInventory = (
+            _inventoryContents(_resolveComponentObject(saveIndex, carObject.properties, "mStorageInventory")) or
+            _inventoryContents(_resolveComponentObject(saveIndex, carObject.properties, "mInventory"))
+         )
+         for entry in carInventory:
+            merged = totalByItem.get(entry["item"])
+            if merged is None:
+               totalByItem[entry["item"]] = dict(entry)
+            else:
+               merged["count"] = round(merged["count"] + entry["count"], 1)
+      if totalByItem:
+         result["cargoInventory"] = sorted(totalByItem.values(), key=lambda entry: entry["count"], reverse=True)
+      return result
+
    stationName = saveIndex.get("stationNameByStationInstance", {}).get(instanceName)
    if stationName:
       result["stationName"] = stationName
@@ -2961,6 +3175,7 @@ def buildMapPayload(parsedSave: sav_parse.ParsedSave) -> dict:
       "players": collectPlayers(parsedSave.levels),
       "creatures": collectCreatures(parsedSave.levels),
       "vehicles": collectVehicles(parsedSave.levels),
+      "trains": collectTrains(parsedSave.levels),
       "droppedItems": collectDroppedItems(parsedSave.levels),
       "hub": collectHub(parsedSave.levels),
       "gameSettings": collectGameSettings(parsedSave.levels),

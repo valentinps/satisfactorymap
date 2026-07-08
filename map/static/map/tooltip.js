@@ -359,6 +359,20 @@ var Tooltip = {};
     if (detail.networkFluidContent !== undefined) fluidRows.push(["Whole network", detail.networkFluidContent + " m³"]);
     appendRowSection(root, "Fluid", fluidRows);
 
+    // A whole train (the one-pin-per-consist marker -- see
+    // sav_map_data.describeInstance's BP_Train_C branch): its composition in
+    // physical order, lead car first. The total cargo across all its freight
+    // cars arrives as cargoInventory and renders below with the others,
+    // under a title that makes the "whole train, not one wagon" scope clear.
+    if (detail.trainCars && detail.trainCars.length > 0) {
+      var consistSection = el("div", "tt-section");
+      consistSection.appendChild(el("div", "tt-section-title", "Consist (" + detail.trainCars.length + (detail.trainCars.length === 1 ? " car)" : " cars)")));
+      detail.trainCars.forEach(function(car, index) {
+        consistSection.appendChild(row("#" + (index + 1), car.kind));
+      });
+      root.appendChild(consistSection);
+    }
+
     // Each inventory already carries its own title (Input/Output/Storage/...)
     // so these are siblings of the sections above, not nested inside any of
     // them -- nesting a titled box inside another titled box read as an
@@ -375,7 +389,7 @@ var Tooltip = {};
       inventorySection("Output Inventory", detail.outputInventory),
       inventorySection("Storage", detail.storageInventory),
       inventorySection("Buffer", detail.bufferInventory),
-      inventorySection("Cargo", detail.cargoInventory),
+      inventorySection(detail.trainCars ? "Total Cargo (all cars)" : "Cargo", detail.cargoInventory),
       inventorySection("Inventory", detail.playerInventory),
       inventorySection("Power Shard / Somersloop Slots", detail.powerShardSlots),
     ].forEach(function(section) {

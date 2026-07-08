@@ -103,6 +103,13 @@ var SelectionTool = {};
       if (!bucket.visible) {
         return;
       }
+      // Vehicle pins and their box buckets share ids (and a train's pin is
+      // just its cars' abstract consist actor) -- one of the pair opts out
+      // here so nothing is counted twice. See filters.js's
+      // buildVehiclesSection/buildTrainRow.
+      if (bucket.excludeFromSelection) {
+        return;
+      }
       if (bucket.renderType === "line") {
         // Belts/pipes -- a segment is selected if any of its vertices falls
         // in the box; its id (the segment instanceName) drives the backend's

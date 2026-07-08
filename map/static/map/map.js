@@ -386,19 +386,20 @@ var MapApp = {};
       var affine = this._computeAffine(zoom, pixelOrigin, this._viewTopLeft);
 
       if (bucket.renderType === "rect") {
-        var p = idx * 4;
-        var footprint = _footprintForPoint(bucket, idx, bucket.points[p + 2]);
-        ctx.beginPath();
-        if (footprint.verts) {
-          _tracePolygon(ctx, bucket.points[p], bucket.points[p + 1], footprint.verts, affine);
-        } else {
-          this._traceRect(ctx, bucket.points[p], bucket.points[p + 1], footprint.yaw, footprint.halfWidth, footprint.halfDepth, affine);
+        this._strokeRectHighlight(ctx, bucket, idx, affine);
+        // A vehicle's box highlight is a full-opacity fill drawn on top of
+        // the bulk canvas -- zoomed in, the box visually contains its own
+        // pin, so without this the pin vanished the moment the box lit up.
+        // Redraw the companion pin over the fill (see filters.js's
+        // buildVehiclesSection/buildTrainRow for which pin belongs to which
+        // box; a train's pin only exists at its lead car).
+        var companionPin = bucket.companionPinBucket;
+        if (companionPin && companionPin.visible) {
+          var pinIdx = bucket.companionPinIndexByPoint ? bucket.companionPinIndexByPoint[idx] : idx;
+          if (pinIdx !== undefined && pinIdx !== null) {
+            this._drawSinglePin(ctx, companionPin, pinIdx, affine, _iconRadiusForZoom(zoom), "#ffffff");
+          }
         }
-        ctx.fillStyle = bucket.color;
-        ctx.fill();
-        ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 2;
-        ctx.stroke();
       } else if (bucket.renderType === "line") {
         // Same idea as the rect treatment above, adapted to a stroke: retrace
         // just the one hovered polyline at full detail, wearing a white halo
@@ -435,19 +436,57 @@ var MapApp = {};
         ctx.lineWidth = 2;
         ctx.stroke();
       } else if (bucket.renderType === "icon") {
-        // A white ring around the pin's circle (whose center sits above the
-        // real coordinate by the tail length -- keep in sync with
-        // _drawIconBucket's pin geometry).
+        // Boxes first, pin last, so the box fills can't swallow the pin:
+        // a train's pin lights up every one of its cars' boxes (see
+        // filters.js's buildTrainRow, which maps each train id to its cars'
+        // indices in the shared cars bucket), a vehicle's pin lights up its
+        // own box -- and the lead car/vehicle box sits directly under the
+        // pin itself.
+        var group = bucket.trainCarHighlights;
+        var memberIndices = group && group.indicesById[MapApp.highlightedId];
+        if (memberIndices) {
+          for (var mi = 0; mi < memberIndices.length; mi++) {
+            this._strokeRectHighlight(ctx, group.bucket, memberIndices[mi], affine);
+          }
+        }
+        if (bucket.companionBoxBucket && bucket.companionBoxBucket.visible) {
+          this._strokeRectHighlight(ctx, bucket.companionBoxBucket, idx, affine);
+        }
+        // The pin itself, redrawn over the fills, wearing a white ring
+        // around its circle (whose center sits above the real coordinate by
+        // the tail length -- see _drawSinglePin's pin geometry).
         var ip = idx * bucket.pointStride;
         var pinRadius = _iconRadiusForZoom(zoom);
         var tipX = affine.originX + bucket.points[ip] * affine.scaleX;
         var tipY = affine.originY + bucket.points[ip + 1] * affine.scaleY;
+        if (memberIndices || bucket.companionBoxBucket) {
+          this._drawSinglePin(ctx, bucket, idx, affine, pinRadius, "#ffffff");
+        }
         ctx.beginPath();
         ctx.arc(tipX, tipY - pinRadius - pinRadius * 0.7, pinRadius + 2, 0, Math.PI * 2);
         ctx.strokeStyle = "#ffffff";
         ctx.lineWidth = 2.5;
         ctx.stroke();
       }
+    },
+
+    // One rect-bucket instance's highlight treatment (full-opacity fill plus
+    // a bright outline) -- shared by _redrawHighlight's plain hovered-box
+    // case and the whole-consist group a train pin lights up.
+    _strokeRectHighlight: function(ctx, bucket, idx, affine) {
+      var p = idx * 4;
+      var footprint = _footprintForPoint(bucket, idx, bucket.points[p + 2]);
+      ctx.beginPath();
+      if (footprint.verts) {
+        _tracePolygon(ctx, bucket.points[p], bucket.points[p + 1], footprint.verts, affine);
+      } else {
+        this._traceRect(ctx, bucket.points[p], bucket.points[p + 1], footprint.yaw, footprint.halfWidth, footprint.halfDepth, affine);
+      }
+      ctx.fillStyle = bucket.color;
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.stroke();
     },
 
     _redraw: function() {
@@ -548,10 +587,7 @@ var MapApp = {};
       }
       var stride = bucket.pointStride;
       var altIdx = stride - 1;
-      var tailLength = radius * 0.7; // Circle-bottom-to-tip distance.
-      var tailHalfWidth = radius * 0.5;
-      var tailBaseInset = radius * 0.6; // Keeps the tail's base inside the circle so the two fills below overlap with no gap.
-      var imageSize = radius * 1.3;
+      var tailLength = radius * 0.7; // Circle-bottom-to-tip distance -- keep in sync with _drawSinglePin, whose circleY the occ dedup below has to match.
       var prevAlpha = ctx.globalAlpha;
       ctx.globalAlpha = bucket.iconOpacity !== undefined ? bucket.iconOpacity : 1;
       // Pins whose centers land within the same 2x2px cell are visually one
@@ -588,34 +624,59 @@ var MapApp = {};
           occ[oi] = stamp;
         }
 
-        // Tail and circle are filled as two SEPARATE fill() calls rather
-        // than one combined path -- combining them into a single path and
-        // relying on the nonzero winding rule to merge the overlap looked
-        // right in theory, but the tail's winding direction ended up
-        // opposite the circle's there, so the rule canceled the overlap out
-        // to a hole instead of solid fill. Two plain opaque white fills of
-        // the same color have no such winding interaction: painting white
-        // over white in the overlap is still just white.
-        var fillColor = bucket.pinFillColor || "#ffffff";
-        ctx.beginPath();
-        ctx.moveTo(circleX - tailHalfWidth, circleY + tailBaseInset);
-        ctx.lineTo(tipX, tipY);
-        ctx.lineTo(circleX + tailHalfWidth, circleY + tailBaseInset);
-        ctx.closePath();
-        ctx.fillStyle = fillColor;
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.arc(circleX, circleY, radius, 0, Math.PI * 2);
-        ctx.fillStyle = fillColor;
-        ctx.fill();
-        ctx.strokeStyle = bucket.color || "#999999";
-        ctx.lineWidth = 1.25;
-        ctx.stroke();
-
-        ctx.drawImage(img, circleX - imageSize / 2, circleY - imageSize / 2, imageSize, imageSize);
+        this._drawSinglePin(ctx, bucket, pointIdx, affine, radius);
       }
       ctx.globalAlpha = prevAlpha;
+    },
+
+    // One pin's full geometry -- tail, circle, glyph -- shared between
+    // _drawIconBucket's bulk pass and _redrawHighlight (which redraws a
+    // vehicle/train pin on top of its own highlighted box fill, where the
+    // bulk-canvas pin would otherwise be completely covered).
+    // Tail and circle are filled as two SEPARATE fill() calls rather
+    // than one combined path -- combining them into a single path and
+    // relying on the nonzero winding rule to merge the overlap looked
+    // right in theory, but the tail's winding direction ended up
+    // opposite the circle's there, so the rule canceled the overlap out
+    // to a hole instead of solid fill. Two plain opaque white fills of
+    // the same color have no such winding interaction: painting white
+    // over white in the overlap is still just white.
+    // outlineColor overrides the circle's usual bucket-color stroke -- the
+    // highlight path passes white, since a vehicle pin's circle is the same
+    // orange as the highlighted box fill it's being redrawn onto and would
+    // otherwise melt into it, leaving just the floating glyph.
+    _drawSinglePin: function(ctx, bucket, idx, affine, radius, outlineColor) {
+      var p = idx * bucket.pointStride;
+      var tipX = affine.originX + bucket.points[p] * affine.scaleX;
+      var tipY = affine.originY + bucket.points[p + 1] * affine.scaleY;
+      var tailLength = radius * 0.7;
+      var tailHalfWidth = radius * 0.5;
+      var tailBaseInset = radius * 0.6;
+      var imageSize = radius * 1.3;
+      var circleX = tipX;
+      var circleY = tipY - radius - tailLength;
+
+      var fillColor = bucket.pinFillColor || "#ffffff";
+      ctx.beginPath();
+      ctx.moveTo(circleX - tailHalfWidth, circleY + tailBaseInset);
+      ctx.lineTo(tipX, tipY);
+      ctx.lineTo(circleX + tailHalfWidth, circleY + tailBaseInset);
+      ctx.closePath();
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(circleX, circleY, radius, 0, Math.PI * 2);
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+      ctx.strokeStyle = outlineColor || bucket.color || "#999999";
+      ctx.lineWidth = outlineColor ? 2 : 1.25;
+      ctx.stroke();
+
+      var img = _getIcon(bucket.iconUrl);
+      if (img.complete && img.naturalWidth > 0) {
+        ctx.drawImage(img, circleX - imageSize / 2, circleY - imageSize / 2, imageSize, imageSize);
+      }
     },
 
     _drawCircleBucket: function(ctx, bucket, affine, minX, maxX, minY, maxY, radius, altMin, altMax) {
@@ -1438,7 +1499,15 @@ var MapApp = {};
       // buildings are drawn with partial transparency (see
       // _drawRectBucketsFlat's alpha-0.55 fill) -- a line at that level
       // actually shows through rather than being truly hidden.
-      if (bestLineHit && (!bestBoxHit || bestLineHit.z >= bestBoxHit.z)) {
+      // lineHitClearanceM (vehicle/train-car boxes, see filters.js) raises
+      // the bar: a vehicle physically sits ON its road/rail, so the line it
+      // drives on registers at essentially the vehicle's own altitude, and
+      // the plain same-altitude rule made the vehicle's box unhoverable
+      // along its whole midline. The line must clear the box by more than a
+      // vehicle's height to win there -- an actual bridge crossing overhead
+      // still does, the vehicle's own path never.
+      if (bestLineHit && (!bestBoxHit ||
+          bestLineHit.z >= bestBoxHit.z + (bestBoxHit.bucket.lineHitClearanceM || 0))) {
         return bestLineHit;
       }
       if (bestBoxHit) {
