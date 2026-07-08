@@ -129,6 +129,16 @@ var Filters = {};
     '</svg>'
   );
 
+  // Vehicles (trucks/tractors/explorers/trains/drones -- see
+  // sav_map_data.collectVehicles). The glyphs under icons/vehicles/ are the
+  // game's own monochrome UI icons -- white on transparent (extracted by
+  // game_data/copy_icons.py) -- so the pin's circle gets a solid color fill
+  // (pinFillColor) instead of _drawIconBucket's default white, or the glyph
+  // would be invisible. Same orange family as the vehicle-path lines
+  // (LINE_COLORS.vehiclePaths) since they're two views of the same system.
+  var VEHICLE_COLOR = "#f39c12";
+  var VEHICLE_ICON_BASE = "icons/vehicles/";
+
   var HARD_DRIVE_COLORS = {
     hasDrive: "#3355ff",
     empty: "#cccccc",
@@ -948,6 +958,34 @@ var Filters = {};
     renderTopLevelCategory(navList, detailPane, "Entities (" + total + ")", "icon", PLAYER_COLOR, rows, { iconUrl: PLAYER_ICON_URL });
   }
 
+  // ---- Vehicles (trucks/tractors/explorers/trains/drones) ------------------
+
+  // One row per vehicle type present in the save, each pin drawn with the
+  // game's own monochrome glyph on a solid VEHICLE_COLOR circle. Vehicles
+  // are real actors with inventories (a truck's cargo, a locomotive's
+  // freight consist neighbor), so tooltipKind "server" resolves the details
+  // through the same /api/instance path buildings use.
+  function buildVehiclesSection(navList, detailPane, payload) {
+    var rows = [];
+    (payload.vehicles || []).forEach(function(vehicleType) {
+      var count = pointCount(vehicleType.points, 3);
+      if (count === 0) {
+        return;
+      }
+      var url = VEHICLE_ICON_BASE + encodeURIComponent(vehicleType.icon);
+      var bucket = makeIconBucket(
+        "vehicle:" + vehicleType.typePath, vehicleType.label, VEHICLE_COLOR, vehicleType.points,
+        vehicleType.ids, "server", null, url, 1, VEHICLE_COLOR);
+      rows.push({ label: vehicleType.label, count: count, color: VEHICLE_COLOR, buckets: [bucket], iconUrl: url });
+    });
+    if (rows.length === 0) {
+      return;
+    }
+    var total = rows.reduce(function(s, r) { return s + r.count; }, 0);
+    renderTopLevelCategory(navList, detailPane, "Vehicles (" + total + ")", "icon", VEHICLE_COLOR, rows,
+      { iconUrl: VEHICLE_ICON_BASE + "Truck.png" });
+  }
+
   // ---- Building categories (from game_data/generated/buildingCategories.json, plus Unknown) ----
 
   function buildingRow(typeEntry, color, drawPriority) {
@@ -1157,6 +1195,7 @@ var Filters = {};
     });
     total += pointCount(payload.players.points, 3);
     (payload.creatures || []).forEach(function(creatureType) { total += pointCount(creatureType.points, 3); });
+    (payload.vehicles || []).forEach(function(vehicleType) { total += pointCount(vehicleType.points, 3); });
     total += pointCount(payload.hub.points, 3);
     Object.keys(payload.collectables).forEach(function(key) {
       var c = payload.collectables[key];
@@ -1190,6 +1229,7 @@ var Filters = {};
 
     buildResourceNodeSection(navList, detailPane, payload);
     buildBuildingCategorySections(navList, detailPane, payload);
+    buildVehiclesSection(navList, detailPane, payload);
     buildHubSection(navList, detailPane, payload);
     buildEntitiesSection(navList, detailPane, payload);
     buildCollectablesSection(navList, detailPane, payload);

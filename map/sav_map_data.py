@@ -597,9 +597,65 @@ LINE_RENDERED_TYPE_PATHS = (set(CONVEYOR_BELT_ONLY_TYPE_PATHS) | set(PIPELINE_SE
 # aren't actually placed by the player -- BP_ProjectAssembly_C in particular
 # sits at a fixed, purely symbolic altitude (~23.5km) tied to the rocket
 # launch/ending sequence, which otherwise blows out the altitude filter's range.
+# BP_Train_C is the abstract train-consist actor (one per assembled train,
+# grouping its locomotives/wagons); it always sits at the world origin
+# (confirmed against a real save: every BP_Train_C at exactly (0,0,0)), so
+# plotting it would just stack meaningless markers at the map center -- the
+# train's physical position is already covered by its Locomotive/Freight Car
+# actors (see VEHICLE_ICONS_BY_TYPE_PATH).
 EXCLUDED_BUILDING_TYPE_PATHS = {
    "/Game/FactoryGame/Buildable/Factory/ProjectAssembly/BP_ProjectAssembly.BP_ProjectAssembly_C",
+   "/Game/FactoryGame/Buildable/Vehicle/Train/-Shared/BP_Train.BP_Train_C",
 }
+
+# --- Vehicles ----------------------------------------------------------------
+# Drivable/self-driving vehicles are ordinary ActorHeaders under
+# /Buildable/Vehicle/ (the delivery drone is the odd one out, living under
+# /Buildable/Factory/DroneStation/), but none of them have a
+# buildingCategories.json entry -- they're vehicles, not build-menu buildables
+# -- so they all used to land in the catch-all "Unknown" category as
+# anonymous dots. Surfaced as their own "Vehicles" map section instead (see
+# collectVehicles below), each drawn with the game's own monochrome vehicle
+# glyph (extracted by game_data/copy_icons.py's EXTRA_ICON_COPIES into
+# map/static/map/icons/vehicles/). Types without a glyph of their own reuse
+# the closest match (Fluid Truck -> Truck, Locomotive/Freight Car -> Train).
+VEHICLE_ICONS_BY_TYPE_PATH = {
+   "/Game/FactoryGame/Buildable/Vehicle/Explorer/BP_Explorer.BP_Explorer_C": "Explorer.png",
+   "/Game/FactoryGame/Buildable/Vehicle/Golfcart/BP_Golfcart.BP_Golfcart_C": "FactoryCart.png",
+   "/Game/FactoryGame/Buildable/Vehicle/Golfcart/BP_GolfcartGold.BP_GolfcartGold_C": "FactoryCart.png",
+   "/Game/FactoryGame/Buildable/Vehicle/Tractor/BP_Tractor.BP_Tractor_C": "Tractor.png",
+   "/Game/FactoryGame/Buildable/Vehicle/Truck/BP_Truck.BP_Truck_C": "Truck.png",
+   "/Game/FactoryGame/Buildable/Vehicle/Truck/BP_FluidTruck.BP_FluidTruck_C": "Truck.png",
+   "/Game/FactoryGame/Buildable/Vehicle/Cyberwagon/Testa_BP_WB.Testa_BP_WB_C": "CyberWagon.png",
+   "/Game/FactoryGame/Buildable/Factory/DroneStation/BP_DroneTransport.BP_DroneTransport_C": "Drone.png",
+   "/Game/FactoryGame/Buildable/Vehicle/Train/Locomotive/BP_Locomotive.BP_Locomotive_C": "Train.png",
+   "/Game/FactoryGame/Buildable/Vehicle/Train/Wagon/BP_FreightWagon.BP_FreightWagon_C": "Train.png",
+}
+
+def collectVehicles(levels) -> list:
+   # Same typePath/label/points/ids shape as collectCreatures (stride-3
+   # points, tooltipKind "server" on the frontend -- describeInstance
+   # resolves a vehicle's position/inventory generically), plus the icon
+   # filename under icons/vehicles/ for the map pin.
+   typeBuckets: dict[str, dict] = {}
+   for level in levels:
+      for header in level.actorAndComponentObjectHeaders:
+         if isinstance(header, sav_parse.ActorHeader) and header.typePath in VEHICLE_ICONS_BY_TYPE_PATH:
+            bucket = typeBuckets.get(header.typePath)
+            if bucket is None:
+               bucket = {"label": readableLabel(header.typePath), "icon": VEHICLE_ICONS_BY_TYPE_PATH[header.typePath],
+                         "points": [], "ids": []}
+               typeBuckets[header.typePath] = bucket
+            (px, py) = projectXY(header.position)
+            bucket["points"].append(px)
+            bucket["points"].append(py)
+            bucket["points"].append(worldZToMeters(header.position[2]))
+            bucket["ids"].append(header.instanceName)
+   return [
+      {"typePath": typePath, "label": bucket["label"], "icon": bucket["icon"],
+       "points": bucket["points"], "ids": bucket["ids"]}
+      for (typePath, bucket) in sorted(typeBuckets.items(), key=lambda entry: entry[1]["label"])
+   ]
 
 # The HUB (Build_TradingPost_C) isn't in the SCIM footprint dataset and is a
 # one-of-a-kind landmark rather than an ordinary building, so it gets its own
@@ -701,6 +757,8 @@ def collectBuildings(levels) -> dict:
             typePath = actorOrComponentObjectHeader.typePath
             if typePath in LINE_RENDERED_TYPE_PATHS or typePath in EXCLUDED_BUILDING_TYPE_PATHS or typePath == HUB_TYPE_PATH:
                continue
+            if typePath in VEHICLE_ICONS_BY_TYPE_PATH:
+               continue # Surfaced by collectVehicles as the "Vehicles" section, not an "Unknown" building.
             if "/Buildable/" in typePath or "/Build_" in typePath:
                if typePath not in categoryCache:
                   categoryCache[typePath] = categorizeTypePath(typePath)
@@ -1885,6 +1943,7 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
    # Gas, fully disconnected from anything else).
    pipeNetworkIdToFluid = {}
    pipeNetworkIdToTotalFluid = {}
+   pipeNetworkIdToMembers = {}
    for instanceName in headersByInstanceName:
       header = headersByInstanceName[instanceName]
       if getattr(header, "typePath", None) != "/Script/FactoryGame.FGPipeNetwork":
@@ -1892,16 +1951,22 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
       networkActorObject = objectsByInstanceName.get(instanceName)
       if networkActorObject is None:
          continue
+      # A network with no mFluidDescriptor (nothing has flowed through it
+      # yet) still gets its member list indexed below -- the mark-mixing
+      # bottleneck check (_pipeNetworkBottleneck) is about static capacity,
+      # not current fluid, so it must work for empty networks too.
       fluidDescriptor = sav_parse.getPropertyValue(networkActorObject.properties, "mFluidDescriptor")
-      if fluidDescriptor is None or not hasattr(fluidDescriptor, "pathName") or not fluidDescriptor.pathName:
-         continue
-      fluidLabel = readableLabel(fluidDescriptor.pathName)
+      fluidLabel = None
+      if fluidDescriptor is not None and hasattr(fluidDescriptor, "pathName") and fluidDescriptor.pathName:
+         fluidLabel = readableLabel(fluidDescriptor.pathName)
       members = sav_parse.getPropertyValue(networkActorObject.properties, "mFluidIntegrantScriptInterfaces") or []
       networkId = None
       totalFluid = 0.0
+      memberNames = []
       for memberReference in members:
          if not hasattr(memberReference, "pathName") or not memberReference.pathName:
             continue
+         memberNames.append(memberReference.pathName)
          # Everything in the network that holds fluid (pipes, pumps, valves,
          # junctions, tanks) carries its amount in its own mFluidBox (in m3),
          # so the network's total content is just the members' sum. The
@@ -1926,8 +1991,10 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
             if networkId is not None:
                break
       if networkId is not None:
-         pipeNetworkIdToFluid[networkId] = fluidLabel
-         pipeNetworkIdToTotalFluid[networkId] = totalFluid
+         pipeNetworkIdToMembers[networkId] = memberNames
+         if fluidLabel is not None:
+            pipeNetworkIdToFluid[networkId] = fluidLabel
+            pipeNetworkIdToTotalFluid[networkId] = totalFluid
 
    # Lightweight buildables (see _findLightweightBuildableGroups) have no
    # real instanceName/Object of their own to look up at tooltip time -- this
@@ -1944,6 +2011,7 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
       "stationNameByStationInstance": stationNameByStationInstance,
       "pipeNetworkIdToFluid": pipeNetworkIdToFluid,
       "pipeNetworkIdToTotalFluid": pipeNetworkIdToTotalFluid,
+      "pipeNetworkIdToMembers": pipeNetworkIdToMembers,
       "lightweightInstancesById": lightweightInstancesById,
       "instanceNamesByTypePath": instanceNamesByTypePath,
       "itemLocationIndex": _collectItemLocationIndex(objectsByInstanceName),
@@ -1985,6 +2053,113 @@ def _conveyorChainSegmentItemPaths(chainActorInfo, beltInstanceName) -> list:
       count = (beltTailItemIndex - beltLeadItemIndex) % maximumItems + 1
       return [chainEntry[0] for chainEntry in chainItems[start:start + count]]
    return []
+
+# Rated belt/lift throughput in items/min per mark. Static game data that
+# isn't serialized in the save (same reasoning as RATED_POWER_MW below);
+# sourced from the buildables' own descriptions in game_data/generated/
+# buildings.json ("Transports up to N resources per minute").
+_CONVEYOR_MARK_ITEMS_PER_MINUTE = {1: 60, 2: 120, 3: 270, 4: 480, 5: 780, 6: 1200}
+
+def _conveyorItemsPerMinute(typePath):
+   match = re.search(r"Conveyor(?:Belt|Lift)Mk(\d+)", typePath or "")
+   return _CONVEYOR_MARK_ITEMS_PER_MINUTE.get(int(match.group(1))) if match else None
+
+# Rated flow (m³/min) per pipe-network member class. Pipes are stated in
+# their own descriptions ("Capacity: N m³ of fluid per minute"); the pumps'
+# only mention head lift, but in-game a pump also caps flow at its mark's
+# rate -- a Mk.1 pump on a Mk.2 pipeline is exactly the pipe counterpart of
+# the forgotten low-mark lift in a belt line (wiki-sourced, same spirit as
+# RATED_POWER_MW). Junctions/supports/machines have no rated flow of their
+# own and Valves are user-configured, so none of them appear here.
+_PIPE_FLOW_M3_PER_MINUTE_BY_CLASS = {
+   "Build_Pipeline_C": 300,
+   "Build_Pipeline_NoIndicator_C": 300,
+   "Build_PipelineMK2_C": 600,
+   "Build_PipelineMK2_NoIndicator_C": 600,
+   "Build_PipelinePump_C": 300,
+   "Build_PipelinePumpMk2_C": 600,
+}
+
+def _pipeFlowLimitPerMinute(typePath):
+   return _PIPE_FLOW_M3_PER_MINUTE_BY_CLASS.get(_shortClassName(typePath) or "")
+
+# Payload cap on the limiting-segment list below: a line/network can span
+# hundreds of segments, and when roughly half of it is the slower mark this
+# isn't a "one forgotten belt" bug worth plotting exhaustively anyway. The
+# full count is still reported separately.
+_BOTTLENECK_SEGMENT_LIMIT = 50
+
+def _flowBottleneck(saveIndex, ratedInstanceNames, hoveredTypePath, rateOfTypePath, scope, unit) -> dict | None:
+   # Shared mixed-mark detection for anything that moves at the speed of its
+   # SLOWEST member: conveyor chains (belts + lifts) and pipe networks
+   # (pipes + pumps). ratedInstanceNames names every member of the connected
+   # line/network; rateOfTypePath maps a member's typePath to its rated
+   # throughput (None = unrated member, e.g. a junction or a modded type --
+   # skipped rather than ranked). If members' rates differ, the slowest ones
+   # are exactly what holds the whole thing back, reported with positions so
+   # the frontend can point at them (see tooltip.js's bottleneckSection and
+   # bottleneck.js).
+   headers = saveIndex["headers"]
+   rankedSegments = []
+   for segmentInstanceName in ratedInstanceNames:
+      header = headers.get(segmentInstanceName)
+      rate = rateOfTypePath(getattr(header, "typePath", None))
+      if rate is None:
+         continue
+      rankedSegments.append((rate, segmentInstanceName, header))
+   if not rankedSegments:
+      return None
+   slowestRate = min(entry[0] for entry in rankedSegments)
+   fastestRate = max(entry[0] for entry in rankedSegments)
+   if slowestRate >= fastestRate:
+      return None # Uniform marks -- nothing is holding anything back.
+   limitingSegments = [entry for entry in rankedSegments if entry[0] == slowestRate]
+   result = {
+      "scope": scope, # "line" (conveyor chain) or "network" (pipes) -- drives the tooltip's wording.
+      "unit": unit,
+      "limitPerMinute": slowestRate,
+      "fastestPerMinute": fastestRate,
+      "limitingSegmentCount": len(limitingSegments),
+      # position is map-pixel space + altitude in meters (for plotting the
+      # warning markers), worldPosition the raw coordinates (for the marker
+      # tooltip's Coordinates row) -- same split as findItemLocations.
+      "limitingSegments": [
+         {
+            "instanceName": segmentInstanceName,
+            "label": readableLabel(header.typePath),
+            "position": projectXY(header.position) + [worldZToMeters(header.position[2])],
+            "worldPosition": [header.position[0], header.position[1]],
+         }
+         for (rate, segmentInstanceName, header) in limitingSegments[:_BOTTLENECK_SEGMENT_LIMIT]
+      ],
+   }
+   hoveredRate = rateOfTypePath(hoveredTypePath)
+   if hoveredRate is not None:
+      result["hoveredPerMinute"] = hoveredRate
+      result["hoveredIsLimiting"] = hoveredRate == slowestRate
+   return result
+
+def _conveyorChainBottleneck(saveIndex, chainActorInfo, hoveredTypePath) -> dict | None:
+   # A conveyor line moves items at the speed of its slowest member, and
+   # both belts AND lifts are chain members (lifts especially are easy to
+   # overlook since they render as small boxes, not lines). The chain actor's
+   # member list (chainActorInfo[1], same shape as in
+   # _conveyorChainSegmentItemPaths) already names every segment of the
+   # connected line.
+   memberNames = [
+      getattr(chainBelt[0], "pathName", None) for chainBelt in chainActorInfo[1]
+      if getattr(chainBelt[0], "pathName", None)
+   ]
+   return _flowBottleneck(saveIndex, memberNames, hoveredTypePath, _conveyorItemsPerMinute, "line", "items/min")
+
+def _pipeNetworkBottleneck(saveIndex, memberNames, hoveredTypePath) -> dict | None:
+   # Pipe counterpart of _conveyorChainBottleneck, ranking the network's
+   # members (see buildSaveIndex's pipeNetworkIdToMembers) by rated flow.
+   # One caveat a belt chain doesn't have: a network is a GRAPH, not a line
+   # -- a deliberately thin Mk.1 branch off a Mk.2 trunk also reads as
+   # "mixed marks" here. Still worth flagging: the markers point at the
+   # exact slow segments, so judging intent takes one look.
+   return _flowBottleneck(saveIndex, memberNames, hoveredTypePath, _pipeFlowLimitPerMinute, "network", "m³/min")
 
 # Hand-curated, wiki-sourced (satisfactory.wiki.gg) rated power consumption in
 # MW at 100% clock speed. The save itself only stores a *live* power draw
@@ -2611,6 +2786,24 @@ def describeInstance(saveIndex: dict, instanceName: str) -> dict:
                result["networkFluidContent"] = round(networkTotal, 1)
             break
 
+   # Mixed-mark pipe network detection, for pipes and pumps only (the
+   # members with a rated flow of their own) -- deliberately separate from
+   # the mFluidBox block above, which only runs when the segment currently
+   # holds fluid; an empty network is just as bottlenecked. See
+   # _pipeNetworkBottleneck / the belt lineBottleneck below.
+   if _pipeFlowLimitPerMinute(typePath) is not None:
+      for connectorSuffix in PIPE_CONNECTOR_SUFFIXES:
+         connectorObject = saveIndex["objects"].get(instanceName + connectorSuffix)
+         if connectorObject is None:
+            continue
+         networkId = sav_parse.getPropertyValue(connectorObject.properties, "mPipeNetworkID")
+         memberNames = saveIndex.get("pipeNetworkIdToMembers", {}).get(networkId) if networkId is not None else None
+         if memberNames:
+            networkBottleneck = _pipeNetworkBottleneck(saveIndex, memberNames, typePath)
+            if networkBottleneck:
+               result["lineBottleneck"] = networkBottleneck
+            break
+
    # Fuel Generators and the Nuclear Power Plant don't use mInputInventory
    # like other production buildings -- their fuel (and, for Nuclear, the
    # supplemental water) sits in mFuelInventory instead. Combined with
@@ -2693,6 +2886,12 @@ def describeInstance(saveIndex: dict, instanceName: str) -> dict:
          if lineItems:
             result["itemsOnLine"] = lineItems
             result["lineSegmentCount"] = len(chainActorInfo[1])
+         # Mixed-mark line detection -- deliberately independent of whether
+         # anything is currently in transit (an empty line is just as
+         # bottlenecked, capacity is static). See _conveyorChainBottleneck.
+         lineBottleneck = _conveyorChainBottleneck(saveIndex, chainActorInfo, typePath)
+         if lineBottleneck:
+            result["lineBottleneck"] = lineBottleneck
 
    result["rawProperties"] = [{"name": name, "value": sav_parse.toString(value)} for (name, value) in properties]
    return result
@@ -2761,6 +2960,7 @@ def buildMapPayload(parsedSave: sav_parse.ParsedSave) -> dict:
       "hardDrives": collectHardDrives(parsedSave.levels),
       "players": collectPlayers(parsedSave.levels),
       "creatures": collectCreatures(parsedSave.levels),
+      "vehicles": collectVehicles(parsedSave.levels),
       "droppedItems": collectDroppedItems(parsedSave.levels),
       "hub": collectHub(parsedSave.levels),
       "gameSettings": collectGameSettings(parsedSave.levels),

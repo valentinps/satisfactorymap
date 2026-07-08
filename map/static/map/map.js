@@ -493,6 +493,7 @@ var MapApp = {};
       }
       var orderedBuckets = this._sortedBuckets;
       var rectBuckets = [];
+      var iconBuckets = [];
 
       for (var b = 0; b < orderedBuckets.length; b++) {
         var bucket = orderedBuckets[b];
@@ -504,13 +505,24 @@ var MapApp = {};
         } else if (bucket.renderType === "rect") {
           rectBuckets.push(bucket);
         } else if (bucket.renderType === "icon") {
-          this._drawIconBucket(ctx, bucket, affine, minX, maxX, minY, maxY, iconRadius, altMin, altMax);
+          // Deferred below rather than drawn in place: icon pins are point
+          // MARKERS (vehicles/collectables/players/HUB), not scenery -- a
+          // pin whose anchor happens to sit inside a building's box (a
+          // truck parked at its Truck Station, a player standing in a
+          // factory) must paint over that box, not be washed out under its
+          // translucent fill, so pins get their own pass after
+          // _drawRectBuckets. hitTest's pin phase relies on this layering.
+          iconBuckets.push(bucket);
         } else {
           this._drawCircleBucket(ctx, bucket, affine, minX, maxX, minY, maxY, circleRadius, altMin, altMax);
         }
       }
 
       this._drawRectBuckets(ctx, rectBuckets, affine, minX, maxX, minY, maxY, altMin, altMax);
+
+      for (var ic = 0; ic < iconBuckets.length; ic++) {
+        this._drawIconBucket(ctx, iconBuckets[ic], affine, minX, maxX, minY, maxY, iconRadius, altMin, altMax);
+      }
     },
 
     // Draws each point as a "pin" -- a white circle (so the icon inside it
@@ -1223,6 +1235,52 @@ var MapApp = {};
       // bare coordinate the tail's tip touches.
       var zoom = this._map ? this._map.getZoom() : 0;
       var scaleFactor = Math.pow(2, zoom);
+
+      // Phase 0a: icon pins. Pins are drawn on top of everything, including
+      // building boxes (see _redraw's deferred icon pass), so the cursor
+      // sitting inside a pin's visible circle unambiguously means that pin
+      // -- checked first and returned outright. Without this, phase 1's
+      // box-containment always won wherever a pin overlaps a building
+      // (e.g. a vehicle parked on a foundation road resolved to
+      // "Foundation" no matter where on the truck's pin you clicked). Same
+      // circle-center geometry as phase 2's icon branch below (which still
+      // covers icons for symmetry, but can never beat this earlier return).
+      var pinRadiusPx = _iconRadiusForZoom(zoom);
+      var pinTolerance = pinRadiusPx / scaleFactor;
+      var pinYOffset = (pinRadiusPx + pinRadiusPx * 0.7) / scaleFactor;
+      var bestPin = null;
+      var bestPinScore = 1;
+      for (var ib = 0; ib < this.buckets.length; ib++) {
+        var pinBucket = this.buckets[ib];
+        if (!pinBucket.visible || !pinBucket.ids || pinBucket.tooltipKind === "none" || pinBucket.renderType !== "icon") {
+          continue;
+        }
+        var pinStride = pinBucket.pointStride;
+        var pinAltIdx = pinStride - 1;
+        var pinQueryY = y - pinYOffset;
+        var pinIndices = _collectGridIndices(pinBucket._grid, x - pinTolerance, x + pinTolerance, pinQueryY - pinTolerance, pinQueryY + pinTolerance, this._scratchIndices);
+        for (var pj = 0; pj < pinIndices.length; pj++) {
+          var pinIdx = pinIndices[pj];
+          if (_isHidden(pinBucket, pinIdx)) {
+            continue;
+          }
+          var pp = pinIdx * pinStride;
+          var pinZ = pinBucket.points[pp + pinAltIdx];
+          if (pinZ < altMin || pinZ > altMax) {
+            continue;
+          }
+          var pinDx = pinBucket.points[pp] - x;
+          var pinDy = (pinBucket.points[pp + 1] + pinYOffset) - y;
+          var pinScore = Math.sqrt(pinDx * pinDx + pinDy * pinDy) / pinTolerance;
+          if (pinScore < bestPinScore) {
+            bestPinScore = pinScore;
+            bestPin = { bucket: pinBucket, id: pinBucket.ids[pinIdx], index: pinIdx, z: pinZ };
+          }
+        }
+      }
+      if (bestPin) {
+        return bestPin;
+      }
 
       // Phase 0: lines (belts/pipelines/railroads/hypertubes/power lines)
       // are always drawn UNDER every building (see _redraw -- rect buckets

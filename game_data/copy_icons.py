@@ -58,6 +58,20 @@ EXTRA_ICON_COPIES = (
    # extraction directly.
    ("/FactoryGame/Interface/UI/Assets/Shared/TXUI_ShopUpgrade_256", "items", "AwesomeShop.png"),
    ("/FactoryGame/Buildable/Factory/TradingPost/UI/Hub_512", "items", "Hub.png"),
+   # Vehicle map markers (see sav_map_data.VEHICLE_ICONS_BY_TYPE_PATH / the
+   # frontend's Vehicles section). Vehicles DO have FGVehicleDescriptor icons
+   # in Docs.json, but the monochrome white-on-transparent glyph set reads far
+   # better inside a small colored map pin than the full-color renders --
+   # these are the game's own UI glyphs for each vehicle type. The Cyber
+   # Wagon's glyph isn't in the shared MonochromeIcons folder like the rest;
+   # it sits in the vehicle's own UI folder.
+   ("/FactoryGame/Interface/UI/Assets/MonochromeIcons/TXUI_MIcon_Explorer", "vehicles", "Explorer.png"),
+   ("/FactoryGame/Interface/UI/Assets/MonochromeIcons/TXUI_MIcon_FactoryCart", "vehicles", "FactoryCart.png"),
+   ("/FactoryGame/Interface/UI/Assets/MonochromeIcons/TXUI_MIcon_Tractor", "vehicles", "Tractor.png"),
+   ("/FactoryGame/Interface/UI/Assets/MonochromeIcons/TXUI_MIcon_Truck", "vehicles", "Truck.png"),
+   ("/FactoryGame/Interface/UI/Assets/MonochromeIcons/TXUI_MIcon_Drone", "vehicles", "Drone.png"),
+   ("/FactoryGame/Interface/UI/Assets/MonochromeIcons/TXUI_MIcon_Train", "vehicles", "Train.png"),
+   ("/FactoryGame/Buildable/Vehicle/CyberWagon/UI/TXUI_MIcon_CyberTruck", "vehicles", "CyberWagon.png"),
 )
 
 

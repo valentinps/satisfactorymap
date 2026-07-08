@@ -261,10 +261,67 @@ var Tooltip = {};
     root.appendChild(section);
   }
 
+  // Mixed-mark warning (detail.lineBottleneck -- belts/lifts on a conveyor
+  // chain, pipes/pumps on a pipe network, see sav_map_data._flowBottleneck):
+  // one low-mark segment caps the whole line's/network's throughput, which
+  // is invisible in-game unless you walk the line, so it gets a loud amber
+  // callout rather than a normal row. The button drops warning markers on
+  // the limiting segments and jumps the view to them (see bottleneck.js) --
+  // like every other interactive bit of the tooltip, it's only actually
+  // clickable once the tooltip is pinned.
+  function bottleneckSection(bottleneck) {
+    // scope "network" is the pipe case; anything else the conveyor line.
+    var isNetwork = bottleneck.scope === "network";
+    var scopeWord = isNetwork ? "pipe network" : "line";
+    var unit = bottleneck.unit || "items/min";
+    var section = el("div", "tt-section tt-warning");
+    section.appendChild(el("div", "tt-section-title", "⚠ " + (isNetwork ? "Network" : "Line") + " Bottleneck"));
+    var message;
+    if (bottleneck.hoveredIsLimiting) {
+      message = "This segment slows the whole " + scopeWord + " down to " + bottleneck.limitPerMinute +
+        " " + unit + ". Its fastest segments could carry " + bottleneck.fastestPerMinute + "/min.";
+    } else {
+      var count = bottleneck.limitingSegmentCount;
+      message = "This " + scopeWord + " is slowed down to " + bottleneck.limitPerMinute + " " + unit + " by " +
+        (count === 1 ? "a slower segment" : count + " slower segments") +
+        (bottleneck.hoveredPerMinute !== undefined
+          ? " (this segment could carry " + bottleneck.hoveredPerMinute + "/min)" : "") + ".";
+    }
+    section.appendChild(el("div", "tt-warning-text", message));
+
+    if (window.Bottleneck && bottleneck.limitingSegments && bottleneck.limitingSegments.length > 0) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "tt-warning-btn";
+      function refreshLabel() {
+        button.textContent = Bottleneck.isShowing(bottleneck)
+          ? "Hide bottleneck markers"
+          : (bottleneck.hoveredIsLimiting && bottleneck.limitingSegmentCount === 1
+            ? "Mark this segment on the map"
+            : "Show slow segments on the map");
+      }
+      refreshLabel();
+      button.addEventListener("click", function(event) {
+        event.stopPropagation(); // Don't let this bubble into the document-level unpin-on-outside-click handler.
+        if (Bottleneck.isShowing(bottleneck)) {
+          Bottleneck.clear();
+        } else {
+          Bottleneck.show(bottleneck);
+        }
+        refreshLabel();
+      });
+      section.appendChild(button);
+    }
+    return section;
+  }
+
   function buildDetailContent(detail, z, extraRows) {
     var root = el("div", "tt-popup");
     root.appendChild(el("div", "tt-title", detail.label || detail.instanceName));
     appendHighlight(root, extraRows);
+    if (detail.lineBottleneck) {
+      root.appendChild(bottleneckSection(detail.lineBottleneck));
+    }
     root.appendChild(positionSection(z, detail.position && detail.position[0], detail.position && detail.position[1]));
 
     // Split by topic instead of one blanket "Production" heading -- a

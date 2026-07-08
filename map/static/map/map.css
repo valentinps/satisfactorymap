@@ -1032,8 +1032,13 @@ body.no-category-selected #map {
   left: 0;
   right: 0;
   bottom: 0;
+  /* No backdrop-filter here on purpose: blurring the backdrop means every
+     repaint inside the modal (row hover, scroll, the cursor-following
+     tooltip) re-filters the entire viewport-sized map underneath. Fine on
+     the GPU, but with hardware acceleration off (user setting, RDP,
+     blocklisted driver) that software re-blur runs per frame and drops the
+     whole modal to ~10 FPS. The dim alone separates the layers well enough. */
   background: rgba(8, 10, 14, 0.6);
-  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2059,6 +2064,48 @@ body.no-category-selected #map {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   margin-bottom: 4px;
+}
+
+/* Mixed-mark conveyor line callout (see tooltip.js's bottleneckSection) --
+   a genuine "your factory is silently underperforming" warning, so amber
+   and tinted louder than a regular section, matching bottleneck.js's
+   marker color. The .tt-section border-top is overridden by the box's own
+   full border. */
+.tt-warning {
+  background: rgba(255, 176, 32, 0.10);
+  border: 1px solid rgba(255, 176, 32, 0.45);
+  border-radius: 5px;
+  padding: 7px 8px 8px;
+}
+
+.tt-warning .tt-section-title {
+  color: #ffb020;
+}
+
+.tt-warning-text {
+  color: #ffd48a;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.tt-warning-btn {
+  display: block;
+  margin-top: 7px;
+  padding: 4px 9px;
+  background: rgba(255, 176, 32, 0.16);
+  border: 1px solid rgba(255, 176, 32, 0.55);
+  border-radius: 4px;
+  color: #ffcf7d;
+  font-size: 12px;
+  cursor: pointer;
+  /* Inherits the tooltip's own pointer-events (none until pinned) -- the
+     button is only ever actually clickable once pinned, same as the copy
+     icon and "All properties". */
+}
+
+.tt-warning-btn:hover {
+  background: rgba(255, 176, 32, 0.28);
+  color: #ffe0a3;
 }
 
 .tt-loading, .tt-error {
