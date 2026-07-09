@@ -17,7 +17,7 @@ _PARSER_DIR = os.path.join(_REPO_ROOT, "parser")
 sys.path.insert(0, _PARSER_DIR)                          # sav_parse, sav_to_html, sav_data
 sys.path.insert(0, os.path.join(_REPO_ROOT, "patches"))  # local fixes not yet merged upstream
 
-import sav_parse
+import sav_parse_shim as sav_parse  # Rust parser when available, else patches/sav_parse.py
 import sav_to_html
 import sav_data.data
 import sav_data.resourcePurity
@@ -665,7 +665,7 @@ def _vehicleFootprintPixels(typePath):
    (lengthMeters, widthMeters) = footprint
    return [metersToPixelLength(lengthMeters / 2), metersToPixelLength(widthMeters / 2)]
 
-def collectVehicles(levels) -> list:
+def collectVehicles(scan) -> list:
    # Same typePath/label/points/ids shape as collectBuildings' buckets
    # (stride-4 [x, y, yaw, z] points, tooltipKind "server" on the frontend --
    # describeInstance resolves a vehicle's position/inventory generically),
@@ -675,21 +675,20 @@ def collectVehicles(levels) -> list:
    # NOT here anymore -- they're grouped into per-consist entries by
    # collectTrains instead of being plotted as anonymous per-car pins.
    typeBuckets: dict[str, dict] = {}
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and header.typePath in VEHICLE_ICONS_BY_TYPE_PATH \
-               and header.typePath not in RAILCAR_TYPE_PATHS:
-            bucket = typeBuckets.get(header.typePath)
-            if bucket is None:
-               bucket = {"label": readableLabel(header.typePath), "icon": VEHICLE_ICONS_BY_TYPE_PATH[header.typePath],
-                         "points": [], "ids": [], "footprintPixels": _vehicleFootprintPixels(header.typePath)}
-               typeBuckets[header.typePath] = bucket
-            (px, py) = projectXY(header.position)
-            bucket["points"].append(px)
-            bucket["points"].append(py)
-            bucket["points"].append(_renderedYaw(header.rotation))
-            bucket["points"].append(worldZToMeters(header.position[2]))
-            bucket["ids"].append(header.instanceName)
+   vehicleTypePaths = [typePath for typePath in VEHICLE_ICONS_BY_TYPE_PATH
+                       if typePath not in RAILCAR_TYPE_PATHS]
+   for header in scan.actorHeadersOfType(*vehicleTypePaths):
+      bucket = typeBuckets.get(header.typePath)
+      if bucket is None:
+         bucket = {"label": readableLabel(header.typePath), "icon": VEHICLE_ICONS_BY_TYPE_PATH[header.typePath],
+                   "points": [], "ids": [], "footprintPixels": _vehicleFootprintPixels(header.typePath)}
+         typeBuckets[header.typePath] = bucket
+      (px, py) = projectXY(header.position)
+      bucket["points"].append(px)
+      bucket["points"].append(py)
+      bucket["points"].append(_renderedYaw(header.rotation))
+      bucket["points"].append(worldZToMeters(header.position[2]))
+      bucket["ids"].append(header.instanceName)
    return [
       {"typePath": typePath, "label": bucket["label"], "icon": bucket["icon"],
        "points": bucket["points"], "ids": bucket["ids"], "footprintPixels": bucket["footprintPixels"]}
@@ -780,25 +779,96 @@ def _trainConsistsFromMaps(headersByInstanceName: dict, objectsByInstanceName: d
             trains.append({"id": carInstanceName, "label": None, "cars": [entry]})
    return trains
 
-def _headerAndObjectMaps(levels):
-   headersByInstanceName = {}
-   objectsByInstanceName = {}
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         headersByInstanceName[header.instanceName] = header
-      for object in level.objects:
-         objectsByInstanceName[object.instanceName] = object
-   return (headersByInstanceName, objectsByInstanceName)
+class SaveScan:
+   # One pass over parsedSave.levels shared by every collector below and by
+   # buildSaveIndex -- previously each of the ~15 collectors re-scanned every
+   # header (and usually every object) of the save for itself, which
+   # dominated buildMapPayload's runtime on 600k-object saves. Holds:
+   #  - headersByInstanceName / objectsByInstanceName (save order; Python
+   #    dict semantics on a duplicate name: last value wins, first position kept)
+   #  - _actorSeqsByTypePath: typePath -> [(globalSeq, header), ...] --
+   #    actorsOfType() merges requested buckets and re-sorts by seq, so a
+   #    collector that spans several typePaths sees instances in exactly the
+   #    interleaved global save order the old whole-save scans produced
+   #    (bucket order matters: e.g. spline groups merge two typePaths into
+   #    one label whose polylines interleave in save order).
+   #  - gameStateObjects: the BP_GameState_C objects in save order (matched
+   #    on instanceName substring, which typePath buckets can't serve).
+   # Computations several collectors need are memoized here (they used to
+   # run 2-3x per load: once for the payload, again for the save index).
+   def __init__(self, parsedSave):
+      self.parsedSave = parsedSave
+      self.levels = parsedSave.levels
+      headersByInstanceName = {}
+      objectsByInstanceName = {}
+      actorSeqsByTypePath: dict[str, list] = {}
+      gameStateObjects = []
+      seq = 0
+      for level in self.levels:
+         for header in level.actorAndComponentObjectHeaders:
+            headersByInstanceName[header.instanceName] = header
+            typePath = getattr(header, "typePath", None)
+            if typePath is not None:
+               actorSeqsByTypePath.setdefault(typePath, []).append((seq, header))
+            seq += 1
+         for object in level.objects:
+            objectsByInstanceName[object.instanceName] = object
+            if GAME_STATE_TYPE_PATH_SUBSTRING in object.instanceName:
+               gameStateObjects.append(object)
+      self.headersByInstanceName = headersByInstanceName
+      self.objectsByInstanceName = objectsByInstanceName
+      self._actorSeqsByTypePath = actorSeqsByTypePath
+      self.gameStateObjects = gameStateObjects
+      self._memo: dict[str, object] = {}
 
-def collectTrains(levels) -> dict:
+   def actorHeadersOfType(self, *typePaths) -> list:
+      if len(typePaths) == 1:
+         return [header for (_, header) in self._actorSeqsByTypePath.get(typePaths[0], [])]
+      merged = []
+      for typePath in typePaths:
+         merged.extend(self._actorSeqsByTypePath.get(typePath, []))
+      merged.sort(key=lambda entry: entry[0])
+      return [header for (_, header) in merged]
+
+   def actorsOfType(self, *typePaths) -> list:
+      # (header, objectOrNone) pairs in global save order. Objects are
+      # matched by instanceName, same as the old per-collector transform
+      # dicts.
+      return [(header, self.objectsByInstanceName.get(header.instanceName))
+              for header in self.actorHeadersOfType(*typePaths)]
+
+   def _memoized(self, key, compute):
+      if key not in self._memo:
+         self._memo[key] = compute()
+      return self._memo[key]
+
+   def lightweightGroups(self):
+      return self._memoized("lightweight", lambda: _findLightweightBuildableGroups(self))
+
+   def trainConsists(self):
+      return self._memoized("trains", lambda: _trainConsistsFromMaps(
+         self.headersByInstanceName, self.objectsByInstanceName))
+
+   def collectables(self):
+      return self._memoized("collectables", lambda: collectCollectables(self))
+
+   def crashSiteState(self):
+      return self._memoized("crashSites", lambda: _getCrashSiteState(self.levels))
+
+   def catalogDrops(self):
+      return self._memoized("catalogDrops", lambda: _uncollectedCatalogDrops(self))
+
+   def depotContents(self):
+      return self._memoized("depot", lambda: collectDimensionalDepotContents(self))
+
+def collectTrains(scan: SaveScan) -> dict:
    # One entry per assembled train (not per car): a single pin at the lead
    # car, plus every car's oriented box so the frontend can draw and
    # group-highlight the whole consist. Cars keep their own ids -- clicking a
    # car's box describes that car; clicking the pin describes the whole train
    # (see describeInstance's BP_Train_C branch).
-   (headersByInstanceName, objectsByInstanceName) = _headerAndObjectMaps(levels)
    consists = []
-   for train in _trainConsistsFromMaps(headersByInstanceName, objectsByInstanceName):
+   for train in scan.trainConsists():
       carPoints = []
       carIds = []
       carKinds = []
@@ -833,7 +903,7 @@ HUB_TYPE_PATH = "/Game/FactoryGame/Buildable/Factory/TradingPost/Build_TradingPo
 
 LIGHTWEIGHT_BUILDABLE_SUBSYSTEM_TYPE_PATH = "/Script/FactoryGame.FGLightweightBuildableSubsystem"
 
-def _findLightweightBuildableGroups(levels):
+def _findLightweightBuildableGroups(scan):
    # Foundations/walls/ramps/beams (anything highly repetitive) bypass the
    # normal one-ActorHeader-per-building representation entirely: the engine
    # batches them into a single FGLightweightBuildableSubsystem actor for
@@ -845,24 +915,16 @@ def _findLightweightBuildableGroups(levels):
    #  [primaryColor, secondaryColor], paintFinishLevelPath, patternRotation,
    #  recipeLevelPath, blueprintProxyLevelPath, lightweightDataProperty,
    #  serviceProvider, playerInfoTableIndex].
-   subsystemInstanceName = None
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and header.typePath == LIGHTWEIGHT_BUILDABLE_SUBSYSTEM_TYPE_PATH:
-            subsystemInstanceName = header.instanceName
-            break
-      if subsystemInstanceName is not None:
-         break
-   if subsystemInstanceName is None:
+   headers = scan.actorHeadersOfType(LIGHTWEIGHT_BUILDABLE_SUBSYSTEM_TYPE_PATH)
+   if not headers:
       return []
-   for level in levels:
-      for object in level.objects:
-         if object.instanceName == subsystemInstanceName:
-            info = getattr(object, "actorSpecificInfo", None)
-            if not info:
-               return []
-            return info[1:] # Drop the leading lightweightVersion int.
-   return []
+   object = scan.objectsByInstanceName.get(headers[0].instanceName)
+   if object is None:
+      return []
+   info = getattr(object, "actorSpecificInfo", None)
+   if not info:
+      return []
+   return info[1:] # Drop the leading lightweightVersion int.
 
 def _lightweightBeamLengthCm(lightweightDataProperty):
    # instance[9] of a lightweight buildable (see _findLightweightBuildableGroups'
@@ -915,31 +977,34 @@ def _appendBuildingInstance(bucket: dict, typePath: str, rotation, position, ins
    bucket["points"].append(worldZToMeters(position[2]))
    bucket["ids"].append(instanceId)
 
-def collectBuildings(levels) -> dict:
+def collectBuildings(scan) -> dict:
    # categoryBuckets: category -> typePath -> {"label": str, "points": [x,y,yaw,z,...], "ids": [instanceName,...]}
+   # Walking scan's per-typePath buckets in first-encounter order reproduces
+   # the old whole-save scan's output exactly: category/typePath dict
+   # insertion order followed each typePath's FIRST instance (== the bucket
+   # order here), and each bucket's points were per-typePath save order (==
+   # the bucket contents here).
    categoryBuckets: dict[str, dict[str, dict]] = {}
    categoryCache: dict[str, str] = {}
-   for level in levels:
-      for actorOrComponentObjectHeader in level.actorAndComponentObjectHeaders:
-         if isinstance(actorOrComponentObjectHeader, sav_parse.ActorHeader):
-            typePath = actorOrComponentObjectHeader.typePath
-            if typePath in LINE_RENDERED_TYPE_PATHS or typePath in EXCLUDED_BUILDING_TYPE_PATHS or typePath == HUB_TYPE_PATH:
-               continue
-            if typePath in VEHICLE_ICONS_BY_TYPE_PATH:
-               continue # Surfaced by collectVehicles as the "Vehicles" section, not an "Unknown" building.
-            if "/Buildable/" in typePath or "/Build_" in typePath:
-               if typePath not in categoryCache:
-                  categoryCache[typePath] = categorizeTypePath(typePath)
-               category = categoryCache[typePath]
-               typeBuckets = categoryBuckets.setdefault(category, {})
-               bucket = typeBuckets.get(typePath)
-               if bucket is None:
-                  bucket = _newBuildingBucket(typePath)
-                  typeBuckets[typePath] = bucket
-               _appendBuildingInstance(bucket, typePath, actorOrComponentObjectHeader.rotation,
-                                        actorOrComponentObjectHeader.position, actorOrComponentObjectHeader.instanceName)
+   for (typePath, seqHeaders) in scan._actorSeqsByTypePath.items():
+      if typePath in LINE_RENDERED_TYPE_PATHS or typePath in EXCLUDED_BUILDING_TYPE_PATHS or typePath == HUB_TYPE_PATH:
+         continue
+      if typePath in VEHICLE_ICONS_BY_TYPE_PATH:
+         continue # Surfaced by collectVehicles as the "Vehicles" section, not an "Unknown" building.
+      if "/Buildable/" in typePath or "/Build_" in typePath:
+         if typePath not in categoryCache:
+            categoryCache[typePath] = categorizeTypePath(typePath)
+         category = categoryCache[typePath]
+         typeBuckets = categoryBuckets.setdefault(category, {})
+         bucket = typeBuckets.get(typePath)
+         if bucket is None:
+            bucket = _newBuildingBucket(typePath)
+            typeBuckets[typePath] = bucket
+         for (_, header) in seqHeaders:
+            _appendBuildingInstance(bucket, typePath, header.rotation,
+                                     header.position, header.instanceName)
 
-   for (typePath, instances) in _findLightweightBuildableGroups(levels):
+   for (typePath, instances) in scan.lightweightGroups():
       if typePath in LINE_RENDERED_TYPE_PATHS or typePath in EXCLUDED_BUILDING_TYPE_PATHS:
          continue
       if typePath not in categoryCache:
@@ -971,7 +1036,7 @@ def collectBuildings(levels) -> dict:
       buildingCategories.append({"category": category, "types": types})
    return buildingCategories
 
-def collectSplinePaths(levels, typePaths, splinePropertyName="mSplineData") -> dict:
+def collectSplinePaths(scan, typePaths, splinePropertyName="mSplineData") -> dict:
    # Belts/pipelines/railroads/hypertubes store their path as a "mSplineData"
    # property (vehicle path segments -- see VEHICLE_PATH_SEGMENTS -- use the
    # same shape under the name "mSplinePoints", hence the parameter): an array
@@ -993,27 +1058,39 @@ def collectSplinePaths(levels, typePaths, splinePropertyName="mSplineData") -> d
    # [x, y, arriveTangentX, arriveTangentY, leaveTangentX, leaveTangentY, z]
    # -- z deliberately last, matching every other bucket type's convention
    # (altitude filtering always reads index stride-1).
-   actorTransforms: dict[str, tuple] = {}
-   for level in levels:
-      for actorOrComponentObjectHeader in level.actorAndComponentObjectHeaders:
-         if isinstance(actorOrComponentObjectHeader, sav_parse.ActorHeader):
-            if actorOrComponentObjectHeader.typePath in typePaths:
-               actorTransforms[actorOrComponentObjectHeader.instanceName] = (
-                  actorOrComponentObjectHeader.position, actorOrComponentObjectHeader.rotation)
-
    polylines = []
    ids = []
-   for level in levels:
-      for object in level.objects:
-         transform = actorTransforms.get(object.instanceName)
-         if transform is None:
-            continue
-         (position, rotation) = transform
-         flatPoints = _splineSegmentPolyline(object, position, rotation, splinePropertyName)
-         if flatPoints is not None:
-            polylines.append(flatPoints)
-            ids.append(object.instanceName)
+   bulk = _rustSplinePolylines(scan, typePaths, splinePropertyName)
+   if bulk is not None:
+      for (instanceName, _typePath, flatPoints) in bulk:
+         polylines.append(flatPoints)
+         ids.append(instanceName)
+      return {"polylines": polylines, "ids": ids, "pointStride": 7}
+   for (header, object) in scan.actorsOfType(*typePaths):
+      if object is None:
+         continue
+      flatPoints = _splineSegmentPolyline(object, header.position, header.rotation, splinePropertyName)
+      if flatPoints is not None:
+         polylines.append(flatPoints)
+         ids.append(object.instanceName)
    return {"polylines": polylines, "ids": ids, "pointStride": 7}
+
+# Projection constants handed to the Rust spline extractor so both sides
+# compute from the exact same values (see collect_spline_polylines in
+# rust_parser/src/py/extract.rs, a verbatim port of _splineSegmentPolyline +
+# projectXY/projectVectorXY/rotateVectorByQuaternion/worldZToMeters).
+_PROJECTION_PARAMS = (_WORLD_TO_PIXEL_SCALE, float(_WORLD_OFFSET[0]), float(_WORLD_OFFSET[1]),
+                      float(_OLD_MAP_DESCALE), _CROP_LO, _SCALE_TO_HIGHRES, float(MAP_SIZE),
+                      _PIXELS_PER_WORLD_UNIT)
+
+def _rustSplinePolylines(scan, typePaths, splinePropertyName):
+   # [(instanceName, typePath, flatPoints), ...] in save order via the Rust
+   # bulk extractor, or None when the Python path must run (Python backend,
+   # or a Python-parsed save under the Rust backend).
+   bulk = getattr(sav_parse, "collectSplinePolylines", None)
+   if bulk is None or not isinstance(scan.parsedSave, sav_parse.ParsedSave):
+      return None
+   return bulk(scan.parsedSave, list(typePaths), splinePropertyName, _PROJECTION_PARAMS)
 
 # Shared per-segment geometry for collectSplinePaths / collectSplinePathGroups:
 # turns one belt/pipe/rail/hypertube/vehicle-path segment object into its flat
@@ -1053,7 +1130,7 @@ def _splineSegmentPolyline(object, position, rotation, splinePropertyName):
 # under a "Belts"/"Pipes" group. Single pass over the levels (grouping by
 # typePath as it goes) rather than one collectSplinePaths call per mark.
 # Returns [{"label", "polylines", "ids", "pointStride"}, ...], empties dropped.
-def collectSplinePathGroups(levels, typePaths, splinePropertyName="mSplineData") -> list:
+def collectSplinePathGroups(scan, typePaths, splinePropertyName="mSplineData") -> list:
    labelByTypePath = {typePath: readableLabel(typePath) for typePath in typePaths}
    # A representative typePath per readable label -- typePaths that share a label
    # (e.g. Pipeline / Pipeline_NoIndicator both "Pipeline Mk.1") also share a
@@ -1062,28 +1139,28 @@ def collectSplinePathGroups(levels, typePaths, splinePropertyName="mSplineData")
    for typePath in typePaths:
       typePathByLabel.setdefault(labelByTypePath[typePath], typePath)
 
-   actorInfo: dict[str, tuple] = {} # instanceName -> (position, rotation, groupLabel)
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and header.typePath in labelByTypePath:
-            actorInfo[header.instanceName] = (header.position, header.rotation, labelByTypePath[header.typePath])
-
    byLabel: dict[str, dict] = {}
    order = []
-   for level in levels:
-      for object in level.objects:
-         info = actorInfo.get(object.instanceName)
-         if info is None:
+
+   def appendPolyline(groupLabel, flatPoints, instanceName):
+      if groupLabel not in byLabel:
+         byLabel[groupLabel] = {"polylines": [], "ids": []}
+         order.append(groupLabel)
+      byLabel[groupLabel]["polylines"].append(flatPoints)
+      byLabel[groupLabel]["ids"].append(instanceName)
+
+   bulk = _rustSplinePolylines(scan, typePaths, splinePropertyName)
+   if bulk is not None:
+      for (instanceName, typePath, flatPoints) in bulk:
+         appendPolyline(labelByTypePath[typePath], flatPoints, instanceName)
+   else:
+      for (header, object) in scan.actorsOfType(*typePaths):
+         if object is None:
             continue
-         (position, rotation, groupLabel) = info
-         flatPoints = _splineSegmentPolyline(object, position, rotation, splinePropertyName)
+         flatPoints = _splineSegmentPolyline(object, header.position, header.rotation, splinePropertyName)
          if flatPoints is None:
             continue
-         if groupLabel not in byLabel:
-            byLabel[groupLabel] = {"polylines": [], "ids": []}
-            order.append(groupLabel)
-         byLabel[groupLabel]["polylines"].append(flatPoints)
-         byLabel[groupLabel]["ids"].append(object.instanceName)
+         appendPolyline(labelByTypePath[header.typePath], flatPoints, object.instanceName)
 
    groups = []
    for label in order:
@@ -1106,36 +1183,29 @@ def collectSplinePathGroups(levels, typePaths, splinePropertyName="mSplineData")
    groups.sort(key=lambda group: group["mark"])
    return groups
 
-def collectPowerLines(levels) -> dict:
+def collectPowerLines(scan) -> dict:
    # Mirrors sav_to_html.py's wireLines logic (lines 251-252, 344-349): each
    # POWER_LINE actor connects from its own position to one destination point
    # given by its "mWireInstances" property's "Locations" entry -- a plain
    # straight connection, no spline/tangent data exists for these. Returns
    # {"polylines": [...], "ids": [...], "pointStride": 3} with one id per polyline.
-   powerLineActorPositions: dict[str, list] = {}
-   for level in levels:
-      for actorOrComponentObjectHeader in level.actorAndComponentObjectHeaders:
-         if isinstance(actorOrComponentObjectHeader, sav_parse.ActorHeader):
-            if actorOrComponentObjectHeader.typePath in sav_data.data.POWER_LINE:
-               powerLineActorPositions[actorOrComponentObjectHeader.instanceName] = actorOrComponentObjectHeader.position
-
    polylines = []
    ids = []
-   for level in levels:
-      for object in level.objects:
-         if object.instanceName in powerLineActorPositions:
-            wireInstances = sav_parse.getPropertyValue(object.properties, "mWireInstances")
-            if wireInstances is not None:
-               for (name, destinationPosition) in wireInstances[0][0]:
-                  if name == "Locations":
-                     srcPosition = powerLineActorPositions[object.instanceName]
-                     (srcX, srcY) = projectXY(srcPosition)
-                     (dstX, dstY) = projectXY(destinationPosition)
-                     polylines.append([
-                        srcX, srcY, worldZToMeters(srcPosition[2]),
-                        dstX, dstY, worldZToMeters(destinationPosition[2]),
-                     ])
-                     ids.append(object.instanceName)
+   for (header, object) in scan.actorsOfType(*sav_data.data.POWER_LINE):
+      if object is None:
+         continue
+      wireInstances = sav_parse.getPropertyValue(object.properties, "mWireInstances")
+      if wireInstances is not None:
+         for (name, destinationPosition) in wireInstances[0][0]:
+            if name == "Locations":
+               srcPosition = header.position
+               (srcX, srcY) = projectXY(srcPosition)
+               (dstX, dstY) = projectXY(destinationPosition)
+               polylines.append([
+                  srcX, srcY, worldZToMeters(srcPosition[2]),
+                  dstX, dstY, worldZToMeters(destinationPosition[2]),
+               ])
+               ids.append(object.instanceName)
    return {"polylines": polylines, "ids": ids, "pointStride": 3}
 
 def _purityName(purity) -> str:
@@ -1165,22 +1235,22 @@ _PURITY_OVERRIDE_NAME_TO_ENUM = {
 FRACKING_CORE_TYPE_PATH = "/Game/FactoryGame/Resource/BP_FrackingCore.BP_FrackingCore_C"
 FRACKING_SATELLITE_TYPE_PATH = "/Game/FactoryGame/Resource/BP_FrackingSatellite.BP_FrackingSatellite_C"
 
-def collectResourceNodes(levels) -> dict:
+def collectResourceNodes(scan) -> dict:
    # Mirrors sav_to_html.py's exact approach (lines 242-250, 366-375) for
    # discovering which resource nodes exist and where, via the save's own
    # ActorHeaders.
-   minerInstances = set()
+   minerObjects = []
+   for (header, object) in scan.actorsOfType(*sav_data.data.MINERS):
+      if object is not None:
+         minerObjects.append(object)
    minedResourceActors: dict[str, tuple] = {} # instanceName -> (position, typePath)
-   for level in levels:
-      for actorOrComponentObjectHeader in level.actorAndComponentObjectHeaders:
-         if isinstance(actorOrComponentObjectHeader, sav_parse.ActorHeader):
-            if actorOrComponentObjectHeader.typePath in sav_data.data.MINERS:
-               minerInstances.add(actorOrComponentObjectHeader.instanceName)
-            elif actorOrComponentObjectHeader.typePath in sav_data.data.MINED_RESOURCES:
-               if actorOrComponentObjectHeader.typePath == FRACKING_CORE_TYPE_PATH:
-                  continue # See FRACKING_CORE_TYPE_PATH above -- never a real node.
-               minedResourceActors[actorOrComponentObjectHeader.instanceName] = (
-                  actorOrComponentObjectHeader.position, actorOrComponentObjectHeader.typePath)
+   nodeObjectsByInstanceName: dict[str, object] = {}
+   nodeTypePaths = [typePath for typePath in sav_data.data.MINED_RESOURCES
+                    if typePath != FRACKING_CORE_TYPE_PATH] # See FRACKING_CORE_TYPE_PATH above -- never a real node.
+   for (header, object) in scan.actorsOfType(*nodeTypePaths):
+      minedResourceActors[header.instanceName] = (header.position, header.typePath)
+      if object is not None:
+         nodeObjectsByInstanceName[header.instanceName] = object
 
    minedResourceInstanceNames = set()
    # "Game mode" settings (Purity Modifier and/or Node Randomization, set at
@@ -1198,23 +1268,21 @@ def collectResourceNodes(levels) -> dict:
    # game's own rules neither setting ever touches Geysers, so they alone
    # never carry these override properties.
    overridesByInstanceName: dict[str, tuple] = {} # instanceName -> (resourceType, purity)
-   for level in levels:
-      for object in level.objects:
-         if object.instanceName in minerInstances:
-            extractableResource = sav_parse.getPropertyValue(object.properties, "mExtractableResource")
-            if extractableResource is not None:
-               minedResourceInstanceNames.add(extractableResource.pathName)
-         elif object.instanceName in minedResourceActors:
-            resourceClassOverride = sav_parse.getPropertyValue(object.properties, "mResourceClassOverride")
-            purityOverride = sav_parse.getPropertyValue(object.properties, "mPurityOverride")
-            overrideResourceType = None
-            if resourceClassOverride is not None and getattr(resourceClassOverride, "pathName", None):
-               overrideResourceType = resourceClassOverride.pathName.rsplit(".", 1)[-1]
-            overridePurity = None
-            if isinstance(purityOverride, list) and len(purityOverride) == 2:
-               overridePurity = _PURITY_OVERRIDE_NAME_TO_ENUM.get(purityOverride[1])
-            if overrideResourceType is not None or overridePurity is not None:
-               overridesByInstanceName[object.instanceName] = (overrideResourceType, overridePurity)
+   for object in minerObjects:
+      extractableResource = sav_parse.getPropertyValue(object.properties, "mExtractableResource")
+      if extractableResource is not None:
+         minedResourceInstanceNames.add(extractableResource.pathName)
+   for object in nodeObjectsByInstanceName.values():
+      resourceClassOverride = sav_parse.getPropertyValue(object.properties, "mResourceClassOverride")
+      purityOverride = sav_parse.getPropertyValue(object.properties, "mPurityOverride")
+      overrideResourceType = None
+      if resourceClassOverride is not None and getattr(resourceClassOverride, "pathName", None):
+         overrideResourceType = resourceClassOverride.pathName.rsplit(".", 1)[-1]
+      overridePurity = None
+      if isinstance(purityOverride, list) and len(purityOverride) == 2:
+         overridePurity = _PURITY_OVERRIDE_NAME_TO_ENUM.get(purityOverride[1])
+      if overrideResourceType is not None or overridePurity is not None:
+         overridesByInstanceName[object.instanceName] = (overrideResourceType, overridePurity)
 
    # resourceBuckets: resourceType -> {"label": str, "mined": {purity: {"points":[],"ids":[]}}, "unmined": {...}}
    resourceBuckets: dict[str, dict] = {}
@@ -1317,7 +1385,8 @@ def _splitCollectableKind(levels, staticDict, positionExtractor) -> dict:
    return {"remaining": remaining["points"], "remainingIds": remaining["ids"], "remainingWorldPositions": remaining["worldPositions"],
            "collected": collected["points"], "collectedIds": collected["ids"], "collectedWorldPositions": collected["worldPositions"]}
 
-def collectCollectables(levels) -> dict:
+def collectCollectables(scan) -> dict:
+   levels = scan.levels
    return {
       "slugsBlue": _splitCollectableKind(levels, sav_data.slug.POWER_SLUGS_BLUE, _positionFromSlugEntry),
       "slugsYellow": _splitCollectableKind(levels, sav_data.slug.POWER_SLUGS_YELLOW, _positionFromSlugEntry),
@@ -1342,15 +1411,10 @@ def _itemIconFilename(itemShortName: str) -> str:
    filename = itemShortName + ".png"
    return filename if os.path.exists(os.path.join(_ITEM_ICONS_DIR, filename)) else None
 
-def _itemPickupActorInstanceNames(levels) -> set:
-   instanceNames = set()
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and header.typePath == ITEM_PICKUP_TYPE_PATH:
-            instanceNames.add(header.instanceName)
-   return instanceNames
+def _itemPickupActorInstanceNames(scan) -> set:
+   return {header.instanceName for header in scan.actorHeadersOfType(ITEM_PICKUP_TYPE_PATH)}
 
-def _uncollectedCatalogDrops(levels) -> list:
+def _uncollectedCatalogDrops(scan) -> list:
    # sav_data.freeStuff.FREE_DROPPED_ITEMS catalogs every free item stack the
    # vanilla world spawns (ammo/medkit/equipment caches lying around the map,
    # exported from a fully-explored fresh save). A given stack only exists as
@@ -1364,13 +1428,13 @@ def _uncollectedCatalogDrops(levels) -> list:
    # and ISN'T recorded as collected (picking a spawned stack up removes its
    # actor and logs it in the level collectables lists -- checking both
    # lists' union, same reasoning as _splitCollectableKind).
-   presentActors = _itemPickupActorInstanceNames(levels)
+   presentActors = _itemPickupActorInstanceNames(scan)
    catalogInstanceNames = set()
    for entries in sav_data.freeStuff.FREE_DROPPED_ITEMS.values():
       for (_, _, instanceName) in entries:
          catalogInstanceNames.add(instanceName)
    collectedInstanceNames = set()
-   for level in levels:
+   for level in scan.levels:
       for collectableList in (level.collectables1, level.collectables2):
          if collectableList is not None:
             for collectable in collectableList:
@@ -1385,7 +1449,7 @@ def _uncollectedCatalogDrops(levels) -> list:
             drops.append((shortName, quantity, position, instanceName))
    return drops
 
-def collectDroppedItems(levels) -> list:
+def collectDroppedItems(scan) -> list:
    # One bucket per item type lying loose on the ground, mirroring the
    # points/ids/worldPositions shape of the other static-tooltip collectors
    # (see collectResourceNodes), plus a parallel "counts" list (stack size
@@ -1396,12 +1460,6 @@ def collectDroppedItems(levels) -> list:
    # _uncollectedCatalogDrops, which owns the dedup between the two).
    # Returns [{"itemPath":, "label":, "icon":, "points":, "ids":, "counts":,
    # "worldPositions":}, ...] sorted by drop count descending.
-   pickupPositions: dict[str, list] = {}
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and header.typePath == ITEM_PICKUP_TYPE_PATH:
-            pickupPositions[header.instanceName] = header.position
-
    buckets: dict[str, dict] = {}
 
    def appendDrop(shortName, position, instanceName, numItems):
@@ -1419,22 +1477,20 @@ def collectDroppedItems(levels) -> list:
       # same split as collectResourceNodes/_splitCollectableKind.
       bucket["worldPositions"].extend([position[0], position[1]])
 
-   for level in levels:
-      for object in level.objects:
-         position = pickupPositions.get(object.instanceName)
-         if position is None:
-            continue
-         pickupItems = sav_parse.getPropertyValue(object.properties, "mPickupItems")
-         if pickupItems is None:
-            continue
-         item = sav_parse.getPropertyValue(pickupItems[0], "Item")
-         numItems = sav_parse.getPropertyValue(pickupItems[0], "NumItems")
-         itemPath = item[0] if isinstance(item, (list, tuple)) else item
-         if not itemPath or not numItems: # NumItems 0 = an already-picked-up leftover actor.
-            continue
-         appendDrop(itemPath.rsplit(".", 1)[-1], position, object.instanceName, numItems)
+   for (header, object) in scan.actorsOfType(ITEM_PICKUP_TYPE_PATH):
+      if object is None:
+         continue
+      pickupItems = sav_parse.getPropertyValue(object.properties, "mPickupItems")
+      if pickupItems is None:
+         continue
+      item = sav_parse.getPropertyValue(pickupItems[0], "Item")
+      numItems = sav_parse.getPropertyValue(pickupItems[0], "NumItems")
+      itemPath = item[0] if isinstance(item, (list, tuple)) else item
+      if not itemPath or not numItems: # NumItems 0 = an already-picked-up leftover actor.
+         continue
+      appendDrop(itemPath.rsplit(".", 1)[-1], header.position, object.instanceName, numItems)
 
-   for (shortName, quantity, position, instanceName) in _uncollectedCatalogDrops(levels):
+   for (shortName, quantity, position, instanceName) in scan.catalogDrops():
       appendDrop(shortName, position, instanceName, quantity)
 
    return sorted(buckets.values(), key=lambda bucket: (-len(bucket["ids"]), bucket["label"]))
@@ -1446,7 +1502,7 @@ PLAYER_TYPE_PATH = "/Game/FactoryGame/Character/Player/Char_Player.Char_Player_C
 # Crab Hatchers, ...) are noise for this purpose.
 LIZARD_DOGGO_TYPE_PATH = "/Game/FactoryGame/Character/Creature/Wildlife/SpaceRabbit/Char_SpaceRabbit.Char_SpaceRabbit_C"
 
-def collectCreatures(levels) -> list:
+def collectCreatures(scan) -> list:
    # Returns the same typePath/label/points/ids shape as collectBuildings's
    # per-category "types" list (currently always zero-or-one entry, but kept
    # list-shaped in case more species are added later). Uses tooltipKind
@@ -1455,52 +1511,46 @@ def collectCreatures(levels) -> list:
    # worldPositions array is needed here the way static-tooltip buckets
    # (resource nodes/collectables) require.
    typeBuckets: dict[str, dict] = {}
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and header.typePath == LIZARD_DOGGO_TYPE_PATH:
-            bucket = typeBuckets.get(header.typePath)
-            if bucket is None:
-               bucket = {"label": readableLabel(header.typePath), "points": [], "ids": []}
-               typeBuckets[header.typePath] = bucket
-            (px, py) = projectXY(header.position)
-            bucket["points"].append(px)
-            bucket["points"].append(py)
-            bucket["points"].append(worldZToMeters(header.position[2]))
-            bucket["ids"].append(header.instanceName)
+   for header in scan.actorHeadersOfType(LIZARD_DOGGO_TYPE_PATH):
+      bucket = typeBuckets.get(header.typePath)
+      if bucket is None:
+         bucket = {"label": readableLabel(header.typePath), "points": [], "ids": []}
+         typeBuckets[header.typePath] = bucket
+      (px, py) = projectXY(header.position)
+      bucket["points"].append(px)
+      bucket["points"].append(py)
+      bucket["points"].append(worldZToMeters(header.position[2]))
+      bucket["ids"].append(header.instanceName)
    return [
       {"typePath": typePath, "label": bucket["label"], "points": bucket["points"], "ids": bucket["ids"]}
       for (typePath, bucket) in typeBuckets.items()
    ]
 
-def collectPlayers(levels) -> dict:
+def collectPlayers(scan) -> dict:
    points = []
    ids = []
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and header.typePath == PLAYER_TYPE_PATH:
-            (px, py) = projectXY(header.position)
-            points.append(px)
-            points.append(py)
-            points.append(worldZToMeters(header.position[2]))
-            ids.append(header.instanceName)
+   for header in scan.actorHeadersOfType(PLAYER_TYPE_PATH):
+      (px, py) = projectXY(header.position)
+      points.append(px)
+      points.append(py)
+      points.append(worldZToMeters(header.position[2]))
+      ids.append(header.instanceName)
    return {"points": points, "ids": ids}
 
-def collectHub(levels) -> dict:
+def collectHub(scan) -> dict:
    points = []
    ids = []
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and header.typePath == HUB_TYPE_PATH:
-            (px, py) = projectXY(header.position)
-            points.append(px)
-            points.append(py)
-            points.append(worldZToMeters(header.position[2]))
-            ids.append(header.instanceName)
+   for header in scan.actorHeadersOfType(HUB_TYPE_PATH):
+      (px, py) = projectXY(header.position)
+      points.append(px)
+      points.append(py)
+      points.append(worldZToMeters(header.position[2]))
+      ids.append(header.instanceName)
    return {"points": points, "ids": ids}
 
 CENTRAL_STORAGE_SUBSYSTEM_TYPE_PATH = "/Script/FactoryGame.FGCentralStorageSubsystem"
 
-def collectDimensionalDepotContents(levels) -> list:
+def collectDimensionalDepotContents(scan) -> list:
    # The Dimensional Depot (Build_CentralStorage_C uploaders scattered
    # around the map, one shared pool between all of them) isn't a normal
    # per-building inventory -- the global FGCentralStorageSubsystem holds
@@ -1509,18 +1559,12 @@ def collectDimensionalDepotContents(levels) -> list:
    # unlike a building's per-slot mInventoryStacks. Zero-amount entries
    # (items once stored, now fully withdrawn) are dropped. Returns
    # [{"itemPath":, "label":, "count":}, ...] sorted by count descending.
-   subsystemInstanceName = None
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and header.typePath == CENTRAL_STORAGE_SUBSYSTEM_TYPE_PATH:
-            subsystemInstanceName = header.instanceName
-   if subsystemInstanceName is None:
+   # The old loops kept the LAST matching header/object (they never broke
+   # out); headers[-1] + the last-wins objectsByInstanceName dict match that.
+   headers = scan.actorHeadersOfType(CENTRAL_STORAGE_SUBSYSTEM_TYPE_PATH)
+   if not headers:
       return []
-   subsystemObject = None
-   for level in levels:
-      for object in level.objects:
-         if object.instanceName == subsystemInstanceName:
-            subsystemObject = object
+   subsystemObject = scan.objectsByInstanceName.get(headers[-1].instanceName)
    if subsystemObject is None:
       return []
    storedItems = sav_parse.getPropertyValue(subsystemObject.properties, "mStoredItems") or []
@@ -1661,28 +1705,20 @@ def _firstRecipeProductItem(schematicEntry: dict):
       return givenItem.get("item")
    return None
 
-def _findObjectByTypePathSubstring(levels, substring: str):
-   for level in levels:
+def _findObjectByTypePathSubstring(scan, substring: str):
+   for level in scan.levels:
       for object in level.objects:
          if substring in object.instanceName:
             return object
    # Some managers' instanceName doesn't contain the class token (e.g.
    # "...PersistentLevel.SchematicManager"), so fall back to matching the
    # ActorHeader's typePath and resolving that header's instanceName.
-   instanceName = None
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and substring in header.typePath:
-            instanceName = header.instanceName
-            break
-      if instanceName is not None:
-         break
-   if instanceName is None:
-      return None
-   for level in levels:
-      for object in level.objects:
-         if object.instanceName == instanceName:
-            return object
+   # scan's typePath buckets are keyed in first-encounter order, so the first
+   # matching key's first header is the same globally-first matching header
+   # the old level-by-level scan found.
+   for (typePath, seqHeaders) in scan._actorSeqsByTypePath.items():
+      if substring in typePath:
+         return scan.objectsByInstanceName.get(seqHeaders[0][1].instanceName)
    return None
 
 def _shortNamesFromObjectReferenceList(references) -> set:
@@ -1697,19 +1733,19 @@ def _labeledCost(costEntries) -> list:
    return [{"item": cost["item"], "label": readableLabel(cost["item"]), "amount": cost["amount"]}
            for cost in costEntries or []]
 
-def collectProgression(levels) -> dict:
+def collectProgression(scan) -> dict:
    # One purchased-schematics pass feeding the four schematic-driven panels
    # (MAM, alternate recipes, AWESOME Shop, HUB milestones), plus the Space
    # Elevator/game-phase state. Every panel lists ALL known entries with a
    # per-entry "done" flag rather than only the unlocked ones -- seeing
    # what's still missing is half the point of a progression view.
-   schematicManager = _findObjectByTypePathSubstring(levels, SCHEMATIC_MANAGER_TYPE_PATH_SUBSTRING)
+   schematicManager = _findObjectByTypePathSubstring(scan, SCHEMATIC_MANAGER_TYPE_PATH_SUBSTRING)
    purchased = set()
    if schematicManager is not None:
       purchased = _shortNamesFromObjectReferenceList(
          sav_parse.getPropertyValue(schematicManager.properties, "mPurchasedSchematics"))
 
-   researchManager = _findObjectByTypePathSubstring(levels, RESEARCH_MANAGER_TYPE_PATH_SUBSTRING)
+   researchManager = _findObjectByTypePathSubstring(scan, RESEARCH_MANAGER_TYPE_PATH_SUBSTRING)
    unlockedTrees = set()
    if researchManager is not None:
       unlockedTrees = {name.replace("BPD_ResearchTree_", "").replace("_C", "") for name in
@@ -1822,7 +1858,7 @@ def collectProgression(levels) -> dict:
       "shopCategories": shopCategories,
       "couponsSpent": couponsSpent,
       "hubTiers": hubTiers,
-      "spaceElevator": _collectSpaceElevatorState(levels),
+      "spaceElevator": _collectSpaceElevatorState(scan),
    }
 
 def _phaseInfo(phaseReference) -> dict:
@@ -1839,14 +1875,10 @@ def _phaseInfo(phaseReference) -> dict:
            "phaseNumber": int(numberMatch.group(1)) if numberMatch else None,
            "name": None, "cost": []}
 
-def _collectSpaceElevatorState(levels) -> dict:
-   spaceElevatorBuilt = False
-   for level in levels:
-      for header in level.actorAndComponentObjectHeaders:
-         if isinstance(header, sav_parse.ActorHeader) and header.typePath == SPACE_ELEVATOR_TYPE_PATH:
-            spaceElevatorBuilt = True
+def _collectSpaceElevatorState(scan) -> dict:
+   spaceElevatorBuilt = len(scan.actorHeadersOfType(SPACE_ELEVATOR_TYPE_PATH)) > 0
 
-   phaseManager = _findObjectByTypePathSubstring(levels, GAME_PHASE_MANAGER_TYPE_PATH_SUBSTRING)
+   phaseManager = _findObjectByTypePathSubstring(scan, GAME_PHASE_MANAGER_TYPE_PATH_SUBSTRING)
    if phaseManager is None:
       return {"built": spaceElevatorBuilt, "gameCompleted": False, "currentPhase": None,
               "targetPhase": None, "costMultiplier": 1.0, "targetCost": []}
@@ -1871,12 +1903,10 @@ def _collectSpaceElevatorState(levels) -> dict:
    # costs -- lives on BP_GameState_C next to the settings collectGameSettings
    # reads; absent (like every game-mode property) when left at its 1.0 default.
    costMultiplier = 1.0
-   for level in levels:
-      for object in level.objects:
-         if GAME_STATE_TYPE_PATH_SUBSTRING in object.instanceName:
-            multiplier = sav_parse.getPropertyValue(object.properties, "mSpacePartsCostMultiplier")
-            if multiplier is not None:
-               costMultiplier = multiplier
+   for object in scan.gameStateObjects: # save order; last value wins, same as the old full scan
+      multiplier = sav_parse.getPropertyValue(object.properties, "mSpacePartsCostMultiplier")
+      if multiplier is not None:
+         costMultiplier = multiplier
 
    # One row per required part of the target phase (base cost x multiplier),
    # overlaid with delivered amounts; delivered items the static table doesn't
@@ -1909,8 +1939,59 @@ def _collectSpaceElevatorState(levels) -> dict:
       "targetCost": targetCost,
    }
 
-def collectHardDrives(levels) -> dict:
-   (_, notOpened, openWithDrive, openAndEmpty, dismantled) = sav_to_html.getCrashSiteState(levels)
+def _getCrashSiteState(levels):
+   # Ported from sav_to_html.getCrashSiteState: that version type-checks
+   # headers with isinstance(h, sav_parse.ActorHeader) against the PYTHON
+   # parser's class, which the Rust-backed header objects can't satisfy.
+   # Same logic, duck-typed on the typePath attribute instead.
+   crashSitesNotOpened = list(sav_data.crashSites.CRASH_SITES.keys())
+   crashSitesInSave = {}
+   crashSitesDismantled = []
+   for level in levels:
+      for header in level.actorAndComponentObjectHeaders:
+         if getattr(header, "typePath", None) == sav_data.data.CRASH_SITE:
+            crashSitesInSave[header.instanceName] = header.position
+      if level.collectables1 is not None:
+         for collectable in level.collectables1:  # collectables1 has all dismantled sites.  collectables2 can be a subset of collectables1.
+            if collectable.pathName in sav_data.crashSites.CRASH_SITES:
+               crashSitesDismantled.append(collectable.pathName)
+               crashSitesNotOpened.remove(collectable.pathName)
+
+   crashSitesOpenAndEmpty = []
+   crashSitesOpenWithDrive = []
+   crashSiteInventoryPathName = {} # Maps inventory instance path name to crash site instance path name
+   for level in levels:
+      for object in level.objects:
+         if object.instanceName in sav_data.crashSites.CRASH_SITES:
+            hasBeenOpened = sav_parse.getPropertyValue(object.properties, "mHasBeenOpened")
+            if hasBeenOpened is not None and hasBeenOpened:
+               crashSitesNotOpened.remove(object.instanceName)
+               hasBeenLooted = sav_parse.getPropertyValue(object.properties, "mHasBeenLooted")
+               if hasBeenLooted is None:
+                  crashSiteInventoryPathName[f"{object.instanceName}.Inventory2"] = object.instanceName # v1.0 doesn't use the "mInventory" property anymore.  Any open, but unlooted droppods from Update 8 will be empty in v1.0.
+                  hasBeenLooted = True # If inventory isn't found, the droppod has been looted, so assuming that here.
+               if hasBeenLooted:
+                  crashSitesOpenAndEmpty.append(object.instanceName)
+               else: # This case has not been observed
+                  crashSitesOpenWithDrive.append(object.instanceName)
+
+   for level in levels:
+      for object in level.objects:
+         if object.instanceName in crashSiteInventoryPathName:
+            inventoryStacks = sav_parse.getPropertyValue(object.properties, "mInventoryStacks")
+            if inventoryStacks is not None:
+               item = sav_parse.getPropertyValue(inventoryStacks[0][0], "Item")
+               if item is not None:
+                  if len(item) == 2 and isinstance(item[0], str):
+                     if item[0] == "/Game/FactoryGame/Resource/Environment/CrashSites/Desc_HardDrive.Desc_HardDrive_C" and item[1] != 0:
+                        crashSiteInstancePathName = crashSiteInventoryPathName[object.instanceName]
+                        crashSitesOpenAndEmpty.remove(crashSiteInstancePathName)
+                        crashSitesOpenWithDrive.append(crashSiteInstancePathName)
+
+   return crashSitesInSave, crashSitesNotOpened, crashSitesOpenWithDrive, crashSitesOpenAndEmpty, crashSitesDismantled
+
+def collectHardDrives(scan) -> dict:
+   (_, notOpened, openWithDrive, openAndEmpty, dismantled) = scan.crashSiteState()
 
    def bucketFor(instanceNames):
       points = []
@@ -1975,7 +2056,7 @@ COLLECTABLE_ITEM_SHORT_NAMES = {
 }
 HARD_DRIVE_ITEM_SHORT_NAME = "Desc_HardDrive_C"
 
-def _collectStaticItemLocations(levels) -> dict:
+def _collectStaticItemLocations(scan) -> dict:
    # Power Slugs/Somersloops/Mercer Spheres/Hard Drives are static world
    # pickups, not held in any building's inventory -- and unlike a normal
    # building, they don't have a real ActorHeader to resolve a position from
@@ -2002,7 +2083,7 @@ def _collectStaticItemLocations(levels) -> dict:
             "worldPosition": [worldPositions[i * 2], worldPositions[i * 2 + 1]],
          })
 
-   collectables = collectCollectables(levels)
+   collectables = scan.collectables()
    collectableLabels = {
       "slugsBlue": "Blue Power Slug", "slugsYellow": "Yellow Power Slug", "slugsPurple": "Purple Power Slug",
       "somersloops": "Somersloop", "mercerSpheres": "Mercer Sphere",
@@ -2011,7 +2092,7 @@ def _collectStaticItemLocations(levels) -> dict:
       data = collectables[kind]
       addEntries(itemShortName, collectableLabels[kind], data["remainingIds"], data["remaining"], data["remainingWorldPositions"])
 
-   hardDrives = collectHardDrives(levels)
+   hardDrives = collectHardDrives(scan)
    addEntries(HARD_DRIVE_ITEM_SHORT_NAME, "Hard Drive", hardDrives["hasDriveIds"], hardDrives["hasDrive"], hardDrives["hasDriveWorldPositions"])
 
    # World-spawned free item stacks in not-yet-generated map areas (see
@@ -2019,7 +2100,7 @@ def _collectStaticItemLocations(levels) -> dict:
    # for _collectItemLocationIndex's mPickupItems scan to find. Live actors
    # are that scan's job, so this only covers the catalog-only remainder --
    # no double counting. Same label findItemLocations gives live drops.
-   for (shortName, quantity, position, instanceName) in _uncollectedCatalogDrops(levels):
+   for (shortName, quantity, position, instanceName) in scan.catalogDrops():
       (px, py) = projectXY(position)
       index.setdefault(shortName, []).append({
          "instanceName": instanceName,
@@ -2055,19 +2136,19 @@ PIPE_CONNECTOR_SUFFIXES = (
 )
 
 def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
+   # Compatibility wrapper -- the server goes through buildAll() so the scan
+   # is shared with buildMapPayload.
+   return _buildSaveIndex(SaveScan(parsedSave))
+
+def _buildSaveIndex(scan: SaveScan) -> dict:
    # One-time O(n) pass so describeInstance() doesn't rescan the whole save
    # on every click. Cached by sav_map_server.py alongside the map payload.
-   headersByInstanceName = {}
-   objectsByInstanceName = {}
-   instanceNamesByTypePath: dict[str, list] = {}
-   for level in parsedSave.levels:
-      for actorOrComponentObjectHeader in level.actorAndComponentObjectHeaders:
-         headersByInstanceName[actorOrComponentObjectHeader.instanceName] = actorOrComponentObjectHeader
-         if isinstance(actorOrComponentObjectHeader, sav_parse.ActorHeader):
-            instanceNamesByTypePath.setdefault(actorOrComponentObjectHeader.typePath, []).append(
-               actorOrComponentObjectHeader.instanceName)
-      for object in level.objects:
-         objectsByInstanceName[object.instanceName] = object
+   headersByInstanceName = scan.headersByInstanceName
+   objectsByInstanceName = scan.objectsByInstanceName
+   instanceNamesByTypePath: dict[str, list] = {
+      typePath: [header.instanceName for (_, header) in seqHeaders]
+      for (typePath, seqHeaders) in scan._actorSeqsByTypePath.items()
+   }
 
    # Lightweight buildables (foundations/walls/ramps/beams) have no real
    # ActorHeader of their own -- see _findLightweightBuildableGroups -- so the
@@ -2077,7 +2158,7 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
    # e.g. a Foundation comes out right, even though every other per-instance
    # lookup it does (recipe/power/inventory) is a harmless no-op for these --
    # none of those concepts apply to a lightweight buildable anyway.
-   for (typePath, instances) in _findLightweightBuildableGroups(parsedSave.levels):
+   for (typePath, instances) in scan.lightweightGroups():
       instanceNamesByTypePath.setdefault(typePath, []).extend(
          f"LightweightBuildable:{typePath}:{idx}" for idx in range(len(instances)))
 
@@ -2086,16 +2167,13 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
    # the station), which references the station via "mStation" and holds the
    # name in "mStationName". Build the reverse lookup (station -> name) once.
    stationNameByStationInstance = {}
-   for instanceName in headersByInstanceName:
-      header = headersByInstanceName[instanceName]
-      if getattr(header, "typePath", None) == "/Script/FactoryGame.FGTrainStationIdentifier":
-         identifierObject = objectsByInstanceName.get(instanceName)
-         if identifierObject is None:
-            continue
-         station = sav_parse.getPropertyValue(identifierObject.properties, "mStation")
-         stationName = _textPropertyValue(sav_parse.getPropertyValue(identifierObject.properties, "mStationName"))
-         if station is not None and hasattr(station, "pathName") and stationName:
-            stationNameByStationInstance[station.pathName] = stationName
+   for (header, identifierObject) in scan.actorsOfType("/Script/FactoryGame.FGTrainStationIdentifier"):
+      if identifierObject is None:
+         continue
+      station = sav_parse.getPropertyValue(identifierObject.properties, "mStation")
+      stationName = _textPropertyValue(sav_parse.getPropertyValue(identifierObject.properties, "mStationName"))
+      if station is not None and hasattr(station, "pathName") and stationName:
+         stationNameByStationInstance[station.pathName] = stationName
 
    # The fluid *type* flowing through a given pipe segment isn't stored on
    # the segment itself -- only mFluidBox (the current amount). It IS
@@ -2112,11 +2190,7 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
    pipeNetworkIdToFluid = {}
    pipeNetworkIdToTotalFluid = {}
    pipeNetworkIdToMembers = {}
-   for instanceName in headersByInstanceName:
-      header = headersByInstanceName[instanceName]
-      if getattr(header, "typePath", None) != "/Script/FactoryGame.FGPipeNetwork":
-         continue
-      networkActorObject = objectsByInstanceName.get(instanceName)
+   for (header, networkActorObject) in scan.actorsOfType("/Script/FactoryGame.FGPipeNetwork"):
       if networkActorObject is None:
          continue
       # A network with no mFluidDescriptor (nothing has flowed through it
@@ -2169,7 +2243,7 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
    # indexes the synthetic "LightweightBuildable:<typePath>:<idx>" ids
    # collectBuildings() already generated against the same instance data.
    lightweightInstancesById = {}
-   for (typePath, instances) in _findLightweightBuildableGroups(parsedSave.levels):
+   for (typePath, instances) in scan.lightweightGroups():
       for (idx, instance) in enumerate(instances):
          lightweightInstancesById[f"LightweightBuildable:{typePath}:{idx}"] = {"typePath": typePath, "position": instance[1]}
 
@@ -2179,7 +2253,7 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
    # own instanceName, which describeInstance's ordinary per-actor path
    # already describes in more detail than the train branch would.
    trainInfoByInstanceName = {}
-   for train in _trainConsistsFromMaps(headersByInstanceName, objectsByInstanceName):
+   for train in scan.trainConsists():
       trainHeader = headersByInstanceName.get(train["id"])
       if getattr(trainHeader, "typePath", None) == TRAIN_TYPE_PATH:
          trainInfoByInstanceName[train["id"]] = train
@@ -2194,11 +2268,11 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
       "pipeNetworkIdToMembers": pipeNetworkIdToMembers,
       "lightweightInstancesById": lightweightInstancesById,
       "instanceNamesByTypePath": instanceNamesByTypePath,
-      "itemLocationIndex": _collectItemLocationIndex(objectsByInstanceName),
+      "itemLocationIndex": _itemLocationIndex(scan),
       "dimensionalDepotByItem": {
-         entry["itemPath"]: entry["count"] for entry in collectDimensionalDepotContents(parsedSave.levels)
+         entry["itemPath"]: entry["count"] for entry in scan.depotContents()
       },
-      "staticItemLocations": _collectStaticItemLocations(parsedSave.levels),
+      "staticItemLocations": _collectStaticItemLocations(scan),
    }
 
 def _resolveComponentObject(saveIndex, properties, propertyName):
@@ -2489,6 +2563,15 @@ def _inventoryComponentObjects(objectsByInstanceName: dict, instanceName: str, p
          if componentObject is not None:
             componentsByPathName[pathName] = componentObject
    return list(componentsByPathName.values())
+
+def _itemLocationIndex(scan) -> dict:
+   # Rust bulk extractor when the save is Rust-backed (an exact port of
+   # _collectItemLocationIndex below -- tools/diff_payload.py is the parity
+   # gate); the Python reference otherwise.
+   rustIndex = getattr(sav_parse, "collectItemLocationIndex", None)
+   if rustIndex is not None and isinstance(scan.parsedSave, sav_parse.ParsedSave):
+      return rustIndex(scan.parsedSave)
+   return _collectItemLocationIndex(scan.objectsByInstanceName)
 
 def _collectItemLocationIndex(objectsByInstanceName: dict) -> dict:
    # One O(n) pass across every object in the save (not just known storage
@@ -3292,21 +3375,19 @@ def _humanizeEnumValue(rawEnumValue):
    valueName = re.sub(r"^[A-Z0-9]+_", "", valueName)
    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", valueName)
 
-def collectGameSettings(levels) -> dict:
+def collectGameSettings(scan) -> dict:
    # Game-mode settings chosen at world creation (Purity Modifier, Node
    # Randomization, the cost-scaling sliders) live as plain properties on the
    # session's one BP_GameState_C actor -- not anywhere else in the save.
    # mPartsCostMultiplier (recipe cost) and mSpacePartsCostMultiplier (Space
    # Elevator parts cost) exist alongside these but aren't surfaced here.
-   for level in levels:
-      for object in level.objects:
-         if GAME_STATE_TYPE_PATH_SUBSTRING in object.instanceName:
-            properties = object.properties
-            return {
-               "powerCostMultiplier": sav_parse.getPropertyValue(properties, "mEnergyCostMultiplier"),
-               "nodePuritySettings": _humanizeEnumValue(sav_parse.getPropertyValue(properties, "mNodePuritySettings")),
-               "nodeRandomization": _humanizeEnumValue(sav_parse.getPropertyValue(properties, "mNodeRandomization")),
-            }
+   for object in scan.gameStateObjects: # first match, same as the old early-returning scan
+      properties = object.properties
+      return {
+         "powerCostMultiplier": sav_parse.getPropertyValue(properties, "mEnergyCostMultiplier"),
+         "nodePuritySettings": _humanizeEnumValue(sav_parse.getPropertyValue(properties, "mNodePuritySettings")),
+         "nodeRandomization": _humanizeEnumValue(sav_parse.getPropertyValue(properties, "mNodeRandomization")),
+      }
    return {}
 
 # The single canonical typePath used to place each whole-line kind in the
@@ -3331,38 +3412,74 @@ def _annotateLineKinds(lines: dict) -> dict:
    return lines
 
 def buildMapPayload(parsedSave: sav_parse.ParsedSave) -> dict:
-   return {
-      "mapSize": MAP_SIZE,
-      "sessionName": parsedSave.saveFileInfo.sessionName,
-      "saveDatetime": parsedSave.saveFileInfo.saveDatetime.strftime("%Y-%m-%d %H:%M:%S"),
-      "buildingCategories": collectBuildings(parsedSave.levels),
-      # Build-menu category/subcategory order for the frontend's filter tree.
-      "menuOrder": BUILD_MENU_ORDER,
-      "resourceNodes": collectResourceNodes(parsedSave.levels),
-      "collectables": collectCollectables(parsedSave.levels),
-      "hardDrives": collectHardDrives(parsedSave.levels),
-      "players": collectPlayers(parsedSave.levels),
-      "creatures": collectCreatures(parsedSave.levels),
-      "vehicles": collectVehicles(parsedSave.levels),
-      "trains": collectTrains(parsedSave.levels),
-      "droppedItems": collectDroppedItems(parsedSave.levels),
-      "hub": collectHub(parsedSave.levels),
-      "gameSettings": collectGameSettings(parsedSave.levels),
-      "itemCatalog": listSearchableItems(),
-      "dimensionalDepot": collectDimensionalDepotContents(parsedSave.levels),
+   # Compatibility wrapper -- the server goes through buildAll() so the scan
+   # is shared with buildSaveIndex.
+   return _buildMapPayload(parsedSave, SaveScan(parsedSave))
+
+def _payloadSteps(parsedSave, scan: SaveScan) -> list:
+   # (key, compute) pairs run in order by _buildMapPayload; each completed
+   # step ticks the build progress bar (see buildAll).
+   return [
+      ("buildingCategories", lambda: collectBuildings(scan)),
+      ("resourceNodes",      lambda: collectResourceNodes(scan)),
+      ("collectables",       lambda: scan.collectables()),
+      ("hardDrives",         lambda: collectHardDrives(scan)),
+      ("players",            lambda: collectPlayers(scan)),
+      ("creatures",          lambda: collectCreatures(scan)),
+      ("vehicles",           lambda: collectVehicles(scan)),
+      ("trains",             lambda: collectTrains(scan)),
+      ("droppedItems",       lambda: collectDroppedItems(scan)),
+      ("hub",                lambda: collectHub(scan)),
+      ("gameSettings",       lambda: collectGameSettings(scan)),
+      ("dimensionalDepot",   lambda: scan.depotContents()),
       # MAM/alternate-recipe/AWESOME-Shop/HUB-milestone/Space-Elevator
       # progression -- the top bar's progression buttons (see progression.js).
-      "progression": collectProgression(parsedSave.levels),
-      "lines": _annotateLineKinds({
-         "powerLines": collectPowerLines(parsedSave.levels),
-         "railroads": collectSplinePaths(parsedSave.levels, RAILROAD_SEGMENTS),
-         "hypertubes": collectSplinePaths(parsedSave.levels, HYPERTUBE_SEGMENTS),
-      }),
+      ("progression",        lambda: collectProgression(scan)),
+      ("lines",              lambda: _annotateLineKinds({
+         "powerLines": collectPowerLines(scan),
+         "railroads": collectSplinePaths(scan, RAILROAD_SEGMENTS),
+         "hypertubes": collectSplinePaths(scan, HYPERTUBE_SEGMENTS),
+      })),
       # Belts, pipes, and vehicle paths are split per mark/tier (e.g. Belt
       # Mk.1..Mk.6, Truck/Explorer/Universal Vehicle Path) so each is
       # independently toggleable -- see the frontend's Conveyor Belts/Pipelines/
       # Vehicle Paths groups.
-      "belts": collectSplinePathGroups(parsedSave.levels, CONVEYOR_BELT_ONLY_TYPE_PATHS),
-      "pipes": collectSplinePathGroups(parsedSave.levels, PIPELINE_SEGMENTS),
-      "vehiclePaths": collectSplinePathGroups(parsedSave.levels, VEHICLE_PATH_SEGMENTS, splinePropertyName="mSplinePoints"),
+      ("belts",              lambda: collectSplinePathGroups(scan, CONVEYOR_BELT_ONLY_TYPE_PATHS)),
+      ("pipes",              lambda: collectSplinePathGroups(scan, PIPELINE_SEGMENTS)),
+      ("vehiclePaths",       lambda: collectSplinePathGroups(scan, VEHICLE_PATH_SEGMENTS, splinePropertyName="mSplinePoints")),
+   ]
+
+def _buildMapPayload(parsedSave, scan: SaveScan, stepDone=None) -> dict:
+   payload = {
+      "mapSize": MAP_SIZE,
+      "sessionName": parsedSave.saveFileInfo.sessionName,
+      "saveDatetime": parsedSave.saveFileInfo.saveDatetime.strftime("%Y-%m-%d %H:%M:%S"),
+      # Build-menu category/subcategory order for the frontend's filter tree.
+      "menuOrder": BUILD_MENU_ORDER,
+      "itemCatalog": listSearchableItems(),
    }
+   for (key, compute) in _payloadSteps(parsedSave, scan):
+      payload[key] = compute()
+      if stepDone is not None:
+         stepDone()
+   return payload
+
+# len(_payloadSteps()) without building a scan -- payload steps plus the save
+# index step in buildAll.  Kept in sync by the assertion in buildAll.
+_BUILD_STEP_COUNT = 17 + 1
+
+def buildAll(parsedSave: sav_parse.ParsedSave, progressCallback=None) -> tuple:
+   # The server's load path: payload + save index sharing one SaveScan.
+   # progressCallback(stepsDone, totalSteps) is invoked after each completed
+   # collector so the server's "Building map data" phase can advance.
+   scan = SaveScan(parsedSave)
+   stepsDone = [0]
+   def tick():
+      stepsDone[0] += 1
+      if progressCallback is not None:
+         progressCallback(stepsDone[0], _BUILD_STEP_COUNT)
+   payload = _buildMapPayload(parsedSave, scan, stepDone=tick)
+   saveIndex = _buildSaveIndex(scan)
+   tick()
+   assert stepsDone[0] == _BUILD_STEP_COUNT, "update _BUILD_STEP_COUNT after adding/removing payload steps"
+   return (payload, saveIndex)

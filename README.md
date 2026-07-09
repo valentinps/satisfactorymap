@@ -4,6 +4,8 @@ Interactive web-based map viewer for [Satisfactory](https://www.satisfactorygame
 
 ## Setup
 
+Requires Python 3.10 or newer.
+
 ```bash
 git clone --recurse-submodules https://github.com/valentinps/satisfactorymap.git
 cd satisfactorymap
@@ -14,6 +16,28 @@ If you cloned without `--recurse-submodules`:
 ```bash
 git submodule update --init
 ```
+
+### Fast parser (Rust) — optional but recommended
+
+Save parsing has two interchangeable backends: a Rust one (`rust_parser/` —
+parsing is ~25× faster, and a full 50MB-save load drops from ~70s to ~11s)
+and a pure-Python fallback that needs no extra tooling. The server picks the Rust backend
+automatically when it's built, and otherwise falls back to Python with a
+notice on stderr — everything works either way, just slower.
+
+To build the Rust backend you need a Rust toolchain
+([rustup](https://rustup.rs/); on Windows also the Visual Studio Build Tools
+"Desktop development with C++" workload) and [maturin](https://www.maturin.rs/)
+in the same Python environment the server runs in:
+
+```bash
+pip install maturin
+cd rust_parser
+maturin develop --release
+```
+
+`SAV_PARSE_IMPL=rust|py` forces a specific backend (e.g. for comparisons);
+see `rust_parser/README.md` for design notes and parity/benchmark tooling.
 
 The repo does not ship the game-derived data (item/building JSONs, icons, the
 map image) — it's extracted from the game's own files and too large/derivative
@@ -53,6 +77,8 @@ Each restart lands on the mode-selection page; it does not remember your last ch
 | `game_data/generated/` | *(generated)* item/building/recipe/schematic JSONs + `map_highres.png` |
 | `parser/` | upstream save parser (git submodule) |
 | `patches/` | local overrides of parser files (fixes not yet merged upstream) |
+| `rust_parser/` | Rust (PyO3) rewrite of the save parser — optional fast backend, see Setup |
+| `tools/` | parser parity gates (`diff_parsers.py`, `diff_payload.py`) + benchmarks (`bench_parse.py`) |
 
 Everything marked *(generated)* is git-ignored and produced by the steps
 below — or restored from an archive via `package_game_data.py unpack`.
@@ -132,9 +158,16 @@ py game_data/package_game_data.py unpack game_data.zip
 
 ## Parser dependency
 
-Save file parsing is handled by [GreyHak/sat_sav_parse](https://github.com/GreyHak/sat_sav_parse), included as a git submodule at `parser/`.
+Save file parsing is based on [GreyHak/sat_sav_parse](https://github.com/GreyHak/sat_sav_parse), included as a git submodule at `parser/`.
 
 `patches/sav_parse.py` overrides one file from the submodule with a fix not yet merged upstream (TextProperty parsing when `isTextCultureInvariant` is unset).
+
+`map/sav_parse_shim.py` sits between the server and the parser: it exposes the
+`sav_parse` API backed by the Rust rewrite (`rust_parser/`, see Setup) when
+that's built, and by `patches/sav_parse.py` otherwise. The Python parser
+remains the format reference — any change to it must be mirrored in the Rust
+parser and validated with `tools/diff_parsers.py` / `tools/diff_payload.py`
+(see `rust_parser/README.md`).
 
 To update the parser submodule to a newer upstream commit:
 ```bash

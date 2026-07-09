@@ -25,7 +25,7 @@ REPO_ROOT = os.path.dirname(_MAP_DIR)
 sys.path.insert(0, os.path.join(REPO_ROOT, "parser"))   # upstream parser submodule
 sys.path.insert(0, os.path.join(REPO_ROOT, "patches"))  # local fixes not yet merged upstream
 
-import sav_parse
+import sav_parse_shim as sav_parse  # Rust parser when available, else patches/sav_parse.py
 import sav_map_data
 
 STATIC_DIR       = os.path.join(_MAP_DIR, "static", "map")
@@ -355,6 +355,23 @@ def apiSftpSync():
    threading.Thread(target=sftpSync, args=(config,), daemon=True).start()
    return flask.jsonify({"status": "started"})
 
+# orjson serializes the ~40-160MB map payload several times faster than
+# flask.jsonify's stdlib json; optional dependency, stdlib fallback below.
+# (orjson rejects NaN/Inf where stdlib would emit them -- the payload never
+# contains either, verified against the 50MB save.)
+try:
+   import orjson as _orjson
+except ImportError:
+   _orjson = None
+
+def _jsonPayloadResponse(payload):
+   if _orjson is not None:
+      # OPT_NON_STR_KEYS: tiltedFootprints is keyed by int point index --
+      # stdlib json coerces those to strings, so orjson must too.
+      return flask.Response(_orjson.dumps(payload, option=_orjson.OPT_NON_STR_KEYS),
+                            mimetype="application/json")
+   return flask.jsonify(payload)
+
 @app.route("/api/map-data")
 def apiMapData():
    filename = flask.request.args.get("file")
@@ -370,14 +387,16 @@ def apiMapData():
             loadProgress.update({"phase": None, "current": 0, "total": 1})
             return flask.jsonify({"error": str(error)}), 500
          loadProgress.update({"phase": "Building map data", "current": 0, "total": 1})
-         newMapData  = sav_map_data.buildMapPayload(parsedSave)
-         newSaveIdx  = sav_map_data.buildSaveIndex(parsedSave)
+         (newMapData, newSaveIdx) = sav_map_data.buildAll(
+            parsedSave,
+            progressCallback=lambda current, total: loadProgress.update(
+               {"phase": "Building map data", "current": current, "total": total}))
          mapDataCache.clear()
          saveIndexCache.clear()
          mapDataCache[cacheKey]  = newMapData
          saveIndexCache[cacheKey] = newSaveIdx
          loadProgress.update({"phase": None, "current": 1, "total": 1})
-   return flask.jsonify(mapDataCache[cacheKey])
+   return _jsonPayloadResponse(mapDataCache[cacheKey])
 
 @app.route("/api/load-progress")
 def apiLoadProgress():
