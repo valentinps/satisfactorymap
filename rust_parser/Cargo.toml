@@ -1,0 +1,17 @@
+[package]
+name = "sav_parse_rs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sav_parse_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["abi3-py312", "extension-module"] }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+rayon = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

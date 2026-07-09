@@ -25,7 +25,7 @@ REPO_ROOT = os.path.dirname(_MAP_DIR)
 sys.path.insert(0, os.path.join(REPO_ROOT, "parser"))   # upstream parser submodule
 sys.path.insert(0, os.path.join(REPO_ROOT, "patches"))  # local fixes not yet merged upstream
 
-import sav_parse
+import sav_parse_shim as sav_parse  # Rust parser when available, else patches/sav_parse.py
 import sav_map_data
 
 STATIC_DIR       = os.path.join(_MAP_DIR, "static", "map")

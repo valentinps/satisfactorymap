@@ -17,7 +17,7 @@ _PARSER_DIR = os.path.join(_REPO_ROOT, "parser")
 sys.path.insert(0, _PARSER_DIR)                          # sav_parse, sav_to_html, sav_data
 sys.path.insert(0, os.path.join(_REPO_ROOT, "patches"))  # local fixes not yet merged upstream
 
-import sav_parse
+import sav_parse_shim as sav_parse  # Rust parser when available, else patches/sav_parse.py
 import sav_to_html
 import sav_data.data
 import sav_data.resourcePurity
@@ -1909,8 +1909,59 @@ def _collectSpaceElevatorState(levels) -> dict:
       "targetCost": targetCost,
    }
 
+def _getCrashSiteState(levels):
+   # Ported from sav_to_html.getCrashSiteState: that version type-checks
+   # headers with isinstance(h, sav_parse.ActorHeader) against the PYTHON
+   # parser's class, which the Rust-backed header objects can't satisfy.
+   # Same logic, duck-typed on the typePath attribute instead.
+   crashSitesNotOpened = list(sav_data.crashSites.CRASH_SITES.keys())
+   crashSitesInSave = {}
+   crashSitesDismantled = []
+   for level in levels:
+      for header in level.actorAndComponentObjectHeaders:
+         if getattr(header, "typePath", None) == sav_data.data.CRASH_SITE:
+            crashSitesInSave[header.instanceName] = header.position
+      if level.collectables1 is not None:
+         for collectable in level.collectables1:  # collectables1 has all dismantled sites.  collectables2 can be a subset of collectables1.
+            if collectable.pathName in sav_data.crashSites.CRASH_SITES:
+               crashSitesDismantled.append(collectable.pathName)
+               crashSitesNotOpened.remove(collectable.pathName)
+
+   crashSitesOpenAndEmpty = []
+   crashSitesOpenWithDrive = []
+   crashSiteInventoryPathName = {} # Maps inventory instance path name to crash site instance path name
+   for level in levels:
+      for object in level.objects:
+         if object.instanceName in sav_data.crashSites.CRASH_SITES:
+            hasBeenOpened = sav_parse.getPropertyValue(object.properties, "mHasBeenOpened")
+            if hasBeenOpened is not None and hasBeenOpened:
+               crashSitesNotOpened.remove(object.instanceName)
+               hasBeenLooted = sav_parse.getPropertyValue(object.properties, "mHasBeenLooted")
+               if hasBeenLooted is None:
+                  crashSiteInventoryPathName[f"{object.instanceName}.Inventory2"] = object.instanceName # v1.0 doesn't use the "mInventory" property anymore.  Any open, but unlooted droppods from Update 8 will be empty in v1.0.
+                  hasBeenLooted = True # If inventory isn't found, the droppod has been looted, so assuming that here.
+               if hasBeenLooted:
+                  crashSitesOpenAndEmpty.append(object.instanceName)
+               else: # This case has not been observed
+                  crashSitesOpenWithDrive.append(object.instanceName)
+
+   for level in levels:
+      for object in level.objects:
+         if object.instanceName in crashSiteInventoryPathName:
+            inventoryStacks = sav_parse.getPropertyValue(object.properties, "mInventoryStacks")
+            if inventoryStacks is not None:
+               item = sav_parse.getPropertyValue(inventoryStacks[0][0], "Item")
+               if item is not None:
+                  if len(item) == 2 and isinstance(item[0], str):
+                     if item[0] == "/Game/FactoryGame/Resource/Environment/CrashSites/Desc_HardDrive.Desc_HardDrive_C" and item[1] != 0:
+                        crashSiteInstancePathName = crashSiteInventoryPathName[object.instanceName]
+                        crashSitesOpenAndEmpty.remove(crashSiteInstancePathName)
+                        crashSitesOpenWithDrive.append(crashSiteInstancePathName)
+
+   return crashSitesInSave, crashSitesNotOpened, crashSitesOpenWithDrive, crashSitesOpenAndEmpty, crashSitesDismantled
+
 def collectHardDrives(levels) -> dict:
-   (_, notOpened, openWithDrive, openAndEmpty, dismantled) = sav_to_html.getCrashSiteState(levels)
+   (_, notOpened, openWithDrive, openAndEmpty, dismantled) = _getCrashSiteState(levels)
 
    def bucketFor(instanceNames):
       points = []
