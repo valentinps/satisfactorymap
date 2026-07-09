@@ -3416,44 +3416,70 @@ def buildMapPayload(parsedSave: sav_parse.ParsedSave) -> dict:
    # is shared with buildSaveIndex.
    return _buildMapPayload(parsedSave, SaveScan(parsedSave))
 
-def _buildMapPayload(parsedSave, scan: SaveScan) -> dict:
-   return {
-      "mapSize": MAP_SIZE,
-      "sessionName": parsedSave.saveFileInfo.sessionName,
-      "saveDatetime": parsedSave.saveFileInfo.saveDatetime.strftime("%Y-%m-%d %H:%M:%S"),
-      "buildingCategories": collectBuildings(scan),
-      # Build-menu category/subcategory order for the frontend's filter tree.
-      "menuOrder": BUILD_MENU_ORDER,
-      "resourceNodes": collectResourceNodes(scan),
-      "collectables": scan.collectables(),
-      "hardDrives": collectHardDrives(scan),
-      "players": collectPlayers(scan),
-      "creatures": collectCreatures(scan),
-      "vehicles": collectVehicles(scan),
-      "trains": collectTrains(scan),
-      "droppedItems": collectDroppedItems(scan),
-      "hub": collectHub(scan),
-      "gameSettings": collectGameSettings(scan),
-      "itemCatalog": listSearchableItems(),
-      "dimensionalDepot": scan.depotContents(),
+def _payloadSteps(parsedSave, scan: SaveScan) -> list:
+   # (key, compute) pairs run in order by _buildMapPayload; each completed
+   # step ticks the build progress bar (see buildAll).
+   return [
+      ("buildingCategories", lambda: collectBuildings(scan)),
+      ("resourceNodes",      lambda: collectResourceNodes(scan)),
+      ("collectables",       lambda: scan.collectables()),
+      ("hardDrives",         lambda: collectHardDrives(scan)),
+      ("players",            lambda: collectPlayers(scan)),
+      ("creatures",          lambda: collectCreatures(scan)),
+      ("vehicles",           lambda: collectVehicles(scan)),
+      ("trains",             lambda: collectTrains(scan)),
+      ("droppedItems",       lambda: collectDroppedItems(scan)),
+      ("hub",                lambda: collectHub(scan)),
+      ("gameSettings",       lambda: collectGameSettings(scan)),
+      ("dimensionalDepot",   lambda: scan.depotContents()),
       # MAM/alternate-recipe/AWESOME-Shop/HUB-milestone/Space-Elevator
       # progression -- the top bar's progression buttons (see progression.js).
-      "progression": collectProgression(scan),
-      "lines": _annotateLineKinds({
+      ("progression",        lambda: collectProgression(scan)),
+      ("lines",              lambda: _annotateLineKinds({
          "powerLines": collectPowerLines(scan),
          "railroads": collectSplinePaths(scan, RAILROAD_SEGMENTS),
          "hypertubes": collectSplinePaths(scan, HYPERTUBE_SEGMENTS),
-      }),
+      })),
       # Belts, pipes, and vehicle paths are split per mark/tier (e.g. Belt
       # Mk.1..Mk.6, Truck/Explorer/Universal Vehicle Path) so each is
       # independently toggleable -- see the frontend's Conveyor Belts/Pipelines/
       # Vehicle Paths groups.
-      "belts": collectSplinePathGroups(scan, CONVEYOR_BELT_ONLY_TYPE_PATHS),
-      "pipes": collectSplinePathGroups(scan, PIPELINE_SEGMENTS),
-      "vehiclePaths": collectSplinePathGroups(scan, VEHICLE_PATH_SEGMENTS, splinePropertyName="mSplinePoints"),
-   }
+      ("belts",              lambda: collectSplinePathGroups(scan, CONVEYOR_BELT_ONLY_TYPE_PATHS)),
+      ("pipes",              lambda: collectSplinePathGroups(scan, PIPELINE_SEGMENTS)),
+      ("vehiclePaths",       lambda: collectSplinePathGroups(scan, VEHICLE_PATH_SEGMENTS, splinePropertyName="mSplinePoints")),
+   ]
 
-def buildAll(parsedSave: sav_parse.ParsedSave) -> tuple:
+def _buildMapPayload(parsedSave, scan: SaveScan, stepDone=None) -> dict:
+   payload = {
+      "mapSize": MAP_SIZE,
+      "sessionName": parsedSave.saveFileInfo.sessionName,
+      "saveDatetime": parsedSave.saveFileInfo.saveDatetime.strftime("%Y-%m-%d %H:%M:%S"),
+      # Build-menu category/subcategory order for the frontend's filter tree.
+      "menuOrder": BUILD_MENU_ORDER,
+      "itemCatalog": listSearchableItems(),
+   }
+   for (key, compute) in _payloadSteps(parsedSave, scan):
+      payload[key] = compute()
+      if stepDone is not None:
+         stepDone()
+   return payload
+
+# len(_payloadSteps()) without building a scan -- payload steps plus the save
+# index step in buildAll.  Kept in sync by the assertion in buildAll.
+_BUILD_STEP_COUNT = 17 + 1
+
+def buildAll(parsedSave: sav_parse.ParsedSave, progressCallback=None) -> tuple:
    # The server's load path: payload + save index sharing one SaveScan.
+   # progressCallback(stepsDone, totalSteps) is invoked after each completed
+   # collector so the server's "Building map data" phase can advance.
    scan = SaveScan(parsedSave)
-   return (_buildMapPayload(parsedSave, scan), _buildSaveIndex(scan))
+   stepsDone = [0]
+   def tick():
+      stepsDone[0] += 1
+      if progressCallback is not None:
+         progressCallback(stepsDone[0], _BUILD_STEP_COUNT)
+   payload = _buildMapPayload(parsedSave, scan, stepDone=tick)
+   saveIndex = _buildSaveIndex(scan)
+   tick()
+   assert stepsDone[0] == _BUILD_STEP_COUNT, "update _BUILD_STEP_COUNT after adding/removing payload steps"
+   return (payload, saveIndex)

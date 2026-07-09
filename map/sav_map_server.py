@@ -387,7 +387,10 @@ def apiMapData():
             loadProgress.update({"phase": None, "current": 0, "total": 1})
             return flask.jsonify({"error": str(error)}), 500
          loadProgress.update({"phase": "Building map data", "current": 0, "total": 1})
-         (newMapData, newSaveIdx) = sav_map_data.buildAll(parsedSave)
+         (newMapData, newSaveIdx) = sav_map_data.buildAll(
+            parsedSave,
+            progressCallback=lambda current, total: loadProgress.update(
+               {"phase": "Building map data", "current": current, "total": total}))
          mapDataCache.clear()
          saveIndexCache.clear()
          mapDataCache[cacheKey]  = newMapData

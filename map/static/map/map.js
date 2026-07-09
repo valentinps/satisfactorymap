@@ -581,18 +581,18 @@ var MapApp = {};
       if (pts.length === 0) {
         return;
       }
-      var img = _getIcon(bucket.iconUrl);
-      if (!img.complete || img.naturalWidth === 0) {
-        return; // Not loaded yet -- _getIcon's onload will trigger a redraw.
+      var sprite = _getPinSprite(bucket, radius);
+      if (!sprite) {
+        return; // Icon not loaded yet -- _getIcon's onload will trigger a redraw.
       }
       var stride = bucket.pointStride;
       var altIdx = stride - 1;
-      var tailLength = radius * 0.7; // Circle-bottom-to-tip distance -- keep in sync with _drawSinglePin, whose circleY the occ dedup below has to match.
+      var tailLength = radius * 0.7; // Circle-bottom-to-tip distance -- keep in sync with _paintPin, whose circleY the occ dedup below has to match.
       var prevAlpha = ctx.globalAlpha;
       ctx.globalAlpha = bucket.iconOpacity !== undefined ? bucket.iconOpacity : 1;
       // Pins whose centers land within the same 2x2px cell are visually one
       // pin (the circle alone is 2*radius >= 32px across) -- drawing the
-      // pile costs a fill+stroke+drawImage per pin for zero visible change.
+      // pile costs a sprite blit per pin for zero visible change.
       // Dense clusters (e.g. a field of uncollected pickups viewed zoomed
       // out) collapse to one draw per occupied cell. Same stamp mechanism
       // as the rect paths -- see _occEnsure.
@@ -624,23 +624,16 @@ var MapApp = {};
           occ[oi] = stamp;
         }
 
-        this._drawSinglePin(ctx, bucket, pointIdx, affine, radius);
+        ctx.drawImage(sprite.canvas, tipX - sprite.anchorX, tipY - sprite.anchorY, sprite.width, sprite.height);
       }
       ctx.globalAlpha = prevAlpha;
     },
 
-    // One pin's full geometry -- tail, circle, glyph -- shared between
-    // _drawIconBucket's bulk pass and _redrawHighlight (which redraws a
-    // vehicle/train pin on top of its own highlighted box fill, where the
-    // bulk-canvas pin would otherwise be completely covered).
-    // Tail and circle are filled as two SEPARATE fill() calls rather
-    // than one combined path -- combining them into a single path and
-    // relying on the nonzero winding rule to merge the overlap looked
-    // right in theory, but the tail's winding direction ended up
-    // opposite the circle's there, so the rule canceled the overlap out
-    // to a hole instead of solid fill. Two plain opaque white fills of
-    // the same color have no such winding interaction: painting white
-    // over white in the overlap is still just white.
+    // One pin, painted directly (no sprite) -- used by _redrawHighlight,
+    // which redraws a vehicle/train pin on top of its own highlighted box
+    // fill, where the bulk-canvas pin would otherwise be completely covered.
+    // The bulk pass in _drawIconBucket blits pre-baked sprites instead --
+    // see _getPinSprite.
     // outlineColor overrides the circle's usual bucket-color stroke -- the
     // highlight path passes white, since a vehicle pin's circle is the same
     // orange as the highlighted box fill it's being redrawn onto and would
@@ -649,34 +642,11 @@ var MapApp = {};
       var p = idx * bucket.pointStride;
       var tipX = affine.originX + bucket.points[p] * affine.scaleX;
       var tipY = affine.originY + bucket.points[p + 1] * affine.scaleY;
-      var tailLength = radius * 0.7;
-      var tailHalfWidth = radius * 0.5;
-      var tailBaseInset = radius * 0.6;
-      var imageSize = radius * 1.3;
-      var circleX = tipX;
-      var circleY = tipY - radius - tailLength;
-
-      var fillColor = bucket.pinFillColor || "#ffffff";
-      ctx.beginPath();
-      ctx.moveTo(circleX - tailHalfWidth, circleY + tailBaseInset);
-      ctx.lineTo(tipX, tipY);
-      ctx.lineTo(circleX + tailHalfWidth, circleY + tailBaseInset);
-      ctx.closePath();
-      ctx.fillStyle = fillColor;
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.arc(circleX, circleY, radius, 0, Math.PI * 2);
-      ctx.fillStyle = fillColor;
-      ctx.fill();
-      ctx.strokeStyle = outlineColor || bucket.color || "#999999";
-      ctx.lineWidth = outlineColor ? 2 : 1.25;
-      ctx.stroke();
-
-      var img = _getIcon(bucket.iconUrl);
-      if (img.complete && img.naturalWidth > 0) {
-        ctx.drawImage(img, circleX - imageSize / 2, circleY - imageSize / 2, imageSize, imageSize);
-      }
+      _paintPin(ctx, tipX, tipY, radius,
+                bucket.pinFillColor || "#ffffff",
+                outlineColor || bucket.color || "#999999",
+                outlineColor ? 2 : 1.25,
+                _getIcon(bucket.iconUrl));
     },
 
     _drawCircleBucket: function(ctx, bucket, affine, minX, maxX, minY, maxY, radius, altMin, altMax) {
@@ -1699,6 +1669,87 @@ var MapApp = {};
     img.src = url;
     _iconCache[url] = img;
     return img;
+  }
+
+  // One pin's full geometry -- tail, circle, glyph -- with the tip landing
+  // exactly on (tipX, tipY). Shared between the sprite bake below and
+  // _drawSinglePin (the hover/highlight path, which draws at most a handful
+  // of pins per frame and wants a custom outline color).
+  // Tail and circle are filled as two SEPARATE fill() calls rather
+  // than one combined path -- combining them into a single path and
+  // relying on the nonzero winding rule to merge the overlap looked
+  // right in theory, but the tail's winding direction ended up
+  // opposite the circle's there, so the rule canceled the overlap out
+  // to a hole instead of solid fill. Two plain opaque white fills of
+  // the same color have no such winding interaction: painting white
+  // over white in the overlap is still just white.
+  function _paintPin(ctx, tipX, tipY, radius, fillColor, strokeColor, lineWidth, img) {
+    var tailLength = radius * 0.7;
+    var tailHalfWidth = radius * 0.5;
+    var tailBaseInset = radius * 0.6;
+    var imageSize = radius * 1.3;
+    var circleX = tipX;
+    var circleY = tipY - radius - tailLength;
+
+    ctx.beginPath();
+    ctx.moveTo(circleX - tailHalfWidth, circleY + tailBaseInset);
+    ctx.lineTo(tipX, tipY);
+    ctx.lineTo(circleX + tailHalfWidth, circleY + tailBaseInset);
+    ctx.closePath();
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(circleX, circleY, radius, 0, Math.PI * 2);
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = lineWidth;
+    ctx.stroke();
+
+    if (img.complete && img.naturalWidth > 0) {
+      ctx.drawImage(img, circleX - imageSize / 2, circleY - imageSize / 2, imageSize, imageSize);
+    }
+  }
+
+  // Pre-rendered pin sprites for the bulk icon pass. Painting a pin costs
+  // two path fills, an arc stroke, and a drawImage that downscales a 256px
+  // source PNG to ~20px -- fine for one highlight pin, but the WebGL layer
+  // repaints EVERY visible pin on EVERY frame of a pan (see its step 3), so
+  // a couple thousand collectable/resource pins did all of that per pin per
+  // frame and pans dropped to ~10fps (worse yet software-rendered, where
+  // the downscale and the antialiased arc are pure CPU). Baking each
+  // distinct (icon, radius, colors) combination once -- radius takes one
+  // discrete value per zoom level (_iconRadiusForZoom) -- turns the
+  // per-frame cost into a single small canvas-to-canvas blit per pin.
+  // Sprites bake at devicePixelRatio resolution so hidpi screens keep crisp
+  // pins even though the pin canvas itself is CSS-resolution.
+  var _pinSpriteCache = {};
+  function _getPinSprite(bucket, radius) {
+    var img = _getIcon(bucket.iconUrl);
+    if (!img.complete || img.naturalWidth === 0) {
+      return null; // Not loaded yet -- _getIcon's onload will trigger a redraw.
+    }
+    var fillColor = bucket.pinFillColor || "#ffffff";
+    var strokeColor = bucket.color || "#999999";
+    var key = bucket.iconUrl + "|" + radius + "|" + fillColor + "|" + strokeColor;
+    var sprite = _pinSpriteCache[key];
+    if (sprite) {
+      return sprite;
+    }
+    var pad = 2; // room for the stroke (lineWidth 1.25) plus its antialiasing fringe
+    var width = Math.ceil(radius * 2 + pad * 2);
+    var height = Math.ceil(radius * 2 + radius * 0.7 + pad * 2); // circle + tail
+    var dpr = window.devicePixelRatio || 1;
+    var canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(width * dpr);
+    canvas.height = Math.ceil(height * dpr);
+    var ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    _paintPin(ctx, width / 2, height - pad, radius, fillColor, strokeColor, 1.25, img);
+    sprite = { canvas: canvas, width: width, height: height, anchorX: width / 2, anchorY: height - pad };
+    _pinSpriteCache[key] = sprite;
+    return sprite;
   }
 
   // True if this specific point/line index was individually hidden via a
