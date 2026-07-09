@@ -43,17 +43,19 @@
   // under any per-frame filtering (visibility/altitude/hidden are shader
   // gates, so they only ever drop instances, never reorder them).
   var Z_SORT_BINS = 4096;
-  // Segments per curved Hermite span when flattening stride-7 polylines at
-  // load. 8 matches the tessellation hitTest already uses for hover distance
-  // (map.js _pointToBezierDistance), so the drawn curve and the hover target
-  // agree; residual deviation is ~1px at max zoom for the tightest belt bend.
-  var CURVE_SEGMENTS = 8;
-  // A span whose Bezier control points both sit within this many map px of
-  // its chord is drawn as one straight segment (the curve can't deviate from
-  // the chord by more than ~3/4 of that) -- most belt/pipe spans are
-  // straight runs, and this keeps them 1 segment instead of 8. 0.5 map px is
-  // sub-pixel error up to zoom 1 and ~0.4px at the 2.5px line width beyond.
-  var CURVE_FLAT_TOL_MAP_PX = 0.5;
+  // Flattening curved stride-7 spans happens once at load, so the segment
+  // count must be good enough for EVERY zoom: the target is the residual
+  // chord-vs-curve error staying under ~half a screen px at maxZoom 7,
+  // where 1 map px = 2^7 screen px. (The old fixed 0.5-map-px flatness
+  // cutoff drew tight pipe elbows as one straight chord -- a visible ~45
+  // degree chamfer at high zoom that snapped to the true curve on hover,
+  // because the 2D highlight path draws real beziers.)
+  var CURVE_ERR_MAP_PX = 0.5 / 128;
+  // Cap on sub-chords per span. Straight runs -- the overwhelming majority
+  // of belt/pipe spans -- still cost 1 segment (their control points sit on
+  // the chord, so the measured deviation is ~0); only genuinely curved
+  // spans pay for more, proportional to sqrt(curvature).
+  var CURVE_SEGMENTS_MAX = 16;
   // Screen-space size parity with the 2D rect paths (see map.js's
   // SMALL_RECT_SCREEN_PX and the 0.75px floor in _drawRectBucketsAllSmall):
   // below 4px on both axes a rect draws axis-aligned with its half extents
@@ -329,16 +331,27 @@
     return Math.sqrt(dx * dx + dy * dy);
   }
 
-  // True when the stride-7 span starting at byte-offset i in pts is close
-  // enough to straight to draw as one chord -- mirrors the flatness test
-  // hitTest's _pointToBezierDistance uses, in the same map-px space.
-  function _spanIsFlat(pts, i, stride) {
+  // Sub-chord count (1..CURVE_SEGMENTS_MAX) for the stride-7 span starting
+  // at offset i in pts. The Bezier's deviation from its chord is at most
+  // 3/4 of the control points' (same bound _pointToBezierDistance's comment
+  // in map.js relies on), and flattening a curve of deviation d into n
+  // equal-t sub-chords leaves a residual error of about d/n^2 -- so
+  // n = sqrt(d / CURVE_ERR_MAP_PX) keeps the drawn polyline within
+  // CURVE_ERR_MAP_PX of the true curve. Must be deterministic: the counting
+  // pass, _writeLineSegments, and _patchHiddenLine all rely on it returning
+  // the same answer for the same span so buffer offsets line up.
+  function _spanSegments(pts, i, stride) {
     var ax = pts[i], ay = pts[i + 1];
     var bx = pts[i + stride], by = pts[i + stride + 1];
     var c1x = ax + pts[i + 4] / 3, c1y = ay + pts[i + 5] / 3;               // prev leaveTangent
     var c2x = bx - pts[i + stride + 2] / 3, c2y = by - pts[i + stride + 3] / 3; // cur arriveTangent
-    return _distPointToSegment(c1x, c1y, ax, ay, bx, by) < CURVE_FLAT_TOL_MAP_PX &&
-           _distPointToSegment(c2x, c2y, ax, ay, bx, by) < CURVE_FLAT_TOL_MAP_PX;
+    var d = 0.75 * Math.max(_distPointToSegment(c1x, c1y, ax, ay, bx, by),
+                            _distPointToSegment(c2x, c2y, ax, ay, bx, by));
+    if (d <= CURVE_ERR_MAP_PX) {
+      return 1;
+    }
+    var n = Math.ceil(Math.sqrt(d / CURVE_ERR_MAP_PX));
+    return n < CURVE_SEGMENTS_MAX ? n : CURVE_SEGMENTS_MAX;
   }
 
   var WebGLBucketedLayer = MapApp.BucketedCanvasLayer.extend({
@@ -979,7 +992,7 @@
               continue; // single-vertex line: nothing to draw
             }
             for (k = 0; k + stride < pts.length; k += stride) {
-              segs += (stride >= 7 && !_spanIsFlat(pts, k, stride)) ? CURVE_SEGMENTS : 1;
+              segs += (stride >= 7) ? _spanSegments(pts, k, stride) : 1;
             }
           }
           segStart[bucket.lines.length] = segs;
@@ -1098,10 +1111,10 @@
 
     // Writes one polyline's segments (4 expanded vertex records each) into
     // the line stream starting at segment slot `seg`; returns the next free
-    // slot. Must make the same flat-vs-curved decision as the counting pass
-    // (both call _spanIsFlat) so offsets line up. Curved spans get
-    // CURVE_SEGMENTS sub-chords of the same cubic Bezier the 2D path hands
-    // to bezierCurveTo (Hermite tangents / 3).
+    // slot. Must make the same segment-count decision as the counting pass
+    // (both call _spanSegments) so offsets line up. Curved spans get
+    // sub-chords of the same cubic Bezier the 2D path hands to
+    // bezierCurveTo (Hermite tangents / 3).
     _writeLineSegments: function(f32, u8, seg, pts, stride, zmin, zmax) {
       function emit(ax, ay, bx, by) {
         for (var k = 0; k < 4; k++) {
@@ -1117,12 +1130,13 @@
       var prevX = pts[0], prevY = pts[1];
       for (var k = 0; k + stride < pts.length; k += stride) {
         var bx = pts[k + stride], by = pts[k + stride + 1];
-        if (stride >= 7 && !_spanIsFlat(pts, k, stride)) {
+        var n = (stride >= 7) ? _spanSegments(pts, k, stride) : 1;
+        if (n > 1) {
           var ax = pts[k], ay = pts[k + 1];
           var c1x = ax + pts[k + 4] / 3, c1y = ay + pts[k + 5] / 3;
           var c2x = bx - pts[k + stride + 2] / 3, c2y = by - pts[k + stride + 3] / 3;
-          for (var s = 1; s <= CURVE_SEGMENTS; s++) {
-            var t = s / CURVE_SEGMENTS;
+          for (var s = 1; s <= n; s++) {
+            var t = s / n;
             var mt = 1 - t;
             var w0 = mt * mt * mt, w1 = 3 * mt * mt * t, w2 = 3 * mt * t * t, w3 = t * t * t;
             var cx = w0 * ax + w1 * c1x + w2 * c2x + w3 * bx;

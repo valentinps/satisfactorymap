@@ -8,4 +8,6 @@ Buildings icons: add icons of buildings instead of colored dots in the filter li
 
 Stacking belt issue
 
-Change bottom panel on "Manual upload mode" for quick new upload/save drop
+Fix Barrier 90 degrees angle
+
+Investigate "pin" lag

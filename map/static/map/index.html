@@ -88,6 +88,17 @@
             <span class="toggleSlider"></span>
           </label>
         </div>
+        <!-- Manual-upload mode only (see data.js) -- shown in place of the
+             auto-reload toggle above, which is meaningless when new saves
+             can only ever arrive by upload. -->
+        <div id="uploadDropZone" style="display:none" title="Upload a new save file">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14">
+            <path d="M12 15V4m0 0 4 4m-4-4-4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span id="uploadDropText">Drop a .sav here or click to browse</span>
+        </div>
+        <input type="file" id="uploadFileInput" accept=".sav" style="display:none">
         <div id="loadStatus"></div>
         <div id="loadProgressBar"><div id="loadProgressFill"></div></div>
         <div id="totalObjectCount"></div>

@@ -934,6 +934,36 @@ body.panelResizing #categoryDetailColumn {
   transform: translateX(14px);
 }
 
+/* Manual-upload mode's quick upload target (see data.js's
+   enableUploadPanel) -- shown in place of #autoRefreshRow. Dashed outline
+   so it reads as a drop zone rather than yet another button, with the same
+   amber accent as #loadButton on hover/drag since it's the same "bring in a
+   save" action. */
+#uploadDropZone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 9px 8px;
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px dashed #4a4f5a;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#uploadDropZone:hover, #uploadDropZone.drag-over {
+  color: #ffd7ae;
+  border-color: #8a5e2e;
+  background: #3d2d1c;
+}
+
+#uploadDropZone.uploading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
 #loadStatus {
   margin-top: 8px;
   color: #999;

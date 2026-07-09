@@ -111,6 +111,79 @@
       .catch(function() { if (btn) { btn.disabled = false; btn.textContent = "Sync now"; } });
   }
 
+  // Manual-upload mode (see sav_map_server._applyUploadMode) -- the save
+  // folder is the server's own uploads dir, so new saves can only ever come
+  // from the user. The load panel therefore swaps the auto-reload watcher
+  // (which would be polling a folder that never changes on its own) for a
+  // quick upload/drop zone that loads the new save as soon as it lands.
+  var uploadDropZone = document.getElementById("uploadDropZone");
+  var uploadDropText = document.getElementById("uploadDropText");
+  var uploadFileInput = document.getElementById("uploadFileInput");
+  var UPLOAD_DROP_DEFAULT_TEXT = uploadDropText.textContent;
+
+  function resetUploadZone() {
+    uploadDropZone.classList.remove("uploading");
+    uploadDropText.textContent = UPLOAD_DROP_DEFAULT_TEXT;
+  }
+
+  function uploadSaveFile(file) {
+    if (!file) {
+      return;
+    }
+    if (!file.name.endsWith(".sav")) {
+      setStatus("Only .sav save files can be uploaded.");
+      return;
+    }
+    if (loadButton.disabled) {
+      return; // A load is already in flight; don't queue a second parse.
+    }
+    uploadDropZone.classList.add("uploading");
+    uploadDropText.textContent = "Uploading " + file.name + "…";
+    var fd = new FormData();
+    fd.append("file", file);
+    fetch("/api/upload-save", { method: "POST", body: fd })
+      .then(function(r) { return r.json(); })
+      .then(function(res) {
+        resetUploadZone();
+        if (res.error) {
+          setStatus(res.error);
+          return;
+        }
+        loadSaveList(function() {
+          if (res.filename) {
+            saveSelect.value = res.filename;
+          }
+          loadSelectedSave();
+        });
+      })
+      .catch(function(error) {
+        resetUploadZone();
+        setStatus("Upload failed: " + error);
+      });
+  }
+
+  function enableUploadPanel() {
+    document.getElementById("autoRefreshRow").style.display = "none";
+    uploadDropZone.style.display = "flex";
+    uploadDropZone.addEventListener("click", function() { uploadFileInput.click(); });
+    uploadFileInput.addEventListener("change", function() {
+      uploadSaveFile(uploadFileInput.files[0]);
+      uploadFileInput.value = ""; // Re-selecting the same file should fire change again.
+    });
+    uploadDropZone.addEventListener("dragover", function(e) {
+      e.preventDefault();
+      uploadDropZone.classList.add("drag-over");
+    });
+    uploadDropZone.addEventListener("dragleave", function() {
+      uploadDropZone.classList.remove("drag-over");
+    });
+    uploadDropZone.addEventListener("drop", function(e) {
+      e.preventDefault();
+      uploadDropZone.classList.remove("drag-over");
+      uploadSaveFile(e.dataTransfer && e.dataTransfer.files[0]);
+    });
+  }
+
   // Game-mode settings (Power Cost Multiplier, Purity Modifier, Node
   // Randomization) chosen at world creation -- see
   // sav_map_data.collectGameSettings(). These can silently change what
@@ -338,6 +411,9 @@
         sftpEnabled = !!config.sftpEnabled;
         if (sftpEnabled) {
           refreshSftpStatus();
+        }
+        if (config.mode === "upload") {
+          enableUploadPanel();
         }
         loadSaveList(function(saves) {
           if (autoLoadEnabled && saves.length > 0) {
