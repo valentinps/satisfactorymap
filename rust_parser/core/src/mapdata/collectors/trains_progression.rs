@@ -23,29 +23,27 @@ use std::sync::OnceLock;
 /// sav_map_data._textPropertyValue: display string for HistoryType NONE
 /// (list [flags, 255, invariant, s] -> s) or BASE ([flags, 0, ns, key,
 /// value] -> value); anything else -> None.
-fn text_property_value(value: Option<&PropertyValue>, data: &[u8]) -> Option<String> {
+pub(crate) fn text_property_value(value: Option<&PropertyValue>, data: &[u8]) -> Option<String> {
     match value {
-        Some(PropertyValue::Text(TextValue::NoneHistory { s, .. })) => {
-            Some(props::lossy(s.bytes(data)))
-        }
-        Some(PropertyValue::Text(TextValue::Base { value, .. })) => {
-            Some(props::lossy(value.bytes(data)))
-        }
+        // StrRef::to_string is wide-aware (player-typed names like "Skövde"
+        // serialize as UTF-16) -- exactly the str Python sees.
+        Some(PropertyValue::Text(TextValue::NoneHistory { s, .. })) => Some(s.to_string(data)),
+        Some(PropertyValue::Text(TextValue::Base { value, .. })) => Some(value.to_string(data)),
         _ => None,
     }
 }
 
-struct Car<'a> {
-    id: &'a [u8],
-    type_path: &'a [u8],
-    position: [f64; 3],
-    rotation: [f64; 4],
+pub(crate) struct Car<'a> {
+    pub(crate) id: &'a [u8],
+    pub(crate) type_path: &'a [u8],
+    pub(crate) position: [f64; 3],
+    pub(crate) rotation: [f64; 4],
 }
 
-struct Consist<'a> {
-    id: &'a [u8],
-    label: Option<String>,
-    cars: Vec<Car<'a>>,
+pub(crate) struct Consist<'a> {
+    pub(crate) id: &'a [u8],
+    pub(crate) label: Option<String>,
+    pub(crate) cars: Vec<Car<'a>>,
 }
 
 fn is_railcar(type_path: &[u8]) -> bool {
@@ -88,7 +86,7 @@ fn ref_path<'a>(r: Option<&'a ObjectRef>, data: &'a [u8]) -> Option<&'a [u8]> {
 }
 
 /// sav_map_data._trainConsistsFromMaps.
-fn train_consists<'a>(scan: &SaveScan<'a>) -> Vec<Consist<'a>> {
+pub(crate) fn train_consists<'a>(scan: &SaveScan<'a>) -> Vec<Consist<'a>> {
     let data = scan.data();
     let mut trains: Vec<Consist<'a>> = Vec::new();
     let mut claimed: HashSet<&[u8]> = HashSet::new();

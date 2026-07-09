@@ -49,6 +49,15 @@ pub fn float(pl: &PropList, data: &[u8], name: &[u8]) -> Option<f64> {
     }
 }
 
+/// getPropertyValue -> float (a FluidBox struct converts to a bare Python
+/// float; f32 -> f64 like FloatProperty).
+pub fn fluid_box(pl: &PropList, data: &[u8], name: &[u8]) -> Option<f64> {
+    match find_prop(pl, data, name)? {
+        PropertyValue::Struct(StructValue::FluidBox(f)) => Some(*f as f64),
+        _ => None,
+    }
+}
+
 /// getPropertyValue -> bool (BoolProperty converts to Python bool).
 pub fn boolean(pl: &PropList, data: &[u8], name: &[u8]) -> Option<bool> {
     match find_prop(pl, data, name)? {

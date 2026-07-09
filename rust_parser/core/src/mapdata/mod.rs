@@ -9,10 +9,14 @@
 pub mod categories;
 pub mod collectors;
 pub mod consts;
+pub mod describe;
+pub mod display;
 pub mod geometry;
+pub mod index;
 pub mod jsonval;
 pub mod names;
 pub mod props;
+pub mod queries;
 pub mod scan;
 
 use crate::gamedata;

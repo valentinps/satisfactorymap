@@ -87,6 +87,9 @@ pub const LIZARD_DOGGO_TYPE_PATH: &str =
 pub const SPACE_ELEVATOR_TYPE_PATH: &str =
     "/Game/FactoryGame/Buildable/Factory/SpaceElevator/Build_SpaceElevator.Build_SpaceElevator_C";
 pub const GAME_STATE_TYPE_PATH_SUBSTRING: &str = "BP_GameState_C";
+/// Items dropped loose on the ground -- each is its own actor of this one
+/// engine class (sav_map_data.ITEM_PICKUP_TYPE_PATH).
+pub const ITEM_PICKUP_TYPE_PATH: &str = "/Script/FactoryGame.FGItemPickup_Spawnable";
 
 pub fn railcar_type_paths() -> [&'static str; 2] {
     [LOCOMOTIVE_TYPE_PATH, FREIGHT_WAGON_TYPE_PATH]

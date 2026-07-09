@@ -471,7 +471,7 @@ pub fn collect_hard_drives(scan: &SaveScan) -> Value {
 
 /// Items dropped loose on the ground -- each is its own actor of this one
 /// engine class.
-const ITEM_PICKUP_TYPE_PATH: &str = "/Script/FactoryGame.FGItemPickup_Spawnable";
+use crate::mapdata::consts::ITEM_PICKUP_TYPE_PATH;
 
 /// _itemIconFilename: the ClassName-keyed icon file under
 /// map/static/map/icons/items/ (see game_data/copy_icons.py), or null when no
@@ -498,7 +498,9 @@ fn short_name_str(path: &str) -> &str {
 /// isn't live in the save as an actor (visited areas) and isn't recorded as
 /// collected in either collectables list. Yields (itemShortName, quantity,
 /// position, instanceName) in catalog order.
-fn uncollected_catalog_drops(scan: &SaveScan) -> Vec<(&'static str, i64, [f64; 3], &'static str)> {
+pub(crate) fn uncollected_catalog_drops(
+    scan: &SaveScan,
+) -> Vec<(&'static str, i64, [f64; 3], &'static str)> {
     let data = scan.data();
     let free_dropped_items = &gamedata::get().free_dropped_items;
     let present_actors: HashSet<&[u8]> = scan

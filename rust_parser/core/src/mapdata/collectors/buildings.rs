@@ -28,7 +28,7 @@ fn f4(v: [f32; 4]) -> [f64; 4] {
 /// _findLightweightBuildableGroups: the FGLightweightBuildableSubsystem
 /// actor's decoded actorSpecificInfo minus the leading lightweightVersion --
 /// [(buildItemTypePath, [instance, ...]), ...].
-fn find_lightweight_buildable_groups<'a>(
+pub(crate) fn find_lightweight_buildable_groups<'a>(
     scan: &SaveScan<'a>,
 ) -> &'a [(StrRef, Vec<LightweightInstance>)] {
     let data = scan.data();

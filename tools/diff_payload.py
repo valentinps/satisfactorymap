@@ -55,17 +55,106 @@ def canonical_strict(v):
 PAYLOAD_HEADER_KEYS = ("mapSize", "sessionName", "saveDatetime", "menuOrder", "itemCatalog")
 
 
-def payload_worker(sav, out_path, steps):
+def _index_samples(save_index_dump):
+    # Deterministic query samples, computed from each side's OWN index dump
+    # (if the dumps differ, the saveIndex comparison fails first anyway).
+    import sav_map_data
+
+    items = sorted(save_index_dump["itemLocationIndex"].keys())[:25]
+    building_types = [tp for tp in sorted(save_index_dump["instanceNamesByTypePath"])
+                      if "/Build_" in tp][:20]
+    vehicle_types = [tp for tp in sav_map_data.VEHICLE_ICONS_BY_TYPE_PATH
+                     if tp not in sav_map_data.RAILCAR_TYPE_PATHS]
+    selection_names = list(save_index_dump["objects"])[:50]  # dump lists are pre-sorted
+    # describeInstance samples: worker()'s spread over all objects, plus the
+    # index-only id spaces (lightweight buildables, train consists) and the
+    # not-found error branch.
+    names = list(save_index_dump["objects"])  # pre-sorted
+    step = max(1, len(names) // 100)
+    describe_names = names[::step][:100]
+    describe_names += sorted(save_index_dump["lightweightInstancesById"])[:10]
+    describe_names += sorted(save_index_dump["trainInfoByInstanceName"])[:5]
+    describe_names.append("__no_such_instance__")
+    return items, building_types, vehicle_types, selection_names, describe_names
+
+
+def _index_dump_py(sav_map_data, scan):
+    # Same dump shape as worker() below: headers/objects as sorted name
+    # lists, everything else canonical().
+    save_index = sav_map_data._buildSaveIndex(scan)
+    index_dump = {}
+    for key, val in save_index.items():
+        if key in ("headers", "objects"):
+            index_dump[key] = sorted(val.keys())
+        else:
+            index_dump[key] = canonical(val)
+    # Query results use canonical_strict (the frontend iterates those dicts
+    # in insertion order, so key-order drift must fail the diff); the
+    # saveIndex dump itself stays order-blind canonical() -- describeInstance
+    # & friends look keys up by name, so its dict order is not load-bearing.
+    (items, building_types, vehicle_types, selection_names,
+     describe_names) = _index_samples(index_dump)
+    return {
+        "saveIndex": index_dump,
+        "describeInstance": {
+            name: canonical_strict(sav_map_data.describeInstance(save_index, name))
+            for name in describe_names},
+        "findItemLocations": {
+            item: canonical_strict(sav_map_data.findItemLocations(save_index, item))
+            for item in items},
+        "buildingInfo": {
+            tp: canonical_strict(sav_map_data.collectBuildingInfo(save_index, [tp]))
+            for tp in building_types},
+        "vehicleInfo": {
+            tp: canonical_strict(sav_map_data.collectVehicleInfo(save_index, [tp]))
+            for tp in vehicle_types},
+        "trainInfo": canonical_strict(sav_map_data.collectTrainInfo(save_index)),
+        "selectionInventory": canonical_strict(
+            sav_map_data.aggregateSelectionInventory(save_index, selection_names)),
+    }
+
+
+def _index_dump_rust(parsed):
+    import sav_parse_rs
+
+    session = sav_parse_rs.build_map_session(parsed)
+    index_dump = {k: canonical(v) for k, v in json.loads(session.index_dump_json()).items()}
+    (items, building_types, vehicle_types, selection_names,
+     describe_names) = _index_samples(index_dump)
+    return {
+        "saveIndex": index_dump,
+        "describeInstance": {
+            name: canonical_strict(json.loads(session.describe_instance_json(name)))
+            for name in describe_names},
+        "findItemLocations": {
+            item: canonical_strict(json.loads(session.find_item_locations_json(item)))
+            for item in items},
+        "buildingInfo": {
+            tp: canonical_strict(json.loads(session.building_info_json([tp])))
+            for tp in building_types},
+        "vehicleInfo": {
+            tp: canonical_strict(json.loads(session.vehicle_info_json([tp])))
+            for tp in vehicle_types},
+        "trainInfo": canonical_strict(json.loads(session.train_info_json())),
+        "selectionInventory": canonical_strict(
+            json.loads(session.selection_inventory_json(selection_names))),
+    }
+
+
+def payload_worker(sav, out_path, steps, with_index=False):
     sys.path.insert(0, os.path.join(REPO, "map"))
     import sav_parse_shim as sav_parse
     import sav_map_data
 
     parsed = sav_parse.readFullSaveFile(sav)
     impl = os.environ.get("PAYLOAD_IMPL", "py")
+    dump = {"impl": impl}
     if impl == "rust":
         import sav_parse_rs
         raw = sav_parse_rs.build_map_payload_json(parsed, list(steps) if steps else None)
         payload = json.loads(bytes(raw))
+        if with_index:
+            dump.update(_index_dump_rust(parsed))
     else:
         scan = sav_map_data.SaveScan(parsed)
         payload = {
@@ -78,9 +167,13 @@ def payload_worker(sav, out_path, steps):
         for key, compute in sav_map_data._payloadSteps(parsed, scan):
             if steps is None or key in steps:
                 payload[key] = compute()
+        if with_index:
+            dump.update(_index_dump_py(sav_map_data, scan))
+    dump["payload"] = canonical_strict(payload)
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump({"impl": impl, "payload": canonical_strict(payload)}, f, sort_keys=True)
-    print(f"  [payload={impl}] {len(payload)} payload keys")
+        json.dump(dump, f, sort_keys=True)
+    print(f"  [payload={impl}] {len(payload)} payload keys"
+          + (" + saveIndex/queries" if with_index else ""))
 
 
 def worker(sav, out_path):
@@ -160,12 +253,19 @@ def compare_files(path_a, path_b):
 
 
 def payload_main(argv):
-    # --payload [--steps a,b,c] save.sav ... : parser held at rust, Python
-    # payload builder vs Rust payload builder.
+    # --payload [--steps a,b,c] [--with-index] save.sav ... : parser held at
+    # rust, Python payload builder vs Rust payload builder. --with-index also
+    # compares the saveIndex dump + sampled query endpoints (findItemLocations
+    # / buildingInfo / vehicleInfo / trainInfo / selectionInventory).
     steps = None
-    if argv and argv[0] == "--steps":
-        steps = [s for s in argv[1].split(",") if s]
-        argv = argv[2:]
+    with_index = False
+    while argv and argv[0] in ("--steps", "--with-index"):
+        if argv[0] == "--with-index":
+            with_index = True
+            argv = argv[1:]
+        else:
+            steps = [s for s in argv[1].split(",") if s]
+            argv = argv[2:]
     saves = argv
     if not saves:
         print(__doc__)
@@ -179,7 +279,8 @@ def payload_main(argv):
                 out = os.path.join(td, f"{impl}.json")
                 env = dict(os.environ, SAV_PARSE_IMPL="rust", PAYLOAD_IMPL=impl)
                 cmd = [sys.executable, os.path.abspath(__file__), "--payload-worker", sav, out,
-                       ",".join(steps) if steps else "*"]
+                       ",".join(steps) if steps else "*",
+                       "with-index" if with_index else "no-index"]
                 r = subprocess.run(cmd, env=env, cwd=REPO)
                 if r.returncode != 0:
                     print(f"FAIL {name}: payload={impl} worker exited {r.returncode}")
@@ -207,7 +308,10 @@ def main():
         return 0
     if len(sys.argv) >= 5 and sys.argv[1] == "--payload-worker":
         steps_arg = sys.argv[4]
-        payload_worker(sys.argv[2], sys.argv[3], None if steps_arg == "*" else steps_arg.split(","))
+        with_index = len(sys.argv) >= 6 and sys.argv[5] == "with-index"
+        payload_worker(sys.argv[2], sys.argv[3],
+                       None if steps_arg == "*" else steps_arg.split(","),
+                       with_index=with_index)
         return 0
     if len(sys.argv) == 4 and sys.argv[1] == "--compare":
         return 0 if compare_files(sys.argv[2], sys.argv[3]) else 1

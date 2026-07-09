@@ -137,6 +137,87 @@ fn build_map_payload_json(
     Ok(PyBytes::new(py, &bytes).into_any().unbind())
 }
 
+/// The queryable save session: Arc'd store + the owned MapIndex
+/// (sav_core::mapdata::index port of sav_map_data._buildSaveIndex). The
+/// query methods mirror sav_map_data's per-request endpoints and return
+/// serialized JSON strings.
+#[pyclass(frozen)]
+struct MapSessionPy {
+    store: std::sync::Arc<sav_core::store::SaveStore>,
+    index: sav_core::mapdata::index::MapIndex,
+}
+
+#[pymethods]
+impl MapSessionPy {
+    /// The saveIndex gating dump for tools/diff_payload.py --with-index
+    /// (headers/objects as sorted name lists, the rest canonical()-shaped).
+    fn index_dump_json(&self, py: Python<'_>) -> String {
+        py.allow_threads(|| self.index.dump(&self.store).to_string())
+    }
+
+    /// sav_map_data.describeInstance(saveIndex, instanceName).
+    fn describe_instance_json(&self, py: Python<'_>, name: &str) -> String {
+        py.allow_threads(|| {
+            sav_core::mapdata::describe::describe_instance(&self.store, &self.index, name)
+                .to_string()
+        })
+    }
+
+    /// sav_map_data.findItemLocations(saveIndex, itemShortName).
+    fn find_item_locations_json(&self, py: Python<'_>, item: &str) -> String {
+        py.allow_threads(|| {
+            sav_core::mapdata::queries::find_item_locations(&self.store, &self.index, item)
+                .to_string()
+        })
+    }
+
+    /// sav_map_data.collectBuildingInfo(saveIndex, typePaths).
+    fn building_info_json(&self, py: Python<'_>, types: Vec<String>) -> String {
+        py.allow_threads(|| {
+            sav_core::mapdata::queries::collect_building_info(&self.store, &self.index, &types)
+                .to_string()
+        })
+    }
+
+    /// sav_map_data.collectVehicleInfo(saveIndex, typePaths).
+    fn vehicle_info_json(&self, py: Python<'_>, types: Vec<String>) -> String {
+        py.allow_threads(|| {
+            sav_core::mapdata::queries::collect_vehicle_info(&self.store, &self.index, &types)
+                .to_string()
+        })
+    }
+
+    /// sav_map_data.collectTrainInfo(saveIndex).
+    fn train_info_json(&self, py: Python<'_>) -> String {
+        py.allow_threads(|| {
+            sav_core::mapdata::queries::collect_train_info(&self.store, &self.index).to_string()
+        })
+    }
+
+    /// sav_map_data.aggregateSelectionInventory(saveIndex, instanceNames).
+    fn selection_inventory_json(&self, py: Python<'_>, names: Vec<String>) -> String {
+        py.allow_threads(|| {
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            sav_core::mapdata::queries::aggregate_selection_inventory(
+                &self.store,
+                &self.index,
+                &names,
+            )
+            .to_string()
+        })
+    }
+}
+
+/// Build the save index once (sav_map_data._buildSaveIndex) for the query
+/// methods above.
+#[pyfunction]
+fn build_map_session(py: Python<'_>, save: PyRef<'_, py::ParsedSavePy>) -> MapSessionPy {
+    let store = save.store.clone();
+    drop(save);
+    let index = py.allow_threads(|| sav_core::mapdata::index::MapIndex::build(&store));
+    MapSessionPy { store, index }
+}
+
 /// getPropertyValue with the dispatch in Rust: fast path for Rust-backed
 /// PropertyList handles, reference-equivalent loop for plain Python lists
 /// (nested, already-converted property lists).
@@ -177,6 +258,8 @@ fn sav_parse_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(decompress_body, m)?)?;
     m.add_function(wrap_pyfunction!(read_full_save_file, m)?)?;
     m.add_function(wrap_pyfunction!(build_map_payload_json, m)?)?;
+    m.add_function(wrap_pyfunction!(build_map_session, m)?)?;
+    m.add_class::<MapSessionPy>()?;
     m.add_class::<py::ParsedSavePy>()?;
     m.add_class::<py::SaveFileInfoPy>()?;
     m.add_class::<py::LevelPy>()?;
