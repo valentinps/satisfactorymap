@@ -2,9 +2,9 @@
 //! (list/str/int/float/bytes/bool/ObjectReference) shaped exactly like the
 //! reference parser's output, including nested [prop, propTypes] pairs.
 
-use crate::reader::{DataRef, StrRef};
-use crate::store::*;
-use crate::version_data::VersionData;
+use sav_core::reader::{DataRef, StrRef};
+use sav_core::store::*;
+use sav_core::version_data::VersionData;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList, PyString, PyTuple};
 

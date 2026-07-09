@@ -5,7 +5,7 @@
 pub mod convert;
 pub mod extract;
 
-use crate::store::*;
+use sav_core::store::*;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -108,8 +108,8 @@ impl SaveFileInfoPy {
         // true division (ticks exceeds 2^53, so f64 widening drifts by µs).
         let ticks = self.store.info.save_date_time_in_ticks.into_pyobject(py)?;
         let ts = ticks
-            .call_method1("__truediv__", (crate::save_header::TICKS_IN_SECOND,))?
-            .call_method1("__sub__", (crate::save_header::EPOCH_1_TO_1970,))?;
+            .call_method1("__truediv__", (sav_core::save_header::TICKS_IN_SECOND,))?
+            .call_method1("__sub__", (sav_core::save_header::EPOCH_1_TO_1970,))?;
         let datetime = py.import("datetime")?.getattr("datetime")?;
         Ok(datetime.call_method1("fromtimestamp", (ts,))?.unbind())
     }
@@ -174,7 +174,7 @@ fn cached_str(
     py: Python<'_>,
     cache: &OnceLock<Py<PyString>>,
     data: &[u8],
-    r: crate::reader::StrRef,
+    r: sav_core::reader::StrRef,
 ) -> Py<PyString> {
     if let Some(v) = cache.get() {
         return v.clone_ref(py);

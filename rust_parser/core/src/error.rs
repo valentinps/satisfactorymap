@@ -1,9 +1,10 @@
-use pyo3::create_exception;
-use pyo3::exceptions::PyException;
-
 // Mirrors sav_parse.ParseError. The Python-visible exception type is created
-// here; internal parsing uses PError and converts at the boundary.
-create_exception!(sav_parse_rs, ParseError, PyException);
+// here (the orphan rule keeps the PError -> PyErr conversion in this crate);
+// internal parsing uses PError and converts at the boundary. Both PyO3 items
+// are gated behind the `pyo3-errors` feature so the core stays
+// binding-agnostic for wasm builds.
+#[cfg(feature = "pyo3-errors")]
+pyo3::create_exception!(sav_parse_rs, ParseError, pyo3::exceptions::PyException);
 
 #[derive(Debug, Clone)]
 pub struct PError {
@@ -22,6 +23,7 @@ impl std::fmt::Display for PError {
     }
 }
 
+#[cfg(feature = "pyo3-errors")]
 impl From<PError> for pyo3::PyErr {
     fn from(e: PError) -> pyo3::PyErr {
         ParseError::new_err(e.msg)

@@ -1,17 +1,9 @@
-mod decompress;
-mod error;
-mod level;
-mod object;
-mod properties;
 mod py;
-mod reader;
-mod save_header;
-mod store;
-mod version_data;
 
-use object::ClassTables;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
+use sav_core::object::ClassTables;
+use sav_core::{decompress, error, level, save_header};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -126,6 +118,25 @@ fn read_full_save_file(
     Ok(py::ParsedSavePy { store: Arc::new(store), levels_cache: OnceLock::new() })
 }
 
+/// Rust-native map payload (sav_core::mapdata port of
+/// sav_map_data._buildMapPayload) as JSON bytes. `steps` limits which payload
+/// steps run -- the diff-gating hook for landing the port
+/// collector-by-collector (tools/diff_payload.py PAYLOAD_IMPL=rust).
+#[pyfunction]
+#[pyo3(signature = (save, steps = None))]
+fn build_map_payload_json(
+    py: Python<'_>,
+    save: PyRef<'_, py::ParsedSavePy>,
+    steps: Option<Vec<String>>,
+) -> PyResult<PyObject> {
+    let store = save.store.clone();
+    drop(save);
+    let bytes = py
+        .allow_threads(|| sav_core::mapdata::build_payload_json(&store, steps.as_deref(), None))
+        .map_err(error::ParseError::new_err)?;
+    Ok(PyBytes::new(py, &bytes).into_any().unbind())
+}
+
 /// getPropertyValue with the dispatch in Rust: fast path for Rust-backed
 /// PropertyList handles, reference-equivalent loop for plain Python lists
 /// (nested, already-converted property lists).
@@ -165,6 +176,7 @@ fn sav_parse_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_save_info, m)?)?;
     m.add_function(wrap_pyfunction!(decompress_body, m)?)?;
     m.add_function(wrap_pyfunction!(read_full_save_file, m)?)?;
+    m.add_function(wrap_pyfunction!(build_map_payload_json, m)?)?;
     m.add_class::<py::ParsedSavePy>()?;
     m.add_class::<py::SaveFileInfoPy>()?;
     m.add_class::<py::LevelPy>()?;

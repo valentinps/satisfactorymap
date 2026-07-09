@@ -10,3 +10,4 @@ requires-python = ">=3.12"
 
 [tool.maturin]
 module-name = "sav_parse_rs"
+manifest-path = "py/Cargo.toml"

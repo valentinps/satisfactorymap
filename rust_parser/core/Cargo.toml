@@ -1,0 +1,31 @@
+[package]
+name = "sav_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sav_core"
+
+[features]
+default = []
+# Python-facing ParseError exception + PError -> PyErr conversion (error.rs).
+pyo3-errors = ["dep:pyo3"]
+# rayon parallel chunk decompression; without it the same chunks inflate
+# sequentially in the same order (identical output bytes).
+parallel = ["dep:rayon"]
+
+[dependencies]
+flate2 = { workspace = true }
+rayon = { version = "1", optional = true }
+pyo3 = { version = "0.23", features = ["abi3-py312"], optional = true }
+serde = { version = "1", features = ["derive"] }
+# preserve_order: JSON object key order == file order == Python dict order;
+# the payload builder's output ordering is gated on it.
+# float_roundtrip: correctly-rounded float parsing -- without it the embedded
+# static tables' long decimals (e.g. mercerSpheres positions) can come out
+# 1 ULP off Python's float() and break the bit-exact payload gate.
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+indexmap = { version = "2", features = ["serde"] }
+# Local-time formatting of the save datetime (Python datetime.fromtimestamp
+# parity). wasmbind routes local-time lookups through JS Date on wasm32.
+chrono = { version = "0.4", default-features = false, features = ["clock", "wasmbind"] }
