@@ -301,10 +301,12 @@ def apiUploadSave():
    if not f.filename or not f.filename.endswith(".sav"):
       return flask.jsonify({"error": "File must be a .sav save file."}), 400
    os.makedirs(UPLOADS_DIR, exist_ok=True)
-   dest = os.path.join(UPLOADS_DIR, os.path.basename(f.filename))
+   dest = os.path.abspath(os.path.join(UPLOADS_DIR, os.path.basename(f.filename)))
    f.save(dest)
    _applyUploadMode()
-   return flask.jsonify({"ok": True})
+   # filename matches listSaveFiles() entries so the map page can select and
+   # load the fresh upload without re-deriving the path itself.
+   return flask.jsonify({"ok": True, "filename": dest})
 
 @app.route("/api/reset-mode", methods=["POST"])
 def apiResetMode():
@@ -329,6 +331,7 @@ def apiConfig():
    return flask.jsonify({
       "autoLoadLatest": app.config.get("AUTO_LOAD_LATEST", False),
       "sftpEnabled":    "SFTP_CONFIG" in app.config,
+      "mode":           currentMode.get("type"),
    })
 
 @app.route("/api/sftp-status")

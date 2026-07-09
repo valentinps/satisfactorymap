@@ -2171,7 +2171,7 @@ def buildSaveIndex(parsedSave: sav_parse.ParsedSave) -> dict:
    lightweightInstancesById = {}
    for (typePath, instances) in _findLightweightBuildableGroups(parsedSave.levels):
       for (idx, instance) in enumerate(instances):
-         lightweightInstancesById[f"LightweightBuildable:{typePath}:{idx}"] = {"typePath": typePath}
+         lightweightInstancesById[f"LightweightBuildable:{typePath}:{idx}"] = {"typePath": typePath, "position": instance[1]}
 
    # Train consists (BP_Train_C -> its locomotives/freight cars in physical
    # order), for describeInstance's whole-train tooltip. Orphan single-car
@@ -2971,7 +2971,8 @@ def describeInstance(saveIndex: dict, instanceName: str) -> dict:
    lightweightInfo = saveIndex.get("lightweightInstancesById", {}).get(instanceName)
    if lightweightInfo is not None:
       typePath = lightweightInfo["typePath"]
-      return {"instanceName": instanceName, "typePath": typePath, "label": readableLabel(typePath)}
+      return {"instanceName": instanceName, "typePath": typePath, "label": readableLabel(typePath),
+              "position": lightweightInfo["position"]}
 
    header = saveIndex["headers"].get(instanceName)
    if header is None:
