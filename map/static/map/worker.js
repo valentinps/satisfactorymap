@@ -66,7 +66,11 @@ self.onmessage = async (event) => {
          case "buildingInfo": raw = session.building_info(msg.types); break;
          case "vehicleInfo": raw = session.vehicle_info(msg.types); break;
          case "trainInfo": raw = session.train_info(); break;
-         case "selectionInventory": raw = session.selection_inventory(msg.names); break;
+         case "selectionInventory":
+            // The Flask endpoint wrapped the raw list as {"items": [...]} --
+            // selection.js still expects that shape.
+            reply(id, { items: JSON.parse(session.selection_inventory(msg.names)) });
+            return;
          default: throw new Error("Unknown op: " + op);
       }
       reply(id, JSON.parse(raw));
