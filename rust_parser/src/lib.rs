@@ -160,6 +160,8 @@ fn get_property_value(
 fn sav_parse_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(get_property_value, m)?)?;
+    m.add_function(wrap_pyfunction!(py::extract::collect_item_location_index, m)?)?;
+    m.add_function(wrap_pyfunction!(py::extract::collect_spline_polylines, m)?)?;
     m.add_function(wrap_pyfunction!(read_save_info, m)?)?;
     m.add_function(wrap_pyfunction!(decompress_body, m)?)?;
     m.add_function(wrap_pyfunction!(read_full_save_file, m)?)?;

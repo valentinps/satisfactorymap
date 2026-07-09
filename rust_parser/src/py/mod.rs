@@ -3,6 +3,7 @@
 //! saveIndex) does. All read-only.
 
 pub mod convert;
+pub mod extract;
 
 use crate::store::*;
 use pyo3::prelude::*;

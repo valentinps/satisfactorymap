@@ -46,6 +46,14 @@ if _impl != "py":
 
 ACTIVE_IMPL = "python" if _rs is None else "rust"
 
+# Bulk extractors (whole-save scans done Rust-side; None under the Python
+# backend -- callers fall back to the reference implementation). Only valid
+# for Rust-parsed saves: gate on isinstance(parsedSave, ParsedSave) too,
+# since the decompressedOutputFilename debug path returns a Python
+# ParsedSave even when the Rust backend is active.
+collectItemLocationIndex = None if _rs is None else _rs.collect_item_location_index
+collectSplinePolylines = None if _rs is None else _rs.collect_spline_polylines
+
 # Mirrors the reference module's global; refreshed on every readFullSaveFile.
 satisfactoryCalculatorInteractiveMapExtras = []
 

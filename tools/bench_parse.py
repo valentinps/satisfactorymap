@@ -25,19 +25,16 @@ def worker(sav):
     t0 = time.perf_counter()
     parsed = sav_parse.readFullSaveFile(sav)
     t1 = time.perf_counter()
-    payload = sav_map_data.buildMapPayload(parsed)
+    payload, index = sav_map_data.buildAll(parsed)
     t2 = time.perf_counter()
-    index = sav_map_data.buildSaveIndex(parsed)
-    t3 = time.perf_counter()
     blob = json.dumps(payload)
-    t4 = time.perf_counter()
+    t3 = time.perf_counter()
     print(json.dumps({
         "impl": sav_parse.ACTIVE_IMPL,
         "parse": round(t1 - t0, 2),
-        "payload": round(t2 - t1, 2),
-        "index": round(t3 - t2, 2),
-        "jsonify": round(t4 - t3, 2),
-        "total": round(t4 - t0, 2),
+        "payloadIndex": round(t2 - t1, 2),
+        "jsonify": round(t3 - t2, 2),
+        "total": round(t3 - t0, 2),
         "payloadMB": round(len(blob) / 1e6, 1),
     }))
 

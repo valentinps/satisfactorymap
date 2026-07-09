@@ -26,6 +26,13 @@ runtime fallback.
   up at call time, so the server's `_ProgressBarHook` monkey-patch works).
 - Class dispatch tables (conveyor belt classes) are passed in from
   `sav_data.data` at call time — Python stays the single source of truth.
+- **Bulk extractors** (`src/py/extract.rs`): whole-save scans that
+  `sav_map_data.py` needs — the item-location index and spline polylines —
+  run directly against the Rust store instead of converting per-property.
+  Each is a verbatim port of its Python reference (which remains the
+  fallback and the parity oracle); the spline extractor copies the
+  projection math's float-op order exactly and takes the constants from
+  Python, producing bit-identical coordinates.
 
 ## Building
 
@@ -58,17 +65,19 @@ be mirrored here and validated with these tools.
 
 ## Benchmarks (this machine, 16 cores, Anaconda Python 3.12)
 
-Full server load cycle = readFullSaveFile + buildMapPayload + buildSaveIndex
-+ json.dumps.
+Full server load cycle = readFullSaveFile + buildAll (payload + save index)
++ json.dumps. After the SaveScan/bulk-extractor phase; the server itself
+serializes with orjson (0.2s instead of the stdlib 2.8s shown here).
 
-| Save | Backend | parse | payload | index | jsonify | total |
-|---|---|---|---|---|---|---|
-| solo_autosave_1.sav (15MB, 332MB decompressed) | Python | 20.1s | 1.5s | 1.4s | 0.6s | 23.7s |
-| | Rust | **0.8s** | 4.4s | 2.8s | 0.6s | **8.6s** |
-| BuildITBIIIIIG_autosave_8.sav (50MB, 1.05GB decompressed, ~600k objects) | Python | 60.8s | 5.5s | 4.6s | 2.7s | 73.6s |
-| | Rust | **2.4s** | 13.0s | 8.5s | 2.4s | **26.3s** |
+| Save | Backend | parse | payload+index | jsonify (stdlib) | total |
+|---|---|---|---|---|---|
+| solo_autosave_1.sav (15MB, 332MB decompressed) | Python | 21.7s | 2.3s | 0.7s | 24.7s |
+| | Rust | **0.9s** | **2.4s** | 0.7s | **4.0s** |
+| BuildITBIIIIIG_autosave_8.sav (50MB, 1.05GB decompressed, ~760k objects) | Python | 60.9s | 7.5s | 2.4s | 70.8s |
+| | Rust | **2.5s** | **8.3s** | 2.8s | **13.6s** |
 
-Parse speedup ~25×; full request cycle ~2.8×.
+Pre-rewrite pure-Python baseline for the 50MB save was ~80s; the Rust
+backend's real server cycle (orjson) is ~11s — about 7×.
 
 (The payload/index phases are slower under the Rust backend because property
 values convert on demand there — under Python that cost is paid inside the

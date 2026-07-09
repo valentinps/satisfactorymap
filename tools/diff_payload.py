@@ -34,8 +34,7 @@ def worker(sav, out_path):
     import sav_map_data
 
     parsed = sav_parse.readFullSaveFile(sav)
-    payload = sav_map_data.buildMapPayload(parsed)
-    save_index = sav_map_data.buildSaveIndex(parsed)
+    payload, save_index = sav_map_data.buildAll(parsed)
 
     index_dump = {}
     for key, val in save_index.items():
@@ -92,10 +91,25 @@ def first_diff(a, b, path="$"):
     return None
 
 
+def compare_files(path_a, path_b):
+    with open(path_a, encoding="utf-8") as f:
+        a = json.load(f)
+    with open(path_b, encoding="utf-8") as f:
+        b = json.load(f)
+    a.pop("impl", None), b.pop("impl", None)
+    if a == b:
+        print(f"OK   {os.path.basename(path_a)} == {os.path.basename(path_b)}")
+        return True
+    print(f"FAIL {path_a} vs {path_b}: {first_diff(a, b)}")
+    return False
+
+
 def main():
     if len(sys.argv) >= 4 and sys.argv[1] == "--worker":
         worker(sys.argv[2], sys.argv[3])
         return 0
+    if len(sys.argv) == 4 and sys.argv[1] == "--compare":
+        return 0 if compare_files(sys.argv[2], sys.argv[3]) else 1
 
     saves = sys.argv[1:]
     if not saves:
