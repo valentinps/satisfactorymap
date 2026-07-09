@@ -1954,7 +1954,48 @@ var MapApp = {};
     MapApp.layer.requestRedraw();
   };
 
+  // Exposed for webgl_layer.js: the WebGL layer extends BucketedCanvasLayer
+  // (inheriting hitTest, the highlight/pin drawing paths, and addBucket's
+  // grid building, all of which close over this file's private helpers), and
+  // its 2D pin pass needs the same pin radius the inherited hit-testing uses.
+  MapApp.BucketedCanvasLayer = BucketedCanvasLayer;
+  MapApp.iconRadiusForZoom = _iconRadiusForZoom;
+
+  // Swaps the WebGL layer out for the plain 2D canvas layer -- called when
+  // the GL context is lost (driver reset, GPU removed) or fails to create.
+  // The bucket objects (points/lines/_grid/_lineBounds and all) are shared
+  // by reference, so no data rebuild is needed; the animation options the
+  // GL path enabled go back off because the 2D layer only redraws on
+  // moveend/zoomend (see MapApp.init's option comments).
+  MapApp.fallbackToCanvasLayer = function() {
+    var old = MapApp.layer;
+    var map = MapApp.map;
+    if (!map || !old || !old._isWebGL) {
+      return; // Already on the 2D layer (or nothing to swap).
+    }
+    map.removeLayer(old);
+    map.options.zoomAnimation = false;
+    map.options.fadeAnimation = false;
+    map.options.inertia = false;
+    // Leaflet caches options.zoomAnimation into _zoomAnimated at map
+    // construction and only ever reads the cache -- without flipping it too,
+    // the first zoom after fallback CSS-scales a canvas that never repaints
+    // until the debounced 2D redraw lands.
+    map._zoomAnimated = false;
+    var layer = new BucketedCanvasLayer();
+    layer.buckets = old.buckets;
+    layer._sortedBuckets = null;
+    layer.addTo(map);
+    MapApp.layer = layer;
+    layer.requestRedraw();
+  };
+
   MapApp.init = function() {
+    // The WebGL layer (webgl_layer.js, loaded right after this file) renders
+    // every frame during interaction, so Leaflet's animated zoom and drag
+    // inertia -- disabled below for the 2D layer, which only redraws on
+    // moveend/zoomend -- work fine with it and are turned back on.
+    var useWebGL = !!(window.WebGLBucketedLayer && window.WebGLBucketedLayer.isSupported());
     var map = L.map("map", {
       crs: L.CRS.Simple,
       minZoom: -3,
@@ -1966,18 +2007,19 @@ var MapApp = {};
       // (next to the altitude rail, over nothing but map).
       zoomControl: false,
       maxBoundsViscosity: 0.8,
-      // The canvas overlay only redraws on moveend/zoomend (see BucketedCanvasLayer),
-      // so Leaflet's animated zoom would visibly scale the image first and snap
-      // the points into place a moment later. Disabling it keeps both in sync.
-      zoomAnimation: false,
-      fadeAnimation: false,
+      // The 2D canvas overlay only redraws on moveend/zoomend (see
+      // BucketedCanvasLayer), so Leaflet's animated zoom would visibly scale
+      // the image first and snap the points into place a moment later.
+      // Disabling it keeps both in sync.
+      zoomAnimation: useWebGL,
+      fadeAnimation: useWebGL,
       // Same reasoning applies to drag inertia: it keeps the base map
-      // gliding after mouseup while the canvas overlay sits frozen (it only
-      // redraws on moveend) until the glide actually stops, which reads as
-      // a stuck/laggy redraw. Disabling inertia makes panning stop exactly
-      // when the mouse does, so the overlay's moveend redraw fires
+      // gliding after mouseup while the 2D canvas overlay sits frozen (it
+      // only redraws on moveend) until the glide actually stops, which reads
+      // as a stuck/laggy redraw. Disabling inertia makes panning stop
+      // exactly when the mouse does, so the overlay's moveend redraw fires
       // immediately instead of after an extra coast-to-stop delay.
-      inertia: false,
+      inertia: useWebGL,
     });
     L.control.zoom({ position: "bottomright" }).addTo(map);
 
@@ -1988,7 +2030,7 @@ var MapApp = {};
     L.imageOverlay("map_highres.png", bounds).addTo(map);
     map.fitBounds(bounds);
 
-    var layer = new BucketedCanvasLayer();
+    var layer = useWebGL ? new window.WebGLBucketedLayer() : new BucketedCanvasLayer();
     layer.addTo(map);
 
     MapApp.map = map;
@@ -2023,7 +2065,11 @@ var MapApp = {};
       lastHoverTime = now;
       var hoverToleranceScreenPx = 8;
       var toleranceMapUnits = hoverToleranceScreenPx / Math.pow(2, map.getZoom());
-      var hit = layer.hitTest(e.latlng.lng, e.latlng.lat, toleranceMapUnits);
+      // Via MapApp.layer, not the closed-over `layer`: a GL context loss can
+      // swap the layer instance out from under this handler (see
+      // MapApp.fallbackToCanvasLayer), and hit-testing the detached old
+      // layer would silently misfire.
+      var hit = MapApp.layer.hitTest(e.latlng.lng, e.latlng.lat, toleranceMapUnits);
       if (hit) {
         window.Tooltip.show(e.originalEvent.clientX, e.originalEvent.clientY, hit);
         MapApp.setHighlight(hit.bucket, hit.id);
@@ -2038,7 +2084,7 @@ var MapApp = {};
       }
       var clickToleranceScreenPx = 8;
       var toleranceMapUnits = clickToleranceScreenPx / Math.pow(2, map.getZoom());
-      var hit = layer.hitTest(e.latlng.lng, e.latlng.lat, toleranceMapUnits);
+      var hit = MapApp.layer.hitTest(e.latlng.lng, e.latlng.lat, toleranceMapUnits); // MapApp.layer, not `layer` -- see the hover handler.
       if (hit) {
         window.Tooltip.pin(e.originalEvent.clientX, e.originalEvent.clientY, hit);
         MapApp.setHighlight(hit.bucket, hit.id);
