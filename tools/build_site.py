@@ -1,0 +1,84 @@
+"""Assemble the deployable static site into dist/.
+
+Layout:
+  dist/
+    index.html, *.js, *.css, vendor/, icons/   (from map/static/map/)
+    map_highres.png                            (from game_data/generated/)
+    pkg/sav_wasm.js, pkg/sav_wasm_bg.wasm      (wasm-pack --target no-modules)
+    _headers                                   (Cloudflare Pages: COOP/COEP)
+
+Prerequisites: game_data extracted (game_data/generated/*.json +
+map_highres.png; see README), Rust toolchain + wasm-pack.
+
+Usage: py tools/build_site.py [--skip-wasm]
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DIST = os.path.join(REPO, "dist")
+STATIC = os.path.join(REPO, "map", "static", "map")
+
+# Never copied into dist/ (server-era or landing-page files).
+EXCLUDE = {"landing.html", "landing.js", "landing.css", "__pycache__"}
+
+HEADERS = """/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+"""
+
+
+def main():
+    skip_wasm = "--skip-wasm" in sys.argv
+
+    if os.path.isdir(DIST):
+        shutil.rmtree(DIST)
+    os.makedirs(DIST)
+
+    # Frontend static files.
+    for name in os.listdir(STATIC):
+        if name in EXCLUDE:
+            continue
+        src = os.path.join(STATIC, name)
+        dst = os.path.join(DIST, name)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+
+    # Map background image.
+    mapImage = os.path.join(REPO, "game_data", "generated", "map_highres.png")
+    if not os.path.isfile(mapImage):
+        sys.exit("map_highres.png missing -- extract game data first (see README)")
+    shutil.copy2(mapImage, os.path.join(DIST, "map_highres.png"))
+
+    # WASM package.
+    if not skip_wasm:
+        subprocess.run(
+            ["wasm-pack", "build", os.path.join(REPO, "rust_parser", "wasm"),
+             "--release", "--target", "no-modules",
+             "--out-dir", os.path.join(DIST, "pkg"), "--out-name", "sav_wasm",
+             "--no-typescript"],
+            check=True, shell=(os.name == "nt"),
+        )
+        # wasm-pack drops package.json/.gitignore into out-dir; not needed.
+        for junk in ("package.json", ".gitignore", "README.md", "LICENSE"):
+            path = os.path.join(DIST, "pkg", junk)
+            if os.path.isfile(path):
+                os.remove(path)
+
+    with open(os.path.join(DIST, "_headers"), "w", encoding="utf-8", newline="\n") as f:
+        f.write(HEADERS)
+
+    total = 0
+    for root, _dirs, files in os.walk(DIST):
+        for name in files:
+            total += os.path.getsize(os.path.join(root, name))
+    print(f"dist/ ready: {total / 1e6:.1f} MB")
+
+
+if __name__ == "__main__":
+    main()

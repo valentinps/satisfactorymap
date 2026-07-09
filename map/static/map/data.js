@@ -1,32 +1,17 @@
-// Fetches the save list and map payload from the Flask backend, and drives
-// the load-button UI flow, including polling /api/load-progress while a
-// parse is in flight (see sav_map_server.py's _ProgressBarHook).
+// Drives the save-load UI flow: the user picks a local .sav (file dialog or
+// drag-drop anywhere on the page), SaveClient parses it in the WASM worker
+// (see save_client.js/worker.js), and the payload feeds the same build chain
+// as always. The save never leaves the browser.
 
 (function() {
   "use strict";
 
-  var PROGRESS_POLL_MS = 400;
-
-  // How often to re-glob the save directory for a newer file while the
-  // on-screen "Auto-reload new saves" toggle is on. Cheap on the server
-  // side (just glob + stat), so a short interval is fine.
-  var AUTO_WATCH_POLL_MS = 10000;
-
-  var saveSelect = document.getElementById("saveSelect");
-  var loadButton = document.getElementById("loadButton");
-  var autoRefreshToggle = document.getElementById("autoRefreshToggle");
   var loadStatus = document.getElementById("loadStatus");
   var progressBar = document.getElementById("loadProgressBar");
   var progressFill = document.getElementById("loadProgressFill");
   var gameSettingsPanel = document.getElementById("gameSettingsPanel");
-  var sftpPanel = document.getElementById("sftpPanel");
 
-  // Populated by loadSaveList() -- reused by the auto-watch loop to find the
-  // mtime of whatever's currently loaded without a second round-trip, and to
-  // detect when a fresher save than that has appeared.
-  var lastSaves = [];
-  var autoLoadEnabled = false;
-  var currentLoadedMtime = null;
+  var loadInFlight = false;
 
   function setStatus(text) {
     loadStatus.textContent = text;
@@ -43,79 +28,7 @@
     progressFill.style.width = "0%";
   }
 
-  // SFTP sync panel -- only rendered when the server was started with an
-  // sftp_config.json present. Stays in sync with /api/sftp-status so the
-  // "last synced" age is always reasonably fresh.
-  var sftpEnabled = false;
-  var sftpStatusTimer = null;
-
-  function relativeTime(ts) {
-    if (ts === null || ts === undefined) {
-      return "never";
-    }
-    var secs = Math.round(Date.now() / 1000 - ts);
-    if (secs < 5)  { return "just now"; }
-    if (secs < 60) { return secs + "s ago"; }
-    var mins = Math.round(secs / 60);
-    if (mins < 60) { return mins + "m ago"; }
-    return Math.round(mins / 60) + "h ago";
-  }
-
-  function renderSftpPanel(status) {
-    sftpPanel.innerHTML = "";
-    var header = document.createElement("div");
-    header.className = "sftpHeader";
-    var title = document.createElement("span");
-    title.className = "sftpTitle";
-    title.textContent = "SFTP";
-    var syncBtn = document.createElement("button");
-    syncBtn.id = "sftpSyncButton";
-    syncBtn.className = "sftpSyncBtn";
-    syncBtn.textContent = status.syncing ? "Syncing..." : "Sync now";
-    syncBtn.disabled = status.syncing;
-    syncBtn.addEventListener("click", triggerSftpSync);
-    header.appendChild(title);
-    header.appendChild(syncBtn);
-    sftpPanel.appendChild(header);
-
-    var statusLine = document.createElement("div");
-    statusLine.className = "sftpStatus";
-    if (status.lastError) {
-      statusLine.textContent = "Error: " + status.lastError;
-      statusLine.classList.add("sftpStatusError");
-    } else {
-      statusLine.textContent = "Last sync: " + relativeTime(status.lastSync);
-    }
-    sftpPanel.appendChild(statusLine);
-    sftpPanel.style.display = "block";
-  }
-
-  function refreshSftpStatus() {
-    fetch("/api/sftp-status")
-      .then(function(r) { return r.json(); })
-      .then(function(status) {
-        if (!status.enabled) { return; }
-        renderSftpPanel(status);
-        // If a sync is in flight, poll more frequently until it finishes.
-        if (sftpStatusTimer) { clearTimeout(sftpStatusTimer); }
-        sftpStatusTimer = setTimeout(refreshSftpStatus, status.syncing ? 1000 : 15000);
-      })
-      .catch(function() {});
-  }
-
-  function triggerSftpSync() {
-    var btn = document.getElementById("sftpSyncButton");
-    if (btn) { btn.disabled = true; btn.textContent = "Syncing..."; }
-    fetch("/api/sftp-sync", { method: "POST" })
-      .then(function() { refreshSftpStatus(); })
-      .catch(function() { if (btn) { btn.disabled = false; btn.textContent = "Sync now"; } });
-  }
-
-  // Manual-upload mode (see sav_map_server._applyUploadMode) -- the save
-  // folder is the server's own uploads dir, so new saves can only ever come
-  // from the user. The load panel therefore swaps the auto-reload watcher
-  // (which would be polling a folder that never changes on its own) for a
-  // quick upload/drop zone that loads the new save as soon as it lands.
+  // Load panel: always-on drop zone + hidden file input (the click target).
   var uploadDropZone = document.getElementById("uploadDropZone");
   var uploadDropText = document.getElementById("uploadDropText");
   var uploadFileInput = document.getElementById("uploadFileInput");
@@ -126,69 +39,11 @@
     uploadDropText.textContent = UPLOAD_DROP_DEFAULT_TEXT;
   }
 
-  function uploadSaveFile(file) {
-    if (!file) {
-      return;
-    }
-    if (!file.name.endsWith(".sav")) {
-      setStatus("Only .sav save files can be uploaded.");
-      return;
-    }
-    if (loadButton.disabled) {
-      return; // A load is already in flight; don't queue a second parse.
-    }
-    uploadDropZone.classList.add("uploading");
-    uploadDropText.textContent = "Uploading " + file.name + "…";
-    var fd = new FormData();
-    fd.append("file", file);
-    fetch("/api/upload-save", { method: "POST", body: fd })
-      .then(function(r) { return r.json(); })
-      .then(function(res) {
-        resetUploadZone();
-        if (res.error) {
-          setStatus(res.error);
-          return;
-        }
-        loadSaveList(function() {
-          if (res.filename) {
-            saveSelect.value = res.filename;
-          }
-          loadSelectedSave();
-        });
-      })
-      .catch(function(error) {
-        resetUploadZone();
-        setStatus("Upload failed: " + error);
-      });
-  }
-
-  function enableUploadPanel() {
-    document.getElementById("autoRefreshRow").style.display = "none";
-    uploadDropZone.style.display = "flex";
-    uploadDropZone.addEventListener("click", function() { uploadFileInput.click(); });
-    uploadFileInput.addEventListener("change", function() {
-      uploadSaveFile(uploadFileInput.files[0]);
-      uploadFileInput.value = ""; // Re-selecting the same file should fire change again.
-    });
-    uploadDropZone.addEventListener("dragover", function(e) {
-      e.preventDefault();
-      uploadDropZone.classList.add("drag-over");
-    });
-    uploadDropZone.addEventListener("dragleave", function() {
-      uploadDropZone.classList.remove("drag-over");
-    });
-    uploadDropZone.addEventListener("drop", function(e) {
-      e.preventDefault();
-      uploadDropZone.classList.remove("drag-over");
-      uploadSaveFile(e.dataTransfer && e.dataTransfer.files[0]);
-    });
-  }
-
   // Game-mode settings (Power Cost Multiplier, Purity Modifier, Node
   // Randomization) chosen at world creation -- see
-  // sav_map_data.collectGameSettings(). These can silently change what
-  // every resource node on the map actually is/yields relative to a vanilla
-  // world, so they're shown unconditionally rather than only when
+  // sav_map_data.collectGameSettings's Rust port. These can silently change
+  // what every resource node on the map actually is/yields relative to a
+  // vanilla world, so they're shown unconditionally rather than only when
   // non-default, in case the displayed value itself is what someone's
   // trying to confirm.
   function showGameSettings(gameSettings) {
@@ -223,62 +78,10 @@
     gameSettingsPanel.style.display = hasAny ? "block" : "none";
   }
 
-  // listSaveFiles() (server side) always returns newest-first, so saves[0]
-  // is "the latest save" wherever that's needed below.
-  function loadSaveList(onDone) {
-    fetch("/api/saves")
-      .then(function(response) { return response.json(); })
-      .then(function(saves) {
-        if (saves.error) {
-          setStatus(saves.error);
-          return;
-        }
-        lastSaves = saves;
-        // Preserve the user's current dropdown selection across a refresh
-        // (e.g. the periodic auto-watch poll) instead of always snapping
-        // back to the first option.
-        var previousValue = saveSelect.value;
-        saveSelect.innerHTML = "";
-        saves.forEach(function(save) {
-          var option = document.createElement("option");
-          option.value = save.filename;
-          option.textContent = save.displayName;
-          saveSelect.appendChild(option);
-        });
-        if (saves.some(function(save) { return save.filename === previousValue; })) {
-          saveSelect.value = previousValue;
-        }
-        if (saves.length === 0) {
-          setStatus("No save files found.");
-        }
-        if (onDone) {
-          onDone(saves);
-        }
-      })
-      .catch(function(error) { setStatus("Failed to list saves: " + error); });
-  }
-
-  function pollProgress() {
-    var pollTimer = setInterval(function() {
-      fetch("/api/load-progress")
-        .then(function(response) { return response.json(); })
-        .then(function(progress) {
-          if (progress.phase) {
-            var percent = progress.total > 0 ? (progress.current / progress.total) * 100 : 0;
-            showProgress(progress.phase, percent);
-          }
-        })
-        .catch(function() {}); // Transient poll failures are not worth surfacing.
-    }, PROGRESS_POLL_MS);
-    return pollTimer;
-  }
-
   // Buckets are entirely rebuilt by Filters.build on every load (fresh
   // objects, even for the exact same building), so a pinned tooltip/highlight
   // can't just be left alone -- it has to be captured by stable bucket key +
   // id before the rebuild and re-resolved against the new buckets afterward.
-  // Without this, --auto mode picking up a newer save (see checkForNewerSave)
-  // would silently drop whatever the user was inspecting every ~10s.
   function restorePinnedSelection(selection) {
     var bucket = MapApp.layer.buckets.filter(function(b) { return b.key === selection.bucketKey; })[0];
     if (!bucket || !bucket.ids) {
@@ -295,29 +98,39 @@
     MapApp.setHighlight(bucket, selection.id);
   }
 
-  function loadSelectedSave() {
-    var filename = saveSelect.value;
-    if (!filename) {
+  function loadLocalFile(file) {
+    if (!file) {
       return;
     }
+    if (!file.name.endsWith(".sav")) {
+      setStatus("Only .sav save files can be loaded.");
+      return;
+    }
+    if (loadInFlight) {
+      return; // A parse is already running; don't queue a second one.
+    }
+    loadInFlight = true;
+    uploadDropZone.classList.add("uploading");
+    uploadDropText.textContent = "Loading " + file.name + "…";
     var pinnedSelection = Tooltip.getPinnedSelection();
-    showProgress("Starting", 0);
-    loadButton.disabled = true;
-    var pollTimer = pollProgress();
+    showProgress("Reading file", 0);
 
-    fetch("/api/map-data?file=" + encodeURIComponent(filename))
-      .then(function(response) { return response.json(); })
+    file.arrayBuffer()
+      .then(function(buffer) {
+        return SaveClient.loadSave(buffer, function(phase, current, total) {
+          var percent = total > 0 ? (current / total) * 100 : 0;
+          showProgress(phase, percent);
+        });
+      })
       .then(function(payload) {
-        clearInterval(pollTimer);
         hideProgress();
-        loadButton.disabled = false;
-        if (payload.error) {
-          setStatus(payload.error);
-          return;
-        }
+        loadInFlight = false;
+        resetUploadZone();
         Tooltip.hide();
         MapApp.setHighlight(null, null);
-        MapApp.currentFile = filename;
+        // Stable per-file key: detail features guard on this, and the
+        // pinned-tooltip restore survives re-loading the same file.
+        MapApp.currentFile = "local:" + file.name + ":" + file.size + ":" + file.lastModified;
         Filters.build(payload);
         Altitude.build(payload);
         FindItem.build(payload);
@@ -327,101 +140,46 @@
           restorePinnedSelection(pinnedSelection);
         }
         showGameSettings(payload.gameSettings);
-        var loadedSave = lastSaves.filter(function(save) { return save.filename === filename; })[0];
-        currentLoadedMtime = loadedSave ? loadedSave.mtime : Date.now() / 1000;
-        var statusText = "Loaded: " + payload.sessionName + " (" + payload.saveDatetime + ")";
-        setStatus(autoRefreshToggle.checked ? statusText + " -- watching for newer saves" : statusText);
+        setStatus("Loaded: " + payload.sessionName + " (" + payload.saveDatetime + ")");
       })
       .catch(function(error) {
-        clearInterval(pollTimer);
         hideProgress();
-        loadButton.disabled = false;
-        setStatus("Failed to load map data: " + error);
+        loadInFlight = false;
+        resetUploadZone();
+        setStatus("Failed to load save: " + (error && error.message || error));
       });
-  }
-
-  // Re-globs the save directory and, if a save newer than whatever's
-  // currently loaded has appeared, switches the dropdown to it and loads it
-  // automatically -- this is what makes --auto mode pick up a fresh
-  // autosave without the user touching anything. A load already in flight
-  // (loadButton disabled) is left alone rather than interrupted.
-  function checkForNewerSave() {
-    if (sftpEnabled) {
-      // Refresh the last-sync display alongside the save-list poll so the age
-      // stays current without a separate dedicated timer when --auto is on.
-      refreshSftpStatus();
-    }
-    if (loadButton.disabled) {
-      return;
-    }
-    loadSaveList(function(saves) {
-      if (saves.length === 0) {
-        return;
-      }
-      var latest = saves[0];
-      if (currentLoadedMtime === null || latest.mtime > currentLoadedMtime) {
-        saveSelect.value = latest.filename;
-        loadSelectedSave();
-      }
-    });
-  }
-
-  // The auto-reload watcher is opt-in via the on-screen toggle, and always
-  // starts OFF -- even in --auto mode (which still auto-loads the latest
-  // save ONCE on page open, see the config fetch below). Turning it on
-  // checks immediately, then keeps polling; turning it off stops cleanly.
-  var autoWatchTimer = null;
-
-  function setAutoRefresh(enabled) {
-    if (enabled && autoWatchTimer === null) {
-      autoWatchTimer = setInterval(checkForNewerSave, AUTO_WATCH_POLL_MS);
-      checkForNewerSave();
-      if (currentLoadedMtime !== null) {
-        setStatus(loadStatus.textContent + " -- watching for newer saves");
-      }
-    } else if (!enabled && autoWatchTimer !== null) {
-      clearInterval(autoWatchTimer);
-      autoWatchTimer = null;
-      setStatus(loadStatus.textContent.replace(" -- watching for newer saves", ""));
-    }
   }
 
   document.addEventListener("DOMContentLoaded", function() {
     MapApp.init();
-    loadButton.addEventListener("click", loadSelectedSave);
-    autoRefreshToggle.addEventListener("change", function() {
-      setAutoRefresh(autoRefreshToggle.checked);
+    setStatus("No save loaded -- drop a .sav anywhere or click above.");
+
+    uploadDropZone.addEventListener("click", function() { uploadFileInput.click(); });
+    uploadFileInput.addEventListener("change", function() {
+      loadLocalFile(uploadFileInput.files[0]);
+      uploadFileInput.value = ""; // Re-selecting the same file should fire change again.
+    });
+    uploadDropZone.addEventListener("dragover", function(e) {
+      e.preventDefault();
+      uploadDropZone.classList.add("drag-over");
+    });
+    uploadDropZone.addEventListener("dragleave", function() {
+      uploadDropZone.classList.remove("drag-over");
+    });
+    uploadDropZone.addEventListener("drop", function(e) {
+      e.preventDefault();
+      uploadDropZone.classList.remove("drag-over");
+      loadLocalFile(e.dataTransfer && e.dataTransfer.files[0]);
     });
 
-    // The logo/title button doubles as "back to mode selection" -- resets
-    // server-side mode and returns to the landing page.
-    var logoButton = document.getElementById("logoButton");
-    if (logoButton) {
-      logoButton.addEventListener("click", function() {
-        fetch("/api/reset-mode", { method: "POST" })
-          .then(function() { window.location.href = "/"; })
-          .catch(function() { window.location.href = "/"; });
-      });
-    }
-
-    fetch("/api/config")
-      .then(function(response) { return response.json(); })
-      .then(function(config) {
-        autoLoadEnabled = !!config.autoLoadLatest;
-        sftpEnabled = !!config.sftpEnabled;
-        if (sftpEnabled) {
-          refreshSftpStatus();
-        }
-        if (config.mode === "upload") {
-          enableUploadPanel();
-        }
-        loadSaveList(function(saves) {
-          if (autoLoadEnabled && saves.length > 0) {
-            saveSelect.value = saves[0].filename;
-            loadSelectedSave();
-          }
-        });
-      })
-      .catch(function() { loadSaveList(); }); // --auto is opt-in; a config fetch failure just falls back to manual loading.
+    // Dropping a save anywhere on the page works too -- with no landing
+    // page, this is the fastest path from "opened the site" to "map loaded".
+    document.addEventListener("dragover", function(e) {
+      e.preventDefault();
+    });
+    document.addEventListener("drop", function(e) {
+      e.preventDefault();
+      loadLocalFile(e.dataTransfer && e.dataTransfer.files[0]);
+    });
   });
 })();

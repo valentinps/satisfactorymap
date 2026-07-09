@@ -818,7 +818,7 @@ var FindItem = {};
 
   // Blanks every modal section, fetches, then fills via the given fill
   // function -- the shared skeleton of runBuildingSearchFor/runVehicleSearchFor.
-  function runInfoSearchFor(entry, url, fillFromInfo) {
+  function runInfoSearchFor(entry, infoPromise, fillFromInfo) {
     openBuildingModal(entry);
     buildingModalSummary.textContent = "Loading…";
     buildingModalStats.innerHTML = "";
@@ -826,8 +826,7 @@ var FindItem = {};
     buildingModalInventoryLabel.style.display = "none";
     buildingModalInventory.innerHTML = "";
     buildingModalHighlightToggle.style.display = "none";
-    fetch(url)
-      .then(function(response) { return response.json(); })
+    infoPromise
       .then(function(info) {
         if (info.error) {
           buildingModalSummary.textContent = info.error;
@@ -845,29 +844,23 @@ var FindItem = {};
   }
 
   function runBuildingSearchFor(entry) {
-    var filename = window.MapApp.currentFile;
-    if (!filename) {
+    if (!window.MapApp.currentFile) {
       return;
     }
-    runInfoSearchFor(entry,
-      "/api/building-info?file=" + encodeURIComponent(filename) + "&types=" + encodeURIComponent(entry.typePaths.join(",")),
-      fillBuildingModalFromInfo);
+    runInfoSearchFor(entry, SaveClient.buildingInfo(entry.typePaths), fillBuildingModalFromInfo);
   }
 
   function runVehicleSearchFor(entry) {
-    var filename = window.MapApp.currentFile;
-    if (!filename) {
+    if (!window.MapApp.currentFile) {
       return;
     }
-    var typesParam = entry.isTrain ? "train" : entry.typePaths.join(",");
     runInfoSearchFor(entry,
-      "/api/vehicle-info?file=" + encodeURIComponent(filename) + "&types=" + encodeURIComponent(typesParam),
+      entry.isTrain ? SaveClient.trainInfo() : SaveClient.vehicleInfo(entry.typePaths),
       fillVehicleModalFromInfo);
   }
 
   function runSearchFor(itemPath, label) {
-    var filename = window.MapApp.currentFile;
-    if (!filename) {
+    if (!window.MapApp.currentFile) {
       return;
     }
     openModal(label);
@@ -875,8 +868,7 @@ var FindItem = {};
     modalSummary.textContent = "Searching...";
     modalList.innerHTML = "";
     modalHighlightToggle.style.display = "none";
-    fetch("/api/find-item?file=" + encodeURIComponent(filename) + "&item=" + encodeURIComponent(itemPath))
-      .then(function(response) { return response.json(); })
+    SaveClient.findItem(itemPath)
       .then(function(result) {
         if (result.error) {
           modalSummary.textContent = result.error;

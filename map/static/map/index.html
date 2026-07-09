@@ -14,7 +14,7 @@
       <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
     </svg>
   </button>
-  <button id="logoButton" title="Back to mode selection">
+  <button id="logoButton" title="Satisfactory Save Map">
     <span class="logoKicker">Satisfactory</span>
     <span class="logoName">Save Map</span>
   </button>
@@ -69,29 +69,16 @@
 
     <div id="sidebarFooter">
       <div id="loadPanel">
-        <label for="saveSelect" id="loadPanelHeader">
+        <div id="loadPanelHeader">
           <svg class="loadPanelIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13">
             <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
             <path d="M8 3v5h8V3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
           </svg>
           <span>Save File</span>
-        </label>
-        <select id="saveSelect"></select>
-        <button id="loadButton">Load save</button>
-        <!-- Opt-in watcher (see data.js) -- off by default; when enabled, the
-             save folder is re-checked every few seconds and a newer save is
-             loaded automatically. Replaces the old always-on --auto polling. -->
-        <div id="autoRefreshRow" title="Automatically load the newest save when one appears">
-          <span id="autoRefreshLabel">Auto-reload new saves</span>
-          <label class="toggleSwitch">
-            <input type="checkbox" id="autoRefreshToggle">
-            <span class="toggleSlider"></span>
-          </label>
         </div>
-        <!-- Manual-upload mode only (see data.js) -- shown in place of the
-             auto-reload toggle above, which is meaningless when new saves
-             can only ever arrive by upload. -->
-        <div id="uploadDropZone" style="display:none" title="Upload a new save file">
+        <!-- The save never leaves the browser: it's parsed locally by the
+             WASM parser in worker.js (see save_client.js/data.js). -->
+        <div id="uploadDropZone" title="Load a save file">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14">
             <path d="M12 15V4m0 0 4 4m-4-4-4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             <path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -103,8 +90,6 @@
         <div id="loadProgressBar"><div id="loadProgressFill"></div></div>
         <div id="totalObjectCount"></div>
       </div>
-
-      <div id="sftpPanel" style="display:none"></div>
 
       <div id="gameSettingsPanel" style="display:none"></div>
     </div>
@@ -255,6 +240,7 @@
 <script src="progression.js"></script>
 <script src="selection.js"></script>
 <script src="contextmenu.js"></script>
+<script src="save_client.js"></script>
 <script src="data.js"></script>
 </body>
 </html>
