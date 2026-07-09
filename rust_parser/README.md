@@ -36,14 +36,18 @@ runtime fallback.
 
 ## Building
 
-One-time setup (already done on this machine): VS Build Tools 2022 C++
-workload, rustup (MSVC toolchain), `pip install maturin` in the server's
-Python environment. Then:
+One-time setup: a Rust toolchain via [rustup](https://rustup.rs/) (on Windows
+the MSVC toolchain, which needs the Visual Studio Build Tools "Desktop
+development with C++" workload), and `pip install maturin` in the same Python
+environment the map server runs in. Then:
 
 ```
 cd rust_parser
 maturin develop --release
 ```
+
+Rebuild with the same command after touching the Rust sources. The build is
+optional — without it the shim falls back to the pure-Python parser.
 
 Backend selection: `SAV_PARSE_IMPL=rust|py` (default: Rust when importable,
 with stderr notice on fallback).
