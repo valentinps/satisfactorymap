@@ -16,6 +16,28 @@ fn load(name: &str) -> SaveStore {
     parse_full_save(&bytes, &ClassTables::embedded(), None).unwrap()
 }
 
+/// The absolute wire-mesh endpoint positions cached in a power line's
+/// mWireInstances "Locations" vectors.
+fn wire_locations(store: &SaveStore, li: usize, oi: usize) -> Vec<[f64; 3]> {
+    use sav_core::store::{PropertyValue, StructValue};
+    let object = store.parse_object_at(li, oi).unwrap();
+    let mut out = Vec::new();
+    if let Some(entries) =
+        sav_core::mapdata::props::array_structs(&object.properties, &store.data, b"mWireInstances")
+    {
+        for entry in entries {
+            for prop in &entry.props {
+                if !prop.name.wide && prop.name.bytes(&store.data) == b"Locations" {
+                    if let PropertyValue::Struct(StructValue::Vector(v)) = &prop.value {
+                        out.push(*v);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 fn actors_of_type<'a>(store: &'a SaveStore, prefix: &str) -> Vec<(usize, usize, String)> {
     let mut out = Vec::new();
     for (li, level) in store.levels.iter().enumerate() {
@@ -126,10 +148,12 @@ fn duplicate_powered_pair_includes_and_remaps_wire() {
             }
         }
     }
-    let Some((owner_a, owner_b, _wire)) = target else {
+    let Some((owner_a, owner_b, wire)) = target else {
         eprintln!("save has no two-owner wire; skipping");
         return;
     };
+    let (wli, woi) = *scan.by_instance_name.get(wire.as_bytes()).unwrap();
+    let original_locations = wire_locations(&store, wli, woi);
 
     let count_wires = |s: &SaveStore| -> usize {
         s.levels
@@ -169,11 +193,26 @@ fn duplicate_powered_pair_includes_and_remaps_wire() {
                 // Both endpoints resolve to components that exist.
                 assert!(scan2.by_instance_name.contains_key(pa.as_bytes()), "endpoint {} missing", pa);
                 assert!(scan2.by_instance_name.contains_key(pb.as_bytes()), "endpoint {} missing", pb);
+                // The cached wire-mesh endpoint positions moved with the
+                // copy: they are what the map (and the game) draw the wire
+                // from, so stale ones would visually attach the copy's wire
+                // to the ORIGINAL buildings.
+                let &(cli, coi) = scan2.by_instance_name.get(name).unwrap();
+                let copy_locations = wire_locations(&store2, cli, coi);
+                assert_eq!(copy_locations.len(), original_locations.len());
+                for (copy, orig) in copy_locations.iter().zip(&original_locations) {
+                    assert_eq!(copy[0], orig[0] + 3000.0, "wire location not translated");
+                    assert_eq!(copy[1], orig[1]);
+                    assert_eq!(copy[2], orig[2]);
+                }
                 checked = true;
             }
         }
     }
     assert!(checked, "no new wire found");
+
+    // Originals untouched.
+    assert_eq!(wire_locations(&store2, wli, woi), original_locations);
 }
 
 #[test]

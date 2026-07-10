@@ -214,6 +214,93 @@ fn move_lightweight_instance() {
 }
 
 #[test]
+fn move_both_wire_owners_moves_the_wire() {
+    use sav_core::mapdata::scan::SaveScan;
+    use sav_core::store::{PropertyValue, StructValue};
+
+    let store = load("All_autosave_0.sav");
+    let tables = ClassTables::embedded();
+    let data: &[u8] = &store.data;
+
+    let wire_locations = |s: &SaveStore, li: usize, oi: usize| -> Vec<[f64; 3]> {
+        let object = s.parse_object_at(li, oi).unwrap();
+        let mut out = Vec::new();
+        if let Some(entries) =
+            sav_core::mapdata::props::array_structs(&object.properties, &s.data, b"mWireInstances")
+        {
+            for entry in entries {
+                for prop in &entry.props {
+                    if !prop.name.wide && prop.name.bytes(&s.data) == b"Locations" {
+                        if let PropertyValue::Struct(StructValue::Vector(v)) = &prop.value {
+                            out.push(*v);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    };
+
+    // A wire with two distinct resolvable owners.
+    let scan = SaveScan::new(&store);
+    let mut target: Option<(String, String, String)> = None;
+    'outer: for level in &store.levels {
+        for (oi, object) in level.parsed_objects().iter().enumerate() {
+            if let ActorSpecific::PowerLine(a, b) = &object.actor_specific {
+                let (pa, pb) = (a.path_name.to_string(data), b.path_name.to_string(data));
+                let (Some(da), Some(db)) = (pa.rfind('.'), pb.rfind('.')) else { continue };
+                let (owner_a, owner_b) = (pa[..da].to_string(), pb[..db].to_string());
+                if owner_a != owner_b
+                    && scan.by_instance_name.contains_key(owner_a.as_bytes())
+                    && scan.by_instance_name.contains_key(owner_b.as_bytes())
+                {
+                    target = Some((owner_a, owner_b, level.headers[oi].instance_name().to_string(data)));
+                    break 'outer;
+                }
+            }
+        }
+    }
+    let Some((owner_a, owner_b, wire)) = target else {
+        eprintln!("save has no two-owner wire; skipping");
+        return;
+    };
+    let &(wli, woi) = scan.by_instance_name.get(wire.as_bytes()).unwrap();
+    let before_locations = wire_locations(&store, wli, woi);
+    assert!(!before_locations.is_empty(), "wire has no cached Locations");
+    let before_pos = match &store.levels[wli].headers[woi] {
+        Header::Actor(a) => a.position,
+        _ => unreachable!(),
+    };
+
+    let op = EditOp::MoveActors {
+        names: vec![owner_a, owner_b],
+        delta: [4000.0, -2500.0, 100.0],
+        rotate_yaw_deg: 0.0,
+        pivot: None,
+    };
+    let store2 = session::step(&store, &op, &tables).unwrap();
+
+    let scan2 = SaveScan::new(&store2);
+    let &(wli2, woi2) = scan2.by_instance_name.get(wire.as_bytes()).unwrap();
+    // The wire actor itself followed (it wasn't in `names`).
+    let after_pos = match &store2.levels[wli2].headers[woi2] {
+        Header::Actor(a) => a.position,
+        _ => unreachable!(),
+    };
+    assert_eq!(after_pos[0], before_pos[0] + 4000.0);
+    assert_eq!(after_pos[1], before_pos[1] - 2500.0);
+    assert_eq!(after_pos[2], before_pos[2] + 100.0);
+    // And so did its cached mesh-endpoint positions.
+    let after_locations = wire_locations(&store2, wli2, woi2);
+    assert_eq!(after_locations.len(), before_locations.len());
+    for (after, before) in after_locations.iter().zip(&before_locations) {
+        assert_eq!(after[0], before[0] + 4000.0);
+        assert_eq!(after[1], before[1] - 2500.0);
+        assert_eq!(after[2], before[2] + 100.0);
+    }
+}
+
+#[test]
 fn replay_is_deterministic() {
     let store = load("All_autosave_0.sav");
     let (_, _, name) = find_actor(&store, "/Game/FactoryGame/Buildable/Factory/ConstructorMk1/");

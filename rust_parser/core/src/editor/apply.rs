@@ -255,6 +255,56 @@ fn chain_splines_by_belt(store: &SaveStore) -> PResult<HashMap<Vec<u8>, ChainSpl
     Ok(map)
 }
 
+/// Absolute world positions cached in a power line's mWireInstances
+/// ("Locations" vectors) -- the wire-mesh endpoints the game and the map
+/// renderer draw from. They must be transformed together with the wire.
+fn wire_cached_locations(object: &Object, data: &[u8]) -> Vec<[f64; 3]> {
+    let mut out = Vec::new();
+    if let Some(entries) =
+        crate::mapdata::props::array_structs(&object.properties, data, b"mWireInstances")
+    {
+        for entry in entries {
+            for prop in &entry.props {
+                if !prop.name.wide && prop.name.bytes(data) == b"Locations" {
+                    if let PropertyValue::Struct(StructValue::Vector(v)) = &prop.value {
+                        out.push(*v);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Offsets of every 24-byte little-endian encoding of `v` inside `hay`
+/// (wire objects are a few hundred bytes; a full scan is nothing). Property
+/// value offsets aren't retained by the parser, so the values locate
+/// themselves by their own bytes -- exact f64 bit patterns, no false hits in
+/// practice, and the strict re-parse gates the result regardless.
+fn find_f64x3(hay: &[u8], v: [f64; 3]) -> Vec<usize> {
+    let mut pat = [0u8; 24];
+    for (i, x) in v.iter().enumerate() {
+        pat[i * 8..i * 8 + 8].copy_from_slice(&x.to_le_bytes());
+    }
+    if hay.len() < 24 {
+        return Vec::new();
+    }
+    (0..hay.len() - 23).filter(|&i| hay[i..i + 24] == pat).collect()
+}
+
+fn transform_vec3(v: [f64; 3], deg: f64, pivot: Option<[f64; 2]>, delta: &[f64; 3]) -> [f64; 3] {
+    let (nx, ny) = transform_xy(v[0], v[1], deg, pivot, delta);
+    [nx, ny, v[2] + delta[2]]
+}
+
+fn encode_f64x3(v: [f64; 3]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(24);
+    for x in v {
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out
+}
+
 fn plan_move_actors(
     store: &SaveStore,
     scan: &SaveScan,
@@ -269,16 +319,11 @@ fn plan_move_actors(
     }
     let data: &[u8] = &store.data;
     let chains = chain_splines_by_belt(store)?;
-    for name in names {
-        let Some(&(li, oi)) = scan.by_instance_name.get(name.as_bytes()) else {
-            return Err(perr!("No such instance: {}", name));
-        };
+
+    let mut move_one = |li: usize, oi: usize, object: &Object| -> PResult<()> {
         let header = &store.levels[li].headers[oi];
-        let object = fetch(store, li, oi)?;
-        if let Some(reason) = move_refusal(store, header, &object) {
-            return Err(perr!("Cannot move {}: {}", name, reason));
-        }
         let Header::Actor(actor) = header else { unreachable!() };
+        let name = actor.instance_name.bytes(data);
 
         // Header transform: quat f32x4 then position f32x3.
         let t = actor.transform_off as usize;
@@ -302,7 +347,7 @@ fn plan_move_actors(
 
         // Chained belts: their chain actor's spline elements are world-space
         // [location, arriveTangent, leaveTangent] f64 triplets.
-        if let Some(cs) = chains.get(name.as_bytes()) {
+        if let Some(cs) = chains.get(name) {
             for e in 0..cs.element_count {
                 let base = cs.elements_off as usize + e * 72;
                 let mut elem = data[base..base + 72].to_vec();
@@ -318,6 +363,64 @@ fn plan_move_actors(
                     write_f64(&mut elem, r + 8, ty);
                 }
                 plan.patch(base, elem);
+            }
+        }
+
+        // Power lines: the wire mesh's endpoint positions are cached as
+        // absolute world "Locations" vectors in the object's properties --
+        // the map (and the game) draw the wire from them.
+        let locations = wire_cached_locations(object, data);
+        if !locations.is_empty() {
+            let (span_off, span_len) = store.levels[li].object_spans[oi];
+            let span = &data[span_off as usize..(span_off + span_len) as usize];
+            for v in locations {
+                let replacement = encode_f64x3(transform_vec3(v, rotate_yaw_deg, pivot, delta));
+                for rel in find_f64x3(span, v) {
+                    plan.patch(span_off as usize + rel, replacement.clone());
+                }
+            }
+        }
+        Ok(())
+    };
+
+    let mut moved_actor_names: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut moved_slots: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for name in names {
+        let Some(&(li, oi)) = scan.by_instance_name.get(name.as_bytes()) else {
+            return Err(perr!("No such instance: {}", name));
+        };
+        if !moved_slots.insert((li, oi)) {
+            continue;
+        }
+        let header = &store.levels[li].headers[oi];
+        let object = fetch(store, li, oi)?;
+        if let Some(reason) = move_refusal(store, header, &object) {
+            return Err(perr!("Cannot move {}: {}", name, reason));
+        }
+        moved_actor_names.insert(name.as_bytes().to_vec());
+        move_one(li, oi, &object)?;
+    }
+
+    // Wires whose BOTH endpoint owners moved follow along rigidly (wires
+    // aren't map-selectable, so they never appear in `names` themselves).
+    let owner_moved = |endpoint: &ObjectRef| -> bool {
+        if endpoint.path_name.is_empty() {
+            return false;
+        }
+        let path = endpoint.path_name.bytes(data);
+        match path.iter().rposition(|&b| b == b'.') {
+            Some(dot) => moved_actor_names.contains(&path[..dot]),
+            None => false,
+        }
+    };
+    for (li, oi) in actor_slots_of_types(store, &crate::object::POWER_LINES) {
+        if moved_slots.contains(&(li, oi)) {
+            continue;
+        }
+        let object = fetch(store, li, oi)?;
+        if let ActorSpecific::PowerLine(a, b) = &object.actor_specific {
+            if owner_moved(a) && owner_moved(b) {
+                move_one(li, oi, &object)?;
             }
         }
     }
@@ -581,6 +684,22 @@ fn plan_duplicate_actors(
             write_f32(&mut header_copy, t + 16, nx as f32);
             write_f32(&mut header_copy, t + 20, ny as f32);
             write_f32(&mut header_copy, t + 24, (actor.position[2] as f64 + delta[2]) as f32);
+
+            // Copied power lines: also transform the cached wire-mesh
+            // endpoint "Locations" vectors (absolute world coordinates in
+            // the object's properties -- the map and the game draw the wire
+            // from them, so leaving them puts the copy's wire back on the
+            // originals). Same-length f64 rewrites, found by value.
+            let tp = actor.type_path.bytes(data);
+            if crate::object::POWER_LINES.iter().any(|c| c.as_bytes() == tp) {
+                let object = fetch(store, li, oi)?;
+                for v in wire_cached_locations(&object, data) {
+                    let replacement = encode_f64x3(transform_vec3(v, rotate_yaw_deg, pivot, delta));
+                    for rel in find_f64x3(&body_copy, v) {
+                        body_copy[rel..rel + 24].copy_from_slice(&replacement);
+                    }
+                }
+            }
         }
         new_headers.extend_from_slice(&header_copy);
         new_bodies.extend_from_slice(&body_copy);
