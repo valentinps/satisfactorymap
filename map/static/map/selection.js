@@ -17,6 +17,8 @@ var SelectionTool = {};
   var countEl = document.getElementById("selectionCount");
   var objectsBtn = document.getElementById("selectionObjectsBtn");
   var inventoryBtn = document.getElementById("selectionInventoryBtn");
+  var moveBtn = document.getElementById("selectionMoveBtn");
+  var offsetBtn = document.getElementById("selectionOffsetBtn");
   var clearBtn = document.getElementById("selectionClearBtn");
 
   var overlay = document.getElementById("selectionModalOverlay");
@@ -38,7 +40,28 @@ var SelectionTool = {};
 
   var selecting = false;
   var startClient = null;
-  var lastSelection = null; // { total, byLabel, labelOrder, ids }
+  var lastSelection = null; // { total, byLabel, labelOrder, ids, editTargets }
+
+  // Buckets whose objects the save editor can transform: buildings (normal
+  // actors + lightweight foundations/walls) and belt/pipe segments. Vehicle,
+  // train, creature, and collectable buckets are viewer-only -- their
+  // objects are counted into editTargets.skipped instead, and the Rust edit
+  // engine independently refuses anything unsupported that slips through.
+  function isEditableBucket(bucket) {
+    return bucket.key.indexOf("building:") === 0 || isSelectableLineBucket(bucket);
+  }
+
+  var LIGHTWEIGHT_ID_PREFIX = "LightweightBuildable:";
+
+  // "LightweightBuildable:<typePath>:<idx>" -> {typePath, index} (type paths
+  // never contain ':', so the last colon splits off the index).
+  function parseLightweightId(id) {
+    var sep = id.lastIndexOf(":");
+    return {
+      typePath: id.slice(LIGHTWEIGHT_ID_PREFIX.length, sep),
+      index: parseInt(id.slice(sep + 1), 10),
+    };
+  }
 
   function el(tag, className, text) {
     var e = document.createElement(tag);
@@ -82,8 +105,16 @@ var SelectionTool = {};
     var labelOrder = [];
     var ids = [];
     var counters = { total: 0 };
+    // What the save editor can act on, plus the map-pixel bbox of the
+    // editable objects (its center anchors ghost placement / rotation).
+    var editTargets = {
+      actorNames: [],
+      lightweight: [],
+      skipped: 0,
+      bbox: { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
+    };
 
-    function record(bucket, id) {
+    function record(bucket, id, x, y) {
       counters.total++;
       if (!byLabel.hasOwnProperty(bucket.label)) {
         byLabel[bucket.label] = 0;
@@ -94,8 +125,22 @@ var SelectionTool = {};
       // never hold inventory, so they're left out of the inventory query --
       // both to keep the POST small on big selections and because the backend
       // would skip them anyway. They still count above.
-      if (id && id.indexOf("LightweightBuildable:") !== 0) {
+      if (id && id.indexOf(LIGHTWEIGHT_ID_PREFIX) !== 0) {
         ids.push(id);
+      }
+      if (id && isEditableBucket(bucket)) {
+        if (id.indexOf(LIGHTWEIGHT_ID_PREFIX) === 0) {
+          editTargets.lightweight.push(parseLightweightId(id));
+        } else {
+          editTargets.actorNames.push(id);
+        }
+        var b = editTargets.bbox;
+        b.minX = Math.min(b.minX, x);
+        b.minY = Math.min(b.minY, y);
+        b.maxX = Math.max(b.maxX, x);
+        b.maxY = Math.max(b.maxY, y);
+      } else {
+        editTargets.skipped++;
       }
     }
 
@@ -130,7 +175,7 @@ var SelectionTool = {};
             }
           }
           if (hit) {
-            record(bucket, bucket.ids ? bucket.ids[li] : null);
+            record(bucket, bucket.ids ? bucket.ids[li] : null, line[0], line[1]);
           }
         }
         return;
@@ -146,10 +191,10 @@ var SelectionTool = {};
         if (x < minX || x > maxX || y < minY || y > maxY || z < altMin || z > altMax) {
           continue;
         }
-        record(bucket, bucket.ids ? bucket.ids[i / stride] : null);
+        record(bucket, bucket.ids ? bucket.ids[i / stride] : null, x, y);
       }
     });
-    return { total: counters.total, byLabel: byLabel, labelOrder: labelOrder, ids: ids };
+    return { total: counters.total, byLabel: byLabel, labelOrder: labelOrder, ids: ids, editTargets: editTargets };
   }
 
   // A plain right-click (no drag) opens the context menu for whatever's
@@ -185,6 +230,14 @@ var SelectionTool = {};
     var hasAny = selection.total > 0;
     objectsBtn.disabled = !hasAny;
     inventoryBtn.disabled = selection.ids.length === 0;
+    var editable = selection.editTargets.actorNames.length + selection.editTargets.lightweight.length;
+    moveBtn.disabled = editable === 0;
+    offsetBtn.disabled = editable === 0;
+    moveBtn.title = editable === 0
+      ? "Nothing editable selected"
+      : "Move " + editable.toLocaleString() + " object" + (editable === 1 ? "" : "s")
+        + (selection.editTargets.skipped ? " (" + selection.editTargets.skipped + " not editable, left behind)" : "");
+    offsetBtn.title = moveBtn.title;
     panel.style.display = "flex";
   }
 
@@ -293,6 +346,24 @@ var SelectionTool = {};
       .catch(function(error) {
         modalSummary.textContent = "Failed to load inventory: " + error;
       });
+  });
+
+  moveBtn.addEventListener("click", function() {
+    if (!lastSelection || moveBtn.disabled) {
+      return;
+    }
+    var targets = lastSelection.editTargets;
+    clearSelection();
+    EditorTool.startMove(targets);
+  });
+
+  offsetBtn.addEventListener("click", function() {
+    if (!lastSelection || offsetBtn.disabled) {
+      return;
+    }
+    var targets = lastSelection.editTargets;
+    clearSelection();
+    EditorTool.openOffsetDialog(targets);
   });
 
   clearBtn.addEventListener("click", clearSelection);

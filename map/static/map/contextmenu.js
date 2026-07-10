@@ -71,6 +71,16 @@ var ContextMenu = {};
       window.Tooltip.hide();
     }
 
+    // Save-editor actions -- only for objects the edit engine can transform
+    // (see EditorTool.targetsFromHit; null for vehicles/trains/etc).
+    var editTargets = window.EditorTool ? EditorTool.targetsFromHit(hit) : null;
+    if (editTargets) {
+      addItem("Move this object…", function() {
+        EditorTool.startMove(editTargets);
+      });
+      menu.appendChild(el("div", "contextMenuDivider"));
+    }
+
     addItem("Hide this object", function() {
       MapApp.hideObject(bucket, hit.index);
       Filters.refreshHiddenObjectsIndicator();

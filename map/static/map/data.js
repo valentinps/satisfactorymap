@@ -104,6 +104,27 @@
     MapApp.setHighlight(bucket, selection.id);
   }
 
+  // The payload -> UI build chain, shared by save loads and save edits (the
+  // editor's applyEdits returns a payload of exactly the same shape).
+  function applyPayload(payload) {
+    Tooltip.hide();
+    MapApp.setHighlight(null, null);
+    Filters.build(payload);
+    Altitude.build(payload);
+    FindItem.build(payload);
+    Progression.build(payload);
+    SelectionTool.reset();
+    showGameSettings(payload.gameSettings);
+  }
+
+  // Editor.js drives the same progress/status UI during applyEdits.
+  window.SaveLoadFlow = {
+    applyPayload: applyPayload,
+    showProgress: showProgress,
+    hideProgress: hideProgress,
+    setStatus: setStatus,
+  };
+
   function loadLocalFile(file) {
     if (!file) {
       return;
@@ -132,21 +153,14 @@
         hideProgress();
         loadInFlight = false;
         resetUploadZone();
-        Tooltip.hide();
-        MapApp.setHighlight(null, null);
         // Stable per-file key: detail features guard on this, and the
         // pinned-tooltip restore survives re-loading the same file.
         MapApp.currentFile = "local:" + file.name + ":" + file.size + ":" + file.lastModified;
         EditorTool.onSaveLoaded(file.name);
-        Filters.build(payload);
-        Altitude.build(payload);
-        FindItem.build(payload);
-        Progression.build(payload);
-        SelectionTool.reset();
+        applyPayload(payload);
         if (pinnedSelection) {
           restorePinnedSelection(pinnedSelection);
         }
-        showGameSettings(payload.gameSettings);
         setStatus("Loaded: " + payload.sessionName + " (" + payload.saveDatetime + ")");
       })
       .catch(function(error) {
