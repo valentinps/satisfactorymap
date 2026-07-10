@@ -34,9 +34,19 @@ HEADERS = """/*
 def main():
     skip_wasm = "--skip-wasm" in sys.argv
 
-    if os.path.isdir(DIST):
-        shutil.rmtree(DIST)
-    os.makedirs(DIST)
+    # Clear dist/'s CONTENTS rather than the directory itself: on Windows a
+    # process whose cwd is dist/ (an old dev server, an open terminal) locks
+    # the directory inode, and rmtree of the root dies with WinError 32 --
+    # deleting the entries inside is still allowed.
+    os.makedirs(DIST, exist_ok=True)
+    for name in os.listdir(DIST):
+        if skip_wasm and name == "pkg":
+            continue  # --skip-wasm reuses the previously built wasm package.
+        path = os.path.join(DIST, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
 
     # Frontend static files.
     for name in os.listdir(STATIC):

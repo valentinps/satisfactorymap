@@ -21,6 +21,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".js": "text/javascript",
     }
 
+    def __init__(self, *args, **kwargs):
+        # directory= instead of os.chdir(DIST): holding dist/ as the
+        # process cwd would block build_site.py's rebuild on Windows.
+        super().__init__(*args, directory=DIST, **kwargs)
+
     def end_headers(self):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
@@ -29,7 +34,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
-    os.chdir(DIST)
     with http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
         print(f"Serving dist/ at http://127.0.0.1:{port}/")
         server.serve_forever()
