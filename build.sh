@@ -2,6 +2,9 @@
 # Exit immediately if a command exits with a non-zero status
 set -e 
 
+echo "Installing wasm-pack..."
+curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
 echo "Downloading game data from GitHub Releases..."
 wget -O game_data.zip https://github.com/valentinps/satisfactorymap/releases/download/game-data-v1/game_data.zip
 
