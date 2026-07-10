@@ -73,6 +73,25 @@ self.onmessage = async (event) => {
       }
       let raw;
       switch (op) {
+         case "applyEdits": {
+            // Rebuilds the store + payload inside the session; progress
+            // events reuse the load phases ("Parsing"/"Building map data").
+            const payload = session.apply_edits(
+               JSON.stringify(msg.ops),
+               !!msg.fromPristine,
+               (phase, current, total) => {
+                  self.postMessage({
+                     type: "progress",
+                     phase: PHASE_LABELS[phase] || "Applying edits",
+                     current,
+                     total,
+                     memBytes: wasmMemBytes(),
+                  });
+               }
+            );
+            reply(id, payload, [payload.buffer]);
+            return;
+         }
          case "exportSave": {
             const bytes = session.export_sav();
             reply(id, bytes, [bytes.buffer]);

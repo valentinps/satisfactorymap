@@ -250,6 +250,27 @@ pub fn parse_full_save(
         decompress_save_file(file_data, body_offset, dyn_cb.take())?
     };
 
+    parse_body_bytes(
+        decompressed,
+        file_data[..body_offset].to_vec(),
+        info,
+        tables,
+        progress,
+    )
+}
+
+/// Parse an already-decompressed body (bytes start at the leading u64
+/// uncompressedSize; anything past uncompressedSize+8 is truncated away).
+/// `file_header` is the raw uncompressed .sav prefix, retained for export.
+/// This is also the editor's validation gate: every edited body goes through
+/// here before it replaces the live store.
+pub fn parse_body_bytes(
+    decompressed: Vec<u8>,
+    file_header: Vec<u8>,
+    info: crate::save_header::SaveFileInfo,
+    tables: &ClassTables,
+    mut progress: Option<ProgressFn>,
+) -> PResult<SaveStore> {
     // SaveFileHeader: uncompressedSize (+8), truncate.
     let mut hc = Cursor::new(&decompressed, 0);
     let uncompressed_size = hc.u64()? as usize + 8;
@@ -292,7 +313,7 @@ pub fn parse_full_save(
         drop_pod_refs,
         extra_refs,
         calculator_extras,
-        file_header: file_data[..body_offset].to_vec(),
+        file_header,
         padded,
     })
 }

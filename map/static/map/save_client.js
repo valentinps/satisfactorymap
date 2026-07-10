@@ -90,6 +90,19 @@ const SaveClient = (() => {
       selectionInventory(names) {
          return request({ op: "selectionInventory", names });
       },
+      // applyEdits(ops, fromPristine, onProgress) -> Promise<payload object>.
+      // ops: array of edit-op objects (see rust editor/ops.rs). fromPristine
+      // replaces the whole op list (undo); otherwise ops append.
+      applyEdits(ops, fromPristine, onProgress) {
+         activeProgress = onProgress || null;
+         return request({ op: "applyEdits", ops, fromPristine }).then((payloadBytes) => {
+            activeProgress = null;
+            return JSON.parse(new TextDecoder().decode(payloadBytes));
+         }, (error) => {
+            activeProgress = null;
+            throw error;
+         });
+      },
       // exportSave() -> Promise<Uint8Array of .sav bytes> (the current,
       // possibly edited, save re-serialized; the uploaded file is untouched).
       exportSave() {

@@ -90,6 +90,11 @@ pub struct SaveSession {
     store: Arc<SaveStore>,
     index: MapIndex,
     payload_json: Vec<u8>,
+    /// The unedited body (no quirk pad), captured lazily on the first edit --
+    /// undo replays the remaining ops from here.
+    pristine_body: Option<Vec<u8>>,
+    /// Ops applied to reach the current store, in order.
+    ops: Vec<sav_core::editor::EditOp>,
 }
 
 #[wasm_bindgen]
@@ -123,7 +128,87 @@ impl SaveSession {
             mapdata::build_all_json(&store, Some(&mut build_progress))
                 .map_err(|e| JsError::new(&e))?;
 
-        Ok(SaveSession { store: Arc::new(store), index, payload_json })
+        Ok(SaveSession {
+            store: Arc::new(store),
+            index,
+            payload_json,
+            pristine_body: None,
+            ops: Vec::new(),
+        })
+    }
+
+    /// Apply edit ops (JSON array of EditOp). `from_pristine` replaces the
+    /// whole op list and replays it from the unedited body (the undo path);
+    /// otherwise the ops append to the current state. Returns the rebuilt
+    /// map payload JSON. On error the previous state is kept.
+    /// `on_progress(phase, current, total)` reuses the load progress phases.
+    pub fn apply_edits(
+        &mut self,
+        ops_json: &str,
+        from_pristine: bool,
+        on_progress: &js_sys::Function,
+    ) -> Result<Vec<u8>, JsError> {
+        let call = |phase: u8, current: u64, total: u64| {
+            let this = JsValue::NULL;
+            let _ = on_progress.call3(
+                &this,
+                &JsValue::from_f64(phase as f64),
+                &JsValue::from_f64(current as f64),
+                &JsValue::from_f64(total as f64),
+            );
+        };
+        let new_ops = sav_core::editor::ops::parse_ops_json(ops_json)
+            .map_err(|e| JsError::new(&e.msg))?;
+        let tables = ClassTables::embedded();
+
+        if self.pristine_body.is_none() {
+            self.pristine_body = Some(sav_core::editor::effective_body(&self.store).to_vec());
+        }
+
+        let new_store = if from_pristine {
+            let pristine = self.pristine_body.as_ref().unwrap();
+            let mut progress = |current: u64, total: u64| call(1, current, total);
+            sav_core::editor::session::rebuild(
+                pristine,
+                &self.store.file_header,
+                &self.store.info,
+                &tables,
+                &new_ops,
+                Some(&mut progress),
+            )
+            .map_err(|e| JsError::new(&e.msg))?
+        } else {
+            let mut store: Option<SaveStore> = None;
+            let total = new_ops.len() as u64;
+            for (i, op) in new_ops.iter().enumerate() {
+                let base: &SaveStore = store.as_ref().unwrap_or(&self.store);
+                store = Some(
+                    sav_core::editor::session::step(base, op, &tables)
+                        .map_err(|e| JsError::new(&e.msg))?,
+                );
+                call(1, i as u64 + 1, total);
+            }
+            match store {
+                Some(s) => s,
+                None => return Err(JsError::new("No edit ops given")),
+            }
+        };
+
+        // Swap in the new state, then rebuild index + payload. Drop the old
+        // store first so peak memory stays bounded (wasm memory never
+        // shrinks; the Arc here is the only holder).
+        self.store = Arc::new(new_store);
+        let mut build_progress = |current: u64, total: u64| call(2, current, total);
+        let (payload_json, index) =
+            mapdata::build_all_json(&self.store, Some(&mut build_progress))
+                .map_err(|e| JsError::new(&e))?;
+        self.index = index;
+        if from_pristine {
+            self.ops = new_ops;
+        } else {
+            self.ops.extend(new_ops);
+        }
+        Ok(payload_json)
     }
 
     /// The full map payload as JSON bytes (returned as a Uint8Array; decode +
