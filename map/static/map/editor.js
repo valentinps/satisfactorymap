@@ -45,10 +45,11 @@ var EditorTool = (function() {
   var ghost, hintBar;
   var offsetOverlay, offsetDx, offsetDy, offsetDz, offsetRot, offsetApply, offsetCancel;
 
-  // Active ghost placement, or null: { targets, anchor: {x, y} (map px),
-  // bbox: {minX..maxY} (map px), rotSteps }
+  // Active ghost placement, or null: { mode: "move"|"paste", targets,
+  // anchor: {x, y} (map px), bbox: {minX..maxY} (map px), rotSteps }
   var placement = null;
   var offsetTargets = null; // targets of the open offset dialog
+  var clipboard = null;     // editTargets captured by Copy
 
   // ---- Targets ---------------------------------------------------------------
 
@@ -114,6 +115,33 @@ var EditorTool = (function() {
     if (targets.lightweight.length) {
       ops.push({
         op: "moveLightweight",
+        items: targets.lightweight,
+        delta: deltaWorld,
+        rotateYawDeg: rotDeg,
+        pivot: rotDeg ? pivotWorld : null,
+      });
+    }
+    return ops;
+  }
+
+  function buildDuplicateOps(targets, deltaWorld, rotDeg, pivotWorld) {
+    // The seed is stored inside the op, so undo/redo replays regenerate the
+    // exact same instance names.
+    var seed = Math.floor(Math.random() * 0x1fffffffffffff);
+    var ops = [];
+    if (targets.actorNames.length) {
+      ops.push({
+        op: "duplicateActors",
+        names: targets.actorNames,
+        delta: deltaWorld,
+        rotateYawDeg: rotDeg,
+        pivot: rotDeg ? pivotWorld : null,
+        seed: seed,
+      });
+    }
+    if (targets.lightweight.length) {
+      ops.push({
+        op: "duplicateLightweight",
         items: targets.lightweight,
         delta: deltaWorld,
         rotateYawDeg: rotDeg,
@@ -215,13 +243,14 @@ var EditorTool = (function() {
 
   // ---- Ghost placement ------------------------------------------------------------
 
-  function startMove(targets) {
+  function startPlacement(mode, targets) {
     if (!targets || (targets.actorNames.length + targets.lightweight.length) === 0 || applyInFlight) {
       return;
     }
     cancelPlacement();
     var b = targets.bbox;
     placement = {
+      mode: mode,
       targets: targets,
       anchor: { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 },
       bbox: b,
@@ -229,10 +258,44 @@ var EditorTool = (function() {
       cursor: null,
     };
     document.getElementById("map").style.cursor = "crosshair";
+    hintBar.textContent = (mode === "paste" ? "Click to paste" : "Click to place")
+      + " · R rotate 90° · Esc cancel";
     hintBar.style.display = "block";
     ghost.style.display = "block";
     MapApp.map.on("click", onPlacementClick);
     MapApp.map.on("mousemove", onPlacementMouseMove);
+  }
+
+  function startMove(targets) {
+    startPlacement("move", targets);
+  }
+
+  function copyTargets(targets) {
+    if (!targets || (targets.actorNames.length + targets.lightweight.length) === 0) {
+      return;
+    }
+    clipboard = targets;
+    var n = targets.actorNames.length + targets.lightweight.length;
+    SaveLoadFlow.setStatus("Copied " + n.toLocaleString() + " object" + (n === 1 ? "" : "s")
+      + " — Ctrl+V or right-click to paste.");
+  }
+
+  function startPaste() {
+    if (clipboard) {
+      startPlacement("paste", clipboard);
+    }
+  }
+
+  // Context menu "Paste here": paste immediately at the given map point
+  // without the ghost flow.
+  function pasteAt(mapX, mapY) {
+    if (!clipboard || applyInFlight) {
+      return;
+    }
+    var b = clipboard.bbox;
+    var anchor = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 };
+    var deltaXY = mapDeltaToWorld(mapX - anchor.x, mapY - anchor.y);
+    applyAction(buildDuplicateOps(clipboard, [deltaXY[0], deltaXY[1], 0], 0, null));
   }
 
   function cancelPlacement() {
@@ -287,7 +350,8 @@ var EditorTool = (function() {
     var deltaXY = mapDeltaToWorld(dPxX, dPxY);
     var rotDeg = (p.rotSteps * 90) % 360;
     var pivot = mapPxToWorldXY(p.anchor.x, p.anchor.y);
-    var ops = buildMoveOps(p.targets, [deltaXY[0], deltaXY[1], 0], rotDeg, pivot);
+    var build = p.mode === "paste" ? buildDuplicateOps : buildMoveOps;
+    var ops = build(p.targets, [deltaXY[0], deltaXY[1], 0], rotDeg, pivot);
     cancelPlacement();
     applyAction(ops);
   }
@@ -418,7 +482,7 @@ var EditorTool = (function() {
         e.preventDefault();
         return;
       }
-      // Ctrl+Z / Ctrl+Y outside of text inputs.
+      // Ctrl+Z / Ctrl+Y / Ctrl+V outside of text inputs.
       var inInput = e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
       if (!inInput && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
         undo();
@@ -427,6 +491,11 @@ var EditorTool = (function() {
                  && (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z"))) {
         redo();
         e.preventDefault();
+      } else if (!inInput && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+        if (clipboard) {
+          startPaste();
+          e.preventDefault();
+        }
       }
     });
 
@@ -445,6 +514,7 @@ var EditorTool = (function() {
       currentFileName = fileName;
       actions = [];
       redoStack = [];
+      clipboard = null;
       cancelPlacement();
       closeOffsetDialog();
       downloadBtn.style.display = "";
@@ -453,6 +523,10 @@ var EditorTool = (function() {
     startMove: startMove,
     openOffsetDialog: openOffsetDialog,
     targetsFromHit: targetsFromHit,
+    copyTargets: copyTargets,
+    startPaste: startPaste,
+    pasteAt: pasteAt,
+    hasClipboard: function() { return clipboard !== null; },
     undo: undo,
     redo: redo,
     opCount: function() { return actions.length; },

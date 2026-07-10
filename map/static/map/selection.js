@@ -19,6 +19,7 @@ var SelectionTool = {};
   var inventoryBtn = document.getElementById("selectionInventoryBtn");
   var moveBtn = document.getElementById("selectionMoveBtn");
   var offsetBtn = document.getElementById("selectionOffsetBtn");
+  var copyBtn = document.getElementById("selectionCopyBtn");
   var clearBtn = document.getElementById("selectionClearBtn");
 
   var overlay = document.getElementById("selectionModalOverlay");
@@ -211,6 +212,9 @@ var SelectionTool = {};
     var hit = MapApp.layer.hitTest(latLng.lng, latLng.lat, toleranceMapUnits);
     if (hit) {
       ContextMenu.show(clientX, clientY, hit);
+    } else if (window.EditorTool && EditorTool.hasClipboard()) {
+      // Empty-map right-click still offers "Paste here".
+      ContextMenu.show(clientX, clientY, null);
     }
   }
 
@@ -233,6 +237,7 @@ var SelectionTool = {};
     var editable = selection.editTargets.actorNames.length + selection.editTargets.lightweight.length;
     moveBtn.disabled = editable === 0;
     offsetBtn.disabled = editable === 0;
+    copyBtn.disabled = editable === 0;
     moveBtn.title = editable === 0
       ? "Nothing editable selected"
       : "Move " + editable.toLocaleString() + " object" + (editable === 1 ? "" : "s")
@@ -364,6 +369,13 @@ var SelectionTool = {};
     var targets = lastSelection.editTargets;
     clearSelection();
     EditorTool.openOffsetDialog(targets);
+  });
+
+  copyBtn.addEventListener("click", function() {
+    if (!lastSelection || copyBtn.disabled) {
+      return;
+    }
+    EditorTool.copyTargets(lastSelection.editTargets);
   });
 
   clearBtn.addEventListener("click", clearSelection);

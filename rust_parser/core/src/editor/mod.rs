@@ -6,6 +6,7 @@
 pub mod apply;
 pub mod export;
 pub mod ops;
+pub mod rename;
 pub mod session;
 
 pub use export::{effective_body, export_sav};
