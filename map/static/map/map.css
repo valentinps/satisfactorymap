@@ -482,6 +482,16 @@ body.no-category-selected #sidebar {
   background: #000;
 }
 
+/* Leaflet's stock CSS puts mix-blend-mode: plus-lighter on tile images (a
+   Chromium tile-fade flicker workaround) -- ADDITIVE compositing. Our base
+   tiles overlap on purpose (1px shared-content bleed, see MapTileLayer in
+   map.js): under plus-lighter the overlap pixels sum to a bright grid, and
+   the per-tile render surfaces it forces can show hairline seams on some
+   GPU/driver combos. Source-over + identical-content overlap is seamless. */
+.leaflet-container img.leaflet-tile {
+  mix-blend-mode: normal;
+}
+
 /* Leaflet's default zoom control ships as white boxes with black glyphs --
    the one stock-Leaflet element still visible in the chrome. Re-skinned to
    match the app's raised-control treatment. */

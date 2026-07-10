@@ -3,7 +3,7 @@
 Layout:
   dist/
     index.html, *.js, *.css, vendor/, icons/   (from map/static/map/)
-    map_highres.png                            (from game_data/generated/)
+    tiles/{0..3}/{x}_{y}.png                   (pyramid cut from map_highres.png)
     pkg/sav_wasm.js, pkg/sav_wasm_bg.wasm      (wasm-pack --target no-modules)
     _headers                                   (Cloudflare Pages: COOP/COEP)
 
@@ -29,6 +29,80 @@ HEADERS = """/*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
 """
+
+TILE_SIZE = 256
+# Pyramid levels: tiles/0 = 1024px overview ... tiles/3 = 8192px native, i.e.
+# Leaflet zooms -3..0 (map.js adds 3 to the zoom to pick the directory).
+TILE_LEVELS = 4
+# Each tile carries this many pixels of its neighbors' content on every edge
+# (so a tile image is TILE_SIZE + 2*TILE_BLEED square). map.js draws tiles
+# oversized by the same amount so adjacent tiles overlap with identical
+# pixels: fractional scaling (browser zoom, pinch, DPI) rounds each tile's
+# box independently and can otherwise open sub-pixel cracks that show the
+# page background through as a dark grid.
+TILE_BLEED = 1
+
+
+def buildTiles(mapImage):
+    """Cut map_highres.png into a 256px tile pyramid.
+
+    A single 8192px <img> overlay froze the page ~0.3-0.4s on the first visit
+    to every raster scale: Chrome's GPU image-decode cache re-decodes the
+    whole 17MB PNG per mip level, and the compositor commit blocks the main
+    thread on it (and cache eviction re-arms the stall mid-session). 256px
+    tiles decode individually off-thread, so no single decode can stall a
+    frame. Tiles are cached next to the source image and rebuilt only when
+    it changes.
+    """
+    from PIL import Image
+
+    cacheDir = os.path.join(os.path.dirname(mapImage), "map_tiles")
+    stampPath = os.path.join(cacheDir, ".stamp")
+    stat = os.stat(mapImage)
+    stamp = f"{stat.st_mtime_ns}:{stat.st_size}:{TILE_SIZE}:{TILE_LEVELS}:{TILE_BLEED}"
+    try:
+        with open(stampPath, encoding="utf-8") as f:
+            if f.read() == stamp:
+                return cacheDir
+    except OSError:
+        pass
+
+    print("cutting map tile pyramid (source image changed)...")
+    if os.path.isdir(cacheDir):
+        shutil.rmtree(cacheDir)
+    image = Image.open(mapImage).convert("RGB")
+    for level in range(TILE_LEVELS - 1, -1, -1):
+        size = (TILE_SIZE * 4) << level  # 8192, 4096, 2048, 1024
+        scaled = image if image.size == (size, size) else image.resize(
+            (size, size), Image.LANCZOS)
+        # Surround the level with a replicated 1px border so the bleed crops
+        # below stay in-bounds on edge tiles too (extending the map's outer
+        # edge by TILE_BLEED px, same as CSS clamping would).
+        b = TILE_BLEED
+        padded = Image.new("RGB", (size + 2 * b, size + 2 * b))
+        padded.paste(scaled, (b, b))
+        padded.paste(scaled.crop((0, 0, size, b)), (b, 0))                    # top
+        padded.paste(scaled.crop((0, size - b, size, size)), (b, size + b))   # bottom
+        padded.paste(scaled.crop((0, 0, b, size)), (0, b))                    # left
+        padded.paste(scaled.crop((size - b, 0, size, size)), (size + b, b))   # right
+        padded.paste(scaled.crop((0, 0, b, b)), (0, 0))
+        padded.paste(scaled.crop((size - b, 0, size, b)), (size + b, 0))
+        padded.paste(scaled.crop((0, size - b, b, size)), (0, size + b))
+        padded.paste(scaled.crop((size - b, size - b, size, size)), (size + b, size + b))
+        levelDir = os.path.join(cacheDir, str(level))
+        os.makedirs(levelDir)
+        tilesPerSide = size // TILE_SIZE
+        for ty in range(tilesPerSide):
+            for tx in range(tilesPerSide):
+                # In padded coordinates, tile (tx, ty)'s core starts at
+                # (tx*TILE_SIZE + b); backing up by b lands on tx*TILE_SIZE.
+                tile = padded.crop((tx * TILE_SIZE, ty * TILE_SIZE,
+                                    tx * TILE_SIZE + TILE_SIZE + 2 * b,
+                                    ty * TILE_SIZE + TILE_SIZE + 2 * b))
+                tile.save(os.path.join(levelDir, f"{tx}_{ty}.png"))
+    with open(stampPath, "w", encoding="utf-8") as f:
+        f.write(stamp)
+    return cacheDir
 
 
 def main():
@@ -59,11 +133,14 @@ def main():
         else:
             shutil.copy2(src, dst)
 
-    # Map background image.
+    # Map background: a tile pyramid cut from the 8192px source image (the
+    # image itself is no longer shipped -- see buildTiles for why).
     mapImage = os.path.join(REPO, "game_data", "generated", "map_highres.png")
     if not os.path.isfile(mapImage):
         sys.exit("map_highres.png missing -- extract game data first (see README)")
-    shutil.copy2(mapImage, os.path.join(DIST, "map_highres.png"))
+    tileCache = buildTiles(mapImage)
+    shutil.copytree(tileCache, os.path.join(DIST, "tiles"),
+                    ignore=shutil.ignore_patterns(".stamp"))
 
     # WASM package. wasm-pack (and the cargo it spawns) live in ~/.cargo/bin,
     # which isn't always on PATH -- resolve it ourselves and pass an env with

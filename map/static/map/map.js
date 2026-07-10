@@ -44,6 +44,15 @@ var MapApp = {};
   // the per-pixel dedup (see _occEnsure).
   var SMALL_RECT_SCREEN_PX = 4;
 
+  // See _drawRectBucketsFlat/_drawRectBucketsSorted: minimum on-screen rect
+  // size (px, both axes) at which each box also gets a 1px darkened outline
+  // stroked around it. Without it, buildings placed edge-to-edge on the
+  // foundation grid fill into one indistinguishable slab. Below this size
+  // the outline would swallow the fill (and zoomed-out views draw hundreds
+  // of thousands of rects, where the extra stroke costs real time), so
+  // small rects stay fill-only.
+  var RECT_OUTLINE_MIN_PX = 6;
+
   // See _drawRectBuckets: max altitude spread (in meters) among currently
   // visible rects below which fill order is treated as not mattering, so
   // the per-point sort is skipped. Comfortably smaller than one floor's
@@ -725,13 +734,13 @@ var MapApp = {};
 
     // Draws every building at its real-world footprint size (see
     // sav_map_data.footprintPixels), rotated to match its actual facing.
-    // Fills only, with no outline -- adjacent/overlapping same-color
-    // buildings (e.g. a large foundation platform) blend into one solid
-    // shape instead of showing a grid of individual tile borders. A single
-    // building's outline is only ever shown via the separate highlight
-    // canvas, on hover/click (see _redrawHighlight), which draws just the
-    // one hovered/pinned rect at full opacity with a bright border on top
-    // of everything drawn here.
+    // Boxes big enough on screen (RECT_OUTLINE_MIN_PX) also get a subtle
+    // 1px darkened-color outline, so adjacent same-color buildings (e.g. a
+    // large foundation platform) show as a grid of individual tiles instead
+    // of blending into one solid shape; below that size they're fill-only.
+    // Separately, the highlight canvas draws just the one hovered/pinned
+    // rect at full opacity with a bright white border on top of everything
+    // drawn here (see _redrawHighlight).
     //
     // All rect buckets are drawn together here, sorted by actual altitude
     // (lowest first) when buildings actually span multiple floors, rather
@@ -1001,6 +1010,9 @@ var MapApp = {};
         // Below SMALL_RECT_SCREEN_PX rotation is invisible -- draw an
         // axis-aligned rect at true screen size (see the constant's comment).
         var small = screenW < SMALL_RECT_SCREEN_PX && screenH < SMALL_RECT_SCREEN_PX;
+        // See RECT_OUTLINE_MIN_PX -- big enough that a 1px border separates
+        // grid-adjacent same-color boxes without swallowing the fill.
+        var outline = screenW >= RECT_OUTLINE_MIN_PX && screenH >= RECT_OUTLINE_MIN_PX;
         var halfWPx = Math.max(0.75, screenW / 2);
         var halfHPx = Math.max(0.75, screenH / 2);
         var hasOverrides = !!bucket.tiltedFootprints; // See _footprintForPoint -- false for almost every bucket.
@@ -1051,12 +1063,23 @@ var MapApp = {};
           }
         }
         ctx.fill();
+        if (outline) {
+          // Each rect is its own subpath, so one stroke() outlines every
+          // box individually -- this is what keeps grid-adjacent buildings
+          // visually separate instead of merging into one slab.
+          ctx.strokeStyle = _outlineColor(bucket.color);
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
         if (deferredPolygons) {
           ctx.fillStyle = fillColor;
           for (var dp = 0; dp < deferredPolygons.length; dp += 3) {
             ctx.beginPath();
             _tracePolygon(ctx, deferredPolygons[dp], deferredPolygons[dp + 1], deferredPolygons[dp + 2], affine);
             ctx.fill();
+            if (outline) {
+              ctx.stroke();
+            }
           }
         }
       }
@@ -1087,6 +1110,7 @@ var MapApp = {};
       var absScaleX = Math.abs(affine.scaleX);
       var absScaleY = Math.abs(affine.scaleY);
       var smallByBucket = new Uint8Array(rectBuckets.length);
+      var outlineByBucket = new Uint8Array(rectBuckets.length);
       var halfWByBucket = new Float32Array(rectBuckets.length);
       var halfHByBucket = new Float32Array(rectBuckets.length);
       var colorByBucket = new Array(rectBuckets.length);
@@ -1095,6 +1119,9 @@ var MapApp = {};
         var screenW = fp ? fp[0] * 2 * absScaleX : 0;
         var screenH = fp ? fp[1] * 2 * absScaleY : 0;
         smallByBucket[bi] = (screenW < SMALL_RECT_SCREEN_PX && screenH < SMALL_RECT_SCREEN_PX) ? 1 : 0;
+        // See RECT_OUTLINE_MIN_PX -- big enough that a 1px border separates
+        // grid-adjacent same-color boxes without swallowing the fill.
+        outlineByBucket[bi] = (screenW >= RECT_OUTLINE_MIN_PX && screenH >= RECT_OUTLINE_MIN_PX) ? 1 : 0;
         halfWByBucket[bi] = Math.max(0.75, screenW / 2);
         halfHByBucket[bi] = Math.max(0.75, screenH / 2);
         colorByBucket[bi] = _withAlpha(rectBuckets[bi].color, 0.55);
@@ -1142,6 +1169,7 @@ var MapApp = {};
       // paths avoids that regardless of how they interleave in Z-order.
       var currentColor = null;
       var currentIsPolygon = null;
+      var currentOutline = 0;
       var hasOpenPath = false;
       // Subpixel dedup batch state (see _occEnsure) -- restarted on every
       // beginPath below, so dedup never suppresses a square that a
@@ -1158,14 +1186,26 @@ var MapApp = {};
         var verts = itemBucket.tiltedFootprints && itemBucket.tiltedFootprints[pIdx];
         var color = colorByBucket[bIdx];
         var isPolygon = !!verts;
-        if (color !== currentColor || isPolygon !== currentIsPolygon) {
+        var outline = outlineByBucket[bIdx];
+        if (color !== currentColor || isPolygon !== currentIsPolygon || outline !== currentOutline) {
           if (hasOpenPath) {
             ctx.fill();
+            if (currentOutline) {
+              ctx.stroke();
+            }
           }
           ctx.beginPath();
           ctx.fillStyle = color;
+          if (outline) {
+            // One stroke per run outlines each subpath's box individually
+            // (see RECT_OUTLINE_MIN_PX) so grid-adjacent same-color
+            // buildings stay visually separate.
+            ctx.strokeStyle = _outlineColor(rectBuckets[bIdx].color);
+            ctx.lineWidth = 1;
+          }
           currentColor = color;
           currentIsPolygon = isPolygon;
+          currentOutline = outline;
           hasOpenPath = true;
           occ = null;
         }
@@ -1196,6 +1236,9 @@ var MapApp = {};
       }
       if (hasOpenPath) {
         ctx.fill();
+        if (currentOutline) {
+          ctx.stroke();
+        }
       }
     },
 
@@ -1859,6 +1902,23 @@ var MapApp = {};
   // bucket.color is always a "#rrggbb" hex string (see filters.js's color
   // tables) -- this is a small cache since it's called every redraw for
   // every visible rect bucket, not just once.
+  // Outline shade for rect boxes (see RECT_OUTLINE_MIN_PX): the bucket
+  // color darkened rather than a fixed gray/black, so the border reads as
+  // an edge of the same building type instead of a foreign grid overlay.
+  var _outlineColorCache = {};
+  function _outlineColor(hexColor) {
+    var cached = _outlineColorCache[hexColor];
+    if (cached) {
+      return cached;
+    }
+    var r = parseInt(hexColor.slice(1, 3), 16);
+    var g = parseInt(hexColor.slice(3, 5), 16);
+    var b = parseInt(hexColor.slice(5, 7), 16);
+    var result = "rgba(" + ((r * 0.55) | 0) + "," + ((g * 0.55) | 0) + "," + ((b * 0.55) | 0) + ",0.85)";
+    _outlineColorCache[hexColor] = result;
+    return result;
+  }
+
   var _alphaColorCache = {};
   function _withAlpha(hexColor, alpha) {
     var cacheKey = hexColor + "|" + alpha;
@@ -2078,7 +2138,65 @@ var MapApp = {};
     var margin = mapSize * 0.5;
     var bounds = [[0, 0], [mapSize, mapSize]];
     map.setMaxBounds([[-margin, -margin], [mapSize + margin, mapSize + margin]]);
-    L.imageOverlay("map_highres.png", bounds).addTo(map);
+    // Tiled base map instead of one 8192px imageOverlay: Chrome re-decodes a
+    // monolithic image in full on the FIRST visit to every raster scale
+    // (~0.3-0.4s main-thread stall in the compositor commit, re-armed
+    // whenever the decoded copy is evicted mid-session); 256px tiles decode
+    // per-tile off-thread, so no zoom ever waits on one big decode.
+    // tools/build_site.py cuts the pyramid: tiles/0 (1024px) .. tiles/3
+    // (8192px native), i.e. Leaflet zooms -3..0; past 0 Leaflet scales the
+    // native tiles up (maxNativeZoom), same as the old overlay did.
+    var MapTileLayer = L.TileLayer.extend({
+      getTileUrl: function(coords) {
+        var fileZ = coords.z + 3;
+        // CRS.Simple projects latlng (y, x) to (x, -y), so tile rows run
+        // -tilesPerSide..-1 top-to-bottom; shift them back to 0-based file
+        // names.
+        var tilesPerSide = 1 << (fileZ + 2);
+        return "tiles/" + fileZ + "/" + coords.x + "_" + (coords.y + tilesPerSide) + ".png";
+      },
+      // The tile images carry a 1px ring of their neighbors' content on
+      // every edge (TILE_BLEED in tools/build_site.py), so each 258px image
+      // is drawn 2px larger than its 256px grid slot, shifted up-left by
+      // 1px: adjacent tiles overlap with identical pixels. Without the
+      // overlap, any fractional scaling (browser zoom, pinch, DPI) rounds
+      // each tile's box independently and can open sub-pixel cracks that
+      // show the page background through as a dark grid over the map.
+      _initTile: function(tile) {
+        L.TileLayer.prototype._initTile.call(this, tile);
+        var size = this.getTileSize();
+        tile.style.width = (size.x + 2) + "px";
+        tile.style.height = (size.y + 2) + "px";
+        tile.style.marginLeft = "-1px";
+        tile.style.marginTop = "-1px";
+      },
+    });
+    var baseTiles = new MapTileLayer("", {
+      minZoom: -3, // GridLayer's own default minZoom is 0: without this the layer hides itself at the zoomed-out levels
+      maxZoom: 7,
+      minNativeZoom: -3,
+      maxNativeZoom: 0,
+      bounds: bounds,
+      noWrap: true,
+      keepBuffer: 4,
+    });
+    // A tile fetch can fail transiently (dev server mid-rebuild, flaky
+    // network, CDN hiccup). Leaflet never refetches a failed tile -- it stays
+    // a permanent hole showing the page background, which reads as black
+    // squares/grid lines over the map. Retry a few times with backoff; the
+    // query string busts any cached error response.
+    baseTiles.on("tileerror", function(e) {
+      var retries = e.tile._retries || 0;
+      if (retries >= 3) {
+        return;
+      }
+      e.tile._retries = retries + 1;
+      var url = this.getTileUrl(e.coords);
+      setTimeout(function() {
+        e.tile.src = url + "?retry=" + (retries + 1);
+      }, 500 * Math.pow(2, retries));
+    });
+    baseTiles.addTo(map);
     map.fitBounds(bounds);
 
     var layer = useWebGL ? new window.WebGLBucketedLayer() : new BucketedCanvasLayer();

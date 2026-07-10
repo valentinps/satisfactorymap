@@ -62,6 +62,15 @@
   // floored at 0.75px, so a subpixel building stays a visible ~1.5px dot.
   var SMALL_RECT_SCREEN_PX = 4.0;
   var MIN_HALF_PX = 0.75;
+  // Minimum on-screen rect size (px, both axes) at which each box gets a
+  // ~1px darkened inner border (see RECT_FS) -- keep in sync with map.js's
+  // RECT_OUTLINE_MIN_PX. Without it, buildings placed edge-to-edge on the
+  // foundation grid fill into one indistinguishable slab; below this size
+  // the border would swallow the fill.
+  var RECT_OUTLINE_MIN_PX = 6.0;
+  // v_halfPx sentinel meaning "no outline": far enough that the edge-distance
+  // test in RECT_FS can never fire.
+  var OUTLINE_OFF = "1.0e6";
   // Width of the R8 texture holding one visibility byte per rect bucket
   // (indexed by baked ordinal). ~400 buckets exist in practice; if a save
   // ever exceeds this the extras are clamped to slot VIS_TEX_WIDTH-1 (drawn
@@ -117,9 +126,9 @@
   // Per-instance gating (bucket visibility / altitude filter / hidden flag)
   // happens in the VERTEX shader by collapsing all four strip corners onto
   // one off-screen point -- zero fragments, no buffer traffic when a sidebar
-  // checkbox flips. Bucket visibility for rects rides a 1-row R8 texture
-  // refreshed per frame (~400 bytes), because the merged z-sorted stream
-  // interleaves all buckets into one draw call (see _buildRectStream).
+  // checkbox flips. Bucket visibility for rects AND lines rides a 1-row R8
+  // texture refreshed per frame (~400 bytes), because their merged z-sorted
+  // streams interleave all buckets (see _buildRectStream/_buildLineStream).
   // ---------------------------------------------------------------------
 
   var COMMON_UNIFORMS = [
@@ -163,7 +172,7 @@
     "precision highp float;",
     "layout(location=0) in vec2 a_corner;",  // this vertex's offset from center, map px
     "layout(location=1) in vec3 a_pos;",     // center x, y (map px), z (altitude m)
-    "layout(location=2) in vec2 a_halfBox;", // bounding half extents / 64 (u16-quantized map px)
+    "layout(location=2) in vec2 a_halfBox;", // LOCAL footprint half extents / 64 (u16-quantized map px)
     "layout(location=3) in vec4 a_color;",   // normalized rgba8 (a unused)
     "layout(location=4) in float a_bucketIdx;",
     "layout(location=5) in float a_hidden;",
@@ -171,23 +180,37 @@
     COMMON_UNIFORMS,
     "uniform sampler2D u_visibility;",
     "flat out vec4 v_color;",
+    // Outline plumbing (see RECT_FS): the fragment's position and the rect's
+    // half extents in the rect's OWN frame, screen px. Interpolating the
+    // per-corner values gives exact local coordinates (the quad is an affine
+    // image of local space, and |u_scale.x| == |u_scale.y| keeps rotated
+    // lengths true). v_halfPx = OUTLINE_OFF disables the border.
+    "out vec2 v_localPx;",
+    "flat out vec2 v_halfPx;",
     PROJECT_FN,
     "void main() {",
     "  float vis = texelFetch(u_visibility, ivec2(int(a_bucketIdx + 0.5), 0), 0).r;",
     "  if (a_hidden > 0.5 || vis < 0.5 || a_pos.z < u_altRange.x || a_pos.z > u_altRange.y) {",
-    "    gl_Position = CULLED; v_color = vec4(0.0); return;",
+    "    gl_Position = CULLED; v_color = vec4(0.0); v_localPx = vec2(0.0); v_halfPx = vec2(" + OUTLINE_OFF + "); return;",
     "  }",
     "  vec2 corner = a_corner;",
     "  int flags = int(a_flags + 0.5);",
+    "  v_localPx = vec2(0.0);",
+    "  v_halfPx = vec2(" + OUTLINE_OFF + ");",
     "  if ((flags & 1) == 0) {",
     // 2D parity (map.js SMALL_RECT_SCREEN_PX / the 0.75px floor): a rect
     // under 4 screen px on both axes draws as an axis-aligned dot floored
     // at 0.75px half extent, in this vertex's unit-corner direction.
+    // Same-source parity: the 2D paths test footprintPixels (local extents)
+    // too, which is why a_halfBox carries local rather than bounding extents.
     "    vec2 absScale = abs(u_scale);",
     "    vec2 halfScreen = a_halfBox * (1.0 / 64.0) * absScale;",
+    "    vec2 unit = vec2(float((flags >> 1) & 1) * 2.0 - 1.0, float((flags >> 2) & 1) * 2.0 - 1.0);",
     "    if (max(halfScreen.x, halfScreen.y) * 2.0 < " + SMALL_RECT_SCREEN_PX.toFixed(1) + ") {",
-    "      vec2 unit = vec2(float((flags >> 1) & 1) * 2.0 - 1.0, float((flags >> 2) & 1) * 2.0 - 1.0);",
     "      corner = unit * (max(halfScreen, vec2(" + MIN_HALF_PX + ")) / absScale);",
+    "    } else if (min(halfScreen.x, halfScreen.y) * 2.0 >= " + RECT_OUTLINE_MIN_PX.toFixed(1) + ") {",
+    "      v_localPx = unit * halfScreen;",
+    "      v_halfPx = halfScreen;",
     "    }",
     "  }",
     "  gl_Position = project(u_anchorScreen + (a_pos.xy + corner - u_anchorMap) * u_scale);",
@@ -195,6 +218,30 @@
     "}",
   ].join("\n");
 
+  // Rect fragments darken in a ~1px band along each box edge -- the same
+  // "slight outline" the 2D paths stroke (map.js _outlineColor: rgb * 0.55
+  // at 0.85 alpha), so grid-adjacent same-color buildings read as individual
+  // tiles instead of one merged slab. Culled/small/tilted quads arrive with
+  // v_halfPx = OUTLINE_OFF, which keeps the edge distance too big to fire.
+  // highp (not the usual mediump): v_localPx reaches thousands of px at high
+  // zoom, where fp16 ulp (~4 at 4096) would visibly wobble the border.
+  var RECT_FS = [
+    "#version 300 es",
+    "precision highp float;",
+    "flat in vec4 v_color;",
+    "in vec2 v_localPx;",
+    "flat in vec2 v_halfPx;",
+    "out vec4 outColor;",
+    "void main() {",
+    "  vec2 edge = v_halfPx - abs(v_localPx);",       // px to the two nearest edges
+    "  float t = 1.0 - smoothstep(0.5, 1.5, min(edge.x, edge.y));",
+    "  outColor = mix(v_color, vec4(v_color.rgb * 0.55, 0.85), t);",
+    "}",
+  ].join("\n");
+
+  // Lines draw from ONE merged z-sorted stream interleaved with the rect
+  // stream (see _buildLineStream), so color, width, and bucket visibility
+  // all ride per-vertex attributes instead of per-run uniforms.
   var LINE_VS = [
     "#version 300 es",
     "precision highp float;",
@@ -202,18 +249,22 @@
     "layout(location=2) in vec2 a_b;",      // segment end, map px
     "layout(location=3) in vec2 a_zrange;", // the whole POLYLINE's (minZ,maxZ) -- 2D altitude-gates per line, not per vertex
     "layout(location=4) in float a_flags;", // bit0 t (0/1 along), bit1 side (+1 when set)
+    "layout(location=5) in vec4 a_color;",  // normalized rgba8 (a unused)
+    "layout(location=6) in float a_halfWidth;", // half line width, px * 8
+    "layout(location=7) in float a_bucketIdx;",
     COMMON_UNIFORMS,
-    "uniform float u_halfWidthPx;",
-    "uniform vec4 u_color;",
+    "uniform sampler2D u_visibility;",
     "flat out vec4 v_color;",
     PROJECT_FN,
     "void main() {",
-    "  if (a_zrange.x > u_altRange.y || a_zrange.y < u_altRange.x) {",
+    "  float vis = texelFetch(u_visibility, ivec2(int(a_bucketIdx + 0.5), 0), 0).r;",
+    "  if (vis < 0.5 || a_zrange.x > u_altRange.y || a_zrange.y < u_altRange.x) {",
     "    gl_Position = CULLED; v_color = vec4(0.0); return;",
     "  }",
     "  int flags = int(a_flags + 0.5);",
     "  float t = float(flags & 1);",
     "  float side = float((flags >> 1) & 1) * 2.0 - 1.0;",
+    "  float halfWidthPx = a_halfWidth * 0.125;",
     "  vec2 sA = u_anchorScreen + (a_a - u_anchorMap) * u_scale;",
     "  vec2 sB = u_anchorScreen + (a_b - u_anchorMap) * u_scale;",
     "  vec2 dir = sB - sA;",
@@ -225,10 +276,10 @@
     // notches on curves, and the overlap is invisible because line colors
     // are opaque.
     "  vec2 screen = mix(sA, sB, t)",
-    "              + dir * (t * 2.0 - 1.0) * u_halfWidthPx",
-    "              + n * (side * u_halfWidthPx);",
+    "              + dir * (t * 2.0 - 1.0) * halfWidthPx",
+    "              + n * (side * halfWidthPx);",
     "  gl_Position = project(screen);",
-    "  v_color = u_color;",
+    "  v_color = vec4(a_color.rgb, 1.0);",
     "}",
   ].join("\n");
 
@@ -372,9 +423,11 @@
       this._renderFrameHandle = null;
       this._suspendRender = false; // set while a CSS zoom animation owns the canvases
       this._streamsDirty = true;
-      this._rect = null;       // { buffer, vao, count, buckets, slotBucket, slotPoint, hiddenShadow }
+      this._rect = null;       // { buffer, vao, count, binStart, buckets, slotBucket, slotPoint, hiddenShadow }
       this._rectBucketList = null;
-      this._lineCircle = null; // { lineBuffer, circleBuffer, runs: [...] }
+      this._line = null;       // { buffer, vao, count, binStart, buckets } -- merged z-sorted segment stream
+      this._lineBucketList = null;
+      this._circles = null;    // { buffer, runs: [...] }
       this._programs = null;
       this._indexBuffer = null;       // shared 6-indices-per-quad pattern
       this._indexQuadCapacity = 0;
@@ -545,7 +598,7 @@
       this._gl = gl;
       try {
         this._programs = {
-          rect: _compileProgram(gl, RECT_VS, FLAT_FS, "rect"),
+          rect: _compileProgram(gl, RECT_VS, RECT_FS, "rect"),
           line: _compileProgram(gl, LINE_VS, FLAT_FS, "line"),
           circle: _compileProgram(gl, CIRCLE_VS, CIRCLE_FS, "circle"),
         };
@@ -600,15 +653,20 @@
         if (this._rect.buffer) gl.deleteBuffer(this._rect.buffer);
         this._rect = null;
       }
-      if (this._lineCircle) {
-        for (var i = 0; i < this._lineCircle.runs.length; i++) {
-          gl.deleteVertexArray(this._lineCircle.runs[i].vao);
+      if (this._line) {
+        if (this._line.vao) gl.deleteVertexArray(this._line.vao);
+        if (this._line.buffer) gl.deleteBuffer(this._line.buffer);
+        this._line = null;
+      }
+      if (this._circles) {
+        for (var i = 0; i < this._circles.runs.length; i++) {
+          gl.deleteVertexArray(this._circles.runs[i].vao);
         }
-        if (this._lineCircle.lineBuffer) gl.deleteBuffer(this._lineCircle.lineBuffer);
-        if (this._lineCircle.circleBuffer) gl.deleteBuffer(this._lineCircle.circleBuffer);
-        this._lineCircle = null;
+        if (this._circles.buffer) gl.deleteBuffer(this._circles.buffer);
+        this._circles = null;
       }
       this._rectBucketList = null;
+      this._lineBucketList = null;
     },
 
     _disposeGL: function() {
@@ -738,9 +796,52 @@
         // stable) -- the run list and pin pass both iterate it.
         this._sortedBuckets = this.buckets.slice().sort(function(a, b) { return (a.drawPriority || 0) - (b.drawPriority || 0); });
       }
-      this._buildRectStream();
-      this._buildLineCircleStreams();
+      var zr = this._computeZRange();
+      this._buildRectStream(zr);
+      this._buildLineStream(zr);
+      this._buildCircleStream();
       this._hiddenEpoch = this._computeHiddenEpoch();
+    },
+
+    // Global altitude range across RECTS AND LINES: both streams quantize
+    // into the same Z_SORT_BINS mapping so _renderFrame can merge-walk them
+    // bin by bin (rects of bin <= b, then bin b's lines).
+    _computeZRange: function() {
+      var minZ = Infinity, maxZ = -Infinity;
+      for (var b = 0; b < this.buckets.length; b++) {
+        var bucket = this.buckets[b];
+        if (bucket.renderType === "rect" && bucket.points) {
+          var pts = bucket.points;
+          for (var i = 3; i < pts.length; i += 4) {
+            if (pts[i] < minZ) minZ = pts[i];
+            if (pts[i] > maxZ) maxZ = pts[i];
+          }
+        } else if (bucket.renderType === "line" && bucket.lines) {
+          var lineBounds = bucket._lineBounds;
+          if (lineBounds) {
+            for (var L2 = 0; L2 < lineBounds.length; L2++) {
+              var lb = lineBounds[L2];
+              if (lb) {
+                if (lb.minZ < minZ) minZ = lb.minZ;
+                if (lb.maxZ > maxZ) maxZ = lb.maxZ;
+              }
+            }
+          } else {
+            var stride = bucket.pointStride;
+            for (var li = 0; li < bucket.lines.length; li++) {
+              var lpts = bucket.lines[li];
+              for (var k2 = stride - 1; k2 < lpts.length; k2 += stride) {
+                if (lpts[k2] < minZ) minZ = lpts[k2];
+                if (lpts[k2] > maxZ) maxZ = lpts[k2];
+              }
+            }
+          }
+        }
+      }
+      if (minZ > maxZ) {
+        minZ = maxZ = 0;
+      }
+      return { minZ: minZ, zScale: maxZ > minZ ? (Z_SORT_BINS - 1) / (maxZ - minZ) : 0 };
     },
 
     // One merged instance stream for ALL rect buckets, pre-sorted by
@@ -760,7 +861,7 @@
     // polygon as 1-3 corner-explicit instances AT ITS OWN SORTED SLOTS (see
     // RECT_VS's comment) -- same key, so pillars and beams interleave with
     // plain buildings exactly like the 2D sorted path's polygon items.
-    _buildRectStream: function() {
+    _buildRectStream: function(zr) {
       var gl = this._gl;
       var sorted = this._sortedBuckets;
       var rectBuckets = [];
@@ -788,19 +889,16 @@
         return verts ? Math.max(1, Math.ceil((verts.length / 2 - 2) / 2)) : 1;
       }
 
-      // Pass 1: count instances and find the global z spread for bin
-      // quantization.
+      // Pass 1: count instances (the z spread comes shared from
+      // _computeZRange so line bins line up with rect bins).
       var total = 0;
-      var minZ = Infinity, maxZ = -Infinity;
+      var minZ = zr.minZ, zScale = zr.zScale;
       for (b = 0; b < rectBuckets.length; b++) {
         bucket = rectBuckets[b];
         pts = bucket.points;
         tf = bucket.tiltedFootprints;
         n = pts.length / 4;
         for (i = 0; i < n; i++) {
-          var z0 = pts[i * 4 + 3];
-          if (z0 < minZ) minZ = z0;
-          if (z0 > maxZ) maxZ = z0;
           total += instancesFor(tf && tf[i]);
         }
       }
@@ -809,7 +907,6 @@
       // and same-bin instances stay grouped by bucket so flat single-floor
       // areas draw in the exact order the 2D flat path uses.
       var nBuckets = rectBuckets.length;
-      var zScale = maxZ > minZ ? (Z_SORT_BINS - 1) / (maxZ - minZ) : 0;
       var slots = Z_SORT_BINS * nBuckets + 1;
       var counts = new Uint32Array(slots);
       for (b = 0; b < rectBuckets.length; b++) {
@@ -823,6 +920,14 @@
       }
       for (var s = 1; s < slots; s++) {
         counts[s] += counts[s - 1];
+      }
+      // First instance slot of each z bin (bin b's slots are
+      // [binStart[b], binStart[b+1])) -- the per-frame line/rect merge walk
+      // in _renderFrame splits the one big rect draw at these offsets.
+      // Captured now, BEFORE pass 2 advances counts in place.
+      var binStart = new Uint32Array(Z_SORT_BINS + 1);
+      for (var bn = 0; bn <= Z_SORT_BINS; bn++) {
+        binStart[bn] = counts[bn * nBuckets];
       }
 
       // Pass 2: write each quad's FOUR vertex records at its sorted slot
@@ -839,12 +944,13 @@
       var hiddenShadow = new Uint8Array(total);
 
       function writeSlot(slot, cx, cy, z, c0x, c0y, c1x, c1y, c2x, c2y, c3x, c3y,
-                         rgb, ordinal, hid, noClamp, b, pointIdx) {
-        // Bounding half extents for the dot-clamp: c3 = -c0 and c2 = -c1
-        // for baked rects; quantized to u16 in 1/64 map px. Unused when
+                         rgb, ordinal, hid, noClamp, b, pointIdx, halfLocalX, halfLocalY) {
+        // LOCAL footprint half extents for the dot-clamp and the outline's
+        // edge-distance math (same source the 2D paths' size tests read:
+        // footprintPixels); quantized to u16 in 1/64 map px. Unused when
         // noClamp is set (tilted polygon pieces).
-        var hbx = Math.min(65535, (Math.max(Math.abs(c0x), Math.abs(c1x)) * 64) | 0);
-        var hby = Math.min(65535, (Math.max(Math.abs(c0y), Math.abs(c1y)) * 64) | 0);
+        var hbx = Math.min(65535, (halfLocalX * 64) | 0);
+        var hby = Math.min(65535, (halfLocalY * 64) | 0);
         for (var k = 0; k < 4; k++) {
           var vi = slot * 4 + k;
           var fo = vi * 8;
@@ -902,7 +1008,7 @@
                 verts[kB * 2], verts[kB * 2 + 1],
                 verts[kD * 2], verts[kD * 2 + 1],   // strip order: (v0, vB, vD, vC)
                 verts[kC * 2], verts[kC * 2 + 1],
-                rgb, ordinal, hid, 1, b, i);
+                rgb, ordinal, hid, 1, b, i, 0, 0);
             }
           } else {
             // Plain rect: bake the yaw rotation into the corners. Yaw
@@ -912,14 +1018,15 @@
             var sin = Math.sin(-pts[p + 2]);
             var cW = cos * halfW, sW = sin * halfW;
             var cD = cos * halfD, sD = sin * halfD;
-            // Strip corners R(-w,-d), R(w,-d), R(-w,d), R(w,d) -- so
-            // c3 = -c0 and c2 = -c1, which RECT_VS's dot-clamp relies on.
+            // Strip corners R(-w,-d), R(w,-d), R(-w,d), R(w,d) -- corner k's
+            // unit-direction flag bits must match this order (RECT_VS's
+            // dot-clamp and outline both reconstruct local coords from them).
             writeSlot(counts[key]++, x, y, z,
               -cW + sD, -sW - cD,
               cW + sD, sW - cD,
               -cW - sD, -sW + cD,
               cW - sD, sW + cD,
-              rgb, ordinal, hid, 0, b, i);
+              rgb, ordinal, hid, 0, b, i, halfW, halfD);
           }
         }
       }
@@ -955,6 +1062,7 @@
         buffer: buffer,
         vao: vao,
         count: total,
+        binStart: binStart,
         buckets: rectBuckets,
         slotBucket: slotBucket,
         slotPoint: slotPoint,
@@ -962,151 +1070,225 @@
       };
     },
 
-    // Lines and circles share a structure: one interleaved vertex buffer per
-    // class (4 expanded records per segment/dot -- see the non-instanced
-    // rationale above RECT_VS), quads contiguous per bucket, and a prebuilt
-    // "run" list in _sortedBuckets order (line and circle runs interleaved
-    // exactly like the 2D pass draws them). Per frame each visible run is
-    // one drawElements; an invisible bucket costs one skipped iteration.
-    // WebGL2 has no baseVertex, so each run gets its own tiny VAO with the
-    // attributes bound at byteOffset = firstQuad * 4 * stride, sharing the
-    // one quad-pattern index buffer from index 0.
-    _buildLineCircleStreams: function() {
+    // One merged segment stream for ALL line buckets, z-sorted with the same
+    // (quantized z, bucket order) counting sort as the rect stream. Lines
+    // used to draw as per-bucket runs BEFORE every rect, which buried a
+    // top-floor belt under the 0.55-alpha fill of every foundation drawn
+    // after it -- stack a few floors and the belt disappeared entirely even
+    // though it was the highest thing in view. Sorting whole POLYLINES into
+    // the shared bin mapping lets _renderFrame interleave line and rect
+    // draws bin by bin, so a line dims only under floors genuinely above it.
+    //
+    // A polyline sorts by its TOP z (lifts and ramps stay visible over the
+    // floors they climb past) and its segments stay contiguous at their
+    // sorted slots, so hidden-patching remains a per-line slot range (see
+    // _patchHiddenLine). Color, half width, and bucket index ride each
+    // vertex -- with buckets interleaved inside one draw, per-run uniforms
+    // can't carry them anymore; visibility rides the same R8 texture as
+    // rects, at ordinals AFTER the rect buckets'.
+    _buildLineStream: function(zr) {
       var gl = this._gl;
       var sorted = this._sortedBuckets;
-      var runs = [];
-      var b, bucket, i, k, pts, stride;
-
-      // Pass 1: count line segments (flattening decisions) and circles.
-      var totalSegs = 0, totalCircles = 0;
+      var lineBuckets = [];
+      var b, bucket, i, k, pts, stride, lineBounds;
       for (b = 0; b < sorted.length; b++) {
         bucket = sorted[b];
         if (bucket.renderType === "line" && bucket.lines && bucket.lines.length > 0) {
-          stride = bucket.pointStride;
-          var segStart = new Int32Array(bucket.lines.length + 1);
+          lineBuckets.push(bucket);
+        }
+      }
+      this._lineBucketList = lineBuckets;
+      if (lineBuckets.length === 0) {
+        return;
+      }
+      var nLB = lineBuckets.length;
+      var bins = Z_SORT_BINS;
+
+      // Pass 1: per line, segment count (flattening decisions -- must match
+      // _writeLineSegments, both call _spanSegments) and sort key.
+      var totalSegs = 0;
+      var keyCounts = new Uint32Array(bins * nLB + 1);
+      for (b = 0; b < nLB; b++) {
+        bucket = lineBuckets[b];
+        stride = bucket.pointStride;
+        lineBounds = bucket._lineBounds;
+        var segCounts = new Int32Array(bucket.lines.length);
+        var zKeys = new Int32Array(bucket.lines.length);
+        for (i = 0; i < bucket.lines.length; i++) {
+          pts = bucket.lines[i];
+          if (pts.length < stride * 2) {
+            continue; // single-vertex line: nothing to draw
+          }
           var segs = 0;
-          for (i = 0; i < bucket.lines.length; i++) {
-            segStart[i] = segs;
-            pts = bucket.lines[i];
-            if (pts.length < stride * 2) {
-              continue; // single-vertex line: nothing to draw
-            }
-            for (k = 0; k + stride < pts.length; k += stride) {
-              segs += (stride >= 7) ? _spanSegments(pts, k, stride) : 1;
+          for (k = 0; k + stride < pts.length; k += stride) {
+            segs += (stride >= 7) ? _spanSegments(pts, k, stride) : 1;
+          }
+          segCounts[i] = segs;
+          var zTop;
+          var lb = lineBounds && lineBounds[i];
+          if (lb) {
+            zTop = lb.maxZ;
+          } else {
+            zTop = -Infinity;
+            for (k = stride - 1; k < pts.length; k += stride) {
+              if (pts[k] > zTop) zTop = pts[k];
             }
           }
-          segStart[bucket.lines.length] = segs;
-          bucket._glLineSegStart = segStart;
-          if (segs > 0) {
-            runs.push({ kind: "line", bucket: bucket, first: totalSegs, count: segs, vao: null,
-                        rgb: _hexToRgb(bucket.color), halfWidthPx: (bucket.lineWidth || 2.5) / 2 });
-            totalSegs += segs;
+          var bin = ((zTop - zr.minZ) * zr.zScale) | 0;
+          if (bin < 0) bin = 0; else if (bin > bins - 1) bin = bins - 1;
+          zKeys[i] = bin * nLB + b;
+          keyCounts[1 + zKeys[i]] += segs;
+          totalSegs += segs;
+        }
+        bucket._glSegCounts = segCounts;
+        bucket._glZKeys = zKeys;
+      }
+      if (totalSegs === 0) {
+        return;
+      }
+      for (var s = 1; s < keyCounts.length; s++) {
+        keyCounts[s] += keyCounts[s - 1];
+      }
+      var binStart = new Uint32Array(bins + 1);
+      for (var bn = 0; bn <= bins; bn++) {
+        binStart[bn] = keyCounts[bn * nLB];
+      }
+
+      // Pass 2: write each line's segments at its sorted slots. Line vertex,
+      // 32 bytes: ax,ay,bx,by f32 | zmin,zmax f32 (the whole POLYLINE's z
+      // range, copied per segment -- the 2D path altitude-gates per LINE via
+      // _lineBounds, so per-segment z would visibly differ) | rgba8 |
+      // flags u8 | halfWidth u8 (px * 8) | bucketIdx u16. Individually
+      // hidden lines are written with the HIDDEN_Z sentinels up front (see
+      // _refreshHiddenPatches for the incremental patching).
+      var lineData = new ArrayBuffer(totalSegs * 4 * 32);
+      var lineF32 = new Float32Array(lineData);
+      var lineU8 = new Uint8Array(lineData);
+      var lineU16 = new Uint16Array(lineData);
+      var nRect = this._rectBucketList ? this._rectBucketList.length : 0;
+      for (b = 0; b < nLB; b++) {
+        bucket = lineBuckets[b];
+        stride = bucket.pointStride;
+        lineBounds = bucket._lineBounds;
+        var rgb = _hexToRgb(bucket.color);
+        var halfWidthQ = Math.min(255, Math.round(((bucket.lineWidth || 2.5) / 2) * 8));
+        var ordinal = Math.min(nRect + b, VIS_TEX_WIDTH - 1);
+        var segCounts2 = bucket._glSegCounts;
+        var zKeys2 = bucket._glZKeys;
+        var firstSlot = new Int32Array(bucket.lines.length).fill(-1);
+        bucket._glBuiltHidden = bucket.hiddenIndices ? new Set(bucket.hiddenIndices) : new Set();
+        for (i = 0; i < bucket.lines.length; i++) {
+          if (segCounts2[i] === 0) {
+            continue;
           }
-        } else if (bucket.renderType === "circle" && bucket.points && bucket.points.length > 0) {
+          pts = bucket.lines[i];
+          var slot = keyCounts[zKeys2[i]];
+          keyCounts[zKeys2[i]] += segCounts2[i];
+          firstSlot[i] = slot;
+          var hidden = bucket.hiddenIndices && bucket.hiddenIndices.has(i);
+          var lb2 = lineBounds && lineBounds[i];
+          var zmin = hidden ? HIDDEN_Z : (lb2 ? lb2.minZ : -ALT_SENTINEL);
+          var zmax = hidden ? -HIDDEN_Z : (lb2 ? lb2.maxZ : ALT_SENTINEL);
+          this._writeLineSegments(lineF32, lineU8, lineU16, slot, pts, stride, zmin, zmax, rgb, halfWidthQ, ordinal);
+        }
+        bucket._glLineFirstSlot = firstSlot;
+      }
+
+      var lineBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, lineData, gl.STATIC_DRAW);
+      this._ensureIndexCapacity(totalSegs);
+      var vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this._indexBuffer);
+      gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 32, 0);   // a_a
+      gl.enableVertexAttribArray(2);
+      gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 8);   // a_b
+      gl.enableVertexAttribArray(3);
+      gl.vertexAttribPointer(3, 2, gl.FLOAT, false, 32, 16);  // a_zrange
+      gl.enableVertexAttribArray(4);
+      gl.vertexAttribPointer(4, 1, gl.UNSIGNED_BYTE, false, 32, 28); // a_flags
+      gl.enableVertexAttribArray(5);
+      gl.vertexAttribPointer(5, 4, gl.UNSIGNED_BYTE, true, 32, 24);  // a_color
+      gl.enableVertexAttribArray(6);
+      gl.vertexAttribPointer(6, 1, gl.UNSIGNED_BYTE, false, 32, 29); // a_halfWidth (px * 8)
+      gl.enableVertexAttribArray(7);
+      gl.vertexAttribPointer(7, 1, gl.UNSIGNED_SHORT, false, 32, 30); // a_bucketIdx
+      gl.bindVertexArray(null);
+
+      this._line = { buffer: lineBuffer, vao: vao, count: totalSegs, binStart: binStart, buckets: lineBuckets };
+    },
+
+    // Circles keep the old per-bucket run structure (one shared vertex
+    // buffer, a tiny VAO per run with attributes bound at
+    // byteOffset = firstQuad * 4 * stride -- WebGL2 has no baseVertex).
+    // Circle vertex, 16 bytes: x,y,z f32 | flags u8 | pad x3. They're
+    // terrain markers (resource nodes/wells), so they draw before the
+    // rect/line merge walk rather than inside it.
+    _buildCircleStream: function() {
+      var gl = this._gl;
+      var sorted = this._sortedBuckets;
+      var runs = [];
+      var b, bucket, i;
+      var totalCircles = 0;
+      for (b = 0; b < sorted.length; b++) {
+        bucket = sorted[b];
+        if (bucket.renderType === "circle" && bucket.points && bucket.points.length > 0) {
           var nPts = bucket.points.length / bucket.pointStride;
-          runs.push({ kind: "circle", bucket: bucket, first: totalCircles, count: nPts, vao: null,
+          runs.push({ bucket: bucket, first: totalCircles, count: nPts, vao: null,
                       rgb: _hexToRgb(bucket.color) });
           totalCircles += nPts;
         }
       }
-
-      // Pass 2: fill the streams -- 4 expanded vertex records per segment /
-      // circle (see the non-instanced rationale above RECT_VS). Line vertex,
-      // 28 bytes: ax,ay,bx,by f32 | zmin,zmax f32 (the whole POLYLINE's z
-      // range, copied per segment -- the 2D path altitude-gates per LINE via
-      // _lineBounds, so per-segment z would visibly differ) | flags u8 |
-      // pad x3. Circle vertex, 16 bytes: x,y,z f32 | flags u8 | pad x3.
-      // Individually hidden entries are written with the HIDDEN_Z sentinels
-      // up front (see _refreshHiddenPatches for the incremental patching).
-      var lineData = new ArrayBuffer(totalSegs * 4 * 28);
+      if (totalCircles === 0) {
+        return;
+      }
       var circleData = new ArrayBuffer(totalCircles * 4 * 16);
-      var lineF32 = new Float32Array(lineData);
-      var lineU8 = new Uint8Array(lineData);
       var circF32 = new Float32Array(circleData);
       var circU8 = new Uint8Array(circleData);
-      var r, run;
-      for (r = 0; r < runs.length; r++) {
-        run = runs[r];
+      for (var r = 0; r < runs.length; r++) {
+        var run = runs[r];
         bucket = run.bucket;
-        if (run.kind === "line") {
-          var seg = run.first;
-          stride = bucket.pointStride;
-          var lineBounds = bucket._lineBounds;
-          bucket._glBuiltHidden = bucket.hiddenIndices ? new Set(bucket.hiddenIndices) : new Set();
-          for (i = 0; i < bucket.lines.length; i++) {
-            pts = bucket.lines[i];
-            if (pts.length < stride * 2) {
-              continue;
-            }
-            var hidden = bucket.hiddenIndices && bucket.hiddenIndices.has(i);
-            var lb = lineBounds && lineBounds[i];
-            var zmin = hidden ? HIDDEN_Z : (lb ? lb.minZ : -ALT_SENTINEL);
-            var zmax = hidden ? -HIDDEN_Z : (lb ? lb.maxZ : ALT_SENTINEL);
-            seg = this._writeLineSegments(lineF32, lineU8, seg, pts, stride, zmin, zmax);
-          }
-        } else {
-          pts = bucket.points;
-          stride = bucket.pointStride;
-          var altIdx = stride - 1;
-          bucket._glBuiltHidden = bucket.hiddenIndices ? new Set(bucket.hiddenIndices) : new Set();
-          for (i = 0; i < run.count; i++) {
-            var cp = i * stride;
-            var cz = (bucket.hiddenIndices && bucket.hiddenIndices.has(i)) ? HIDDEN_Z : pts[cp + altIdx];
-            for (var ck = 0; ck < 4; ck++) {
-              var cvi = (run.first + i) * 4 + ck;
-              var cfo = cvi * 4;
-              circF32[cfo] = pts[cp];
-              circF32[cfo + 1] = pts[cp + 1];
-              circF32[cfo + 2] = cz;
-              circU8[cvi * 16 + 12] = ck; // bit0 unitX>0, bit1 unitY>0
-            }
+        var pts = bucket.points;
+        var stride = bucket.pointStride;
+        var altIdx = stride - 1;
+        bucket._glBuiltHidden = bucket.hiddenIndices ? new Set(bucket.hiddenIndices) : new Set();
+        for (i = 0; i < run.count; i++) {
+          var cp = i * stride;
+          var cz = (bucket.hiddenIndices && bucket.hiddenIndices.has(i)) ? HIDDEN_Z : pts[cp + altIdx];
+          for (var ck = 0; ck < 4; ck++) {
+            var cvi = (run.first + i) * 4 + ck;
+            var cfo = cvi * 4;
+            circF32[cfo] = pts[cp];
+            circF32[cfo + 1] = pts[cp + 1];
+            circF32[cfo + 2] = cz;
+            circU8[cvi * 16 + 12] = ck; // bit0 unitX>0, bit1 unitY>0
           }
         }
       }
-
-      var lineBuffer = null, circleBuffer = null;
-      if (totalSegs > 0) {
-        lineBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, lineData, gl.STATIC_DRAW);
-      }
-      if (totalCircles > 0) {
-        circleBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, circleBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, circleData, gl.STATIC_DRAW);
-      }
-      this._ensureIndexCapacity(Math.max(totalSegs, totalCircles));
+      var circleBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, circleBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, circleData, gl.STATIC_DRAW);
+      this._ensureIndexCapacity(totalCircles);
       for (r = 0; r < runs.length; r++) {
-        run = runs[r];
-        var vao = gl.createVertexArray();
-        gl.bindVertexArray(vao);
+        var crun = runs[r];
+        var vao2 = gl.createVertexArray();
+        gl.bindVertexArray(vao2);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this._indexBuffer);
-        if (run.kind === "line") {
-          gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
-          var base = run.first * 4 * 28; // attribute offsets substitute for the missing baseVertex
-          gl.enableVertexAttribArray(1);
-          gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 28, base);      // a_a
-          gl.enableVertexAttribArray(2);
-          gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 28, base + 8);  // a_b
-          gl.enableVertexAttribArray(3);
-          gl.vertexAttribPointer(3, 2, gl.FLOAT, false, 28, base + 16); // a_zrange
-          gl.enableVertexAttribArray(4);
-          gl.vertexAttribPointer(4, 1, gl.UNSIGNED_BYTE, false, 28, base + 24); // a_flags
-        } else {
-          gl.bindBuffer(gl.ARRAY_BUFFER, circleBuffer);
-          var cbase = run.first * 4 * 16;
-          gl.enableVertexAttribArray(1);
-          gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, cbase);     // a_center
-          gl.enableVertexAttribArray(2);
-          gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 16, cbase + 8); // a_z
-          gl.enableVertexAttribArray(3);
-          gl.vertexAttribPointer(3, 1, gl.UNSIGNED_BYTE, false, 16, cbase + 12); // a_flags
-        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, circleBuffer);
+        var cbase = crun.first * 4 * 16;
+        gl.enableVertexAttribArray(1);
+        gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, cbase);     // a_center
+        gl.enableVertexAttribArray(2);
+        gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 16, cbase + 8); // a_z
+        gl.enableVertexAttribArray(3);
+        gl.vertexAttribPointer(3, 1, gl.UNSIGNED_BYTE, false, 16, cbase + 12); // a_flags
         gl.bindVertexArray(null);
-        run.vao = vao;
+        crun.vao = vao2;
       }
-
-      this._lineCircle = { lineBuffer: lineBuffer, circleBuffer: circleBuffer, runs: runs };
+      this._circles = { buffer: circleBuffer, runs: runs };
     },
 
     // Writes one polyline's segments (4 expanded vertex records each) into
@@ -1115,15 +1297,19 @@
     // (both call _spanSegments) so offsets line up. Curved spans get
     // sub-chords of the same cubic Bezier the 2D path hands to
     // bezierCurveTo (Hermite tangents / 3).
-    _writeLineSegments: function(f32, u8, seg, pts, stride, zmin, zmax) {
+    _writeLineSegments: function(f32, u8, u16, seg, pts, stride, zmin, zmax, rgb, halfWidthQ, ordinal) {
       function emit(ax, ay, bx, by) {
         for (var k = 0; k < 4; k++) {
           var vi = seg * 4 + k;
-          var fo = vi * 7;
+          var fo = vi * 8;
           f32[fo] = ax; f32[fo + 1] = ay;
           f32[fo + 2] = bx; f32[fo + 3] = by;
           f32[fo + 4] = zmin; f32[fo + 5] = zmax;
-          u8[vi * 28 + 24] = k; // bit0 t (along), bit1 side
+          var bo = vi * 32;
+          u8[bo + 24] = rgb[0]; u8[bo + 25] = rgb[1]; u8[bo + 26] = rgb[2]; u8[bo + 27] = 255;
+          u8[bo + 28] = k; // bit0 t (along), bit1 side
+          u8[bo + 29] = halfWidthQ;
+          u16[vi * 16 + 15] = ordinal;
         }
         seg++;
       }
@@ -1196,69 +1382,74 @@
       }
       // Lines/circles: per bucket, diff hiddenIndices against the set the
       // stream was built with, then patch just the changed entries.
-      var lc = this._lineCircle;
-      if (lc) {
-        for (var r = 0; r < lc.runs.length; r++) {
-          var run = lc.runs[r];
-          bucket = run.bucket;
-          var built = bucket._glBuiltHidden;
-          var now = bucket.hiddenIndices;
-          if (!built || (built.size === 0 && (!now || now.size === 0))) {
-            continue;
+      var self = this;
+      function diffHidden(bkt, apply) {
+        var built = bkt._glBuiltHidden;
+        var now = bkt.hiddenIndices;
+        if (!built || (built.size === 0 && (!now || now.size === 0))) {
+          return;
+        }
+        var changed = [];
+        built.forEach(function(idx) {
+          if (!now || !now.has(idx)) {
+            changed.push(idx);
           }
-          var changed = [];
-          built.forEach(function(idx) {
-            if (!now || !now.has(idx)) {
+        });
+        if (now) {
+          now.forEach(function(idx) {
+            if (!built.has(idx)) {
               changed.push(idx);
             }
           });
-          if (now) {
-            now.forEach(function(idx) {
-              if (!built.has(idx)) {
-                changed.push(idx);
-              }
-            });
-          }
-          if (changed.length === 0) {
-            continue;
-          }
-          for (i = 0; i < changed.length; i++) {
-            var idx = changed[i];
-            var nowHidden = !!(now && now.has(idx));
-            if (run.kind === "line") {
-              this._patchHiddenLine(run, idx, nowHidden);
-            } else {
-              this._patchHiddenCircle(run, idx, nowHidden);
-            }
-          }
-          bucket._glBuiltHidden = now ? new Set(now) : new Set();
         }
+        if (changed.length === 0) {
+          return;
+        }
+        for (var ci = 0; ci < changed.length; ci++) {
+          apply(changed[ci], !!(now && now.has(changed[ci])));
+        }
+        bkt._glBuiltHidden = now ? new Set(now) : new Set();
+      }
+      if (this._line) {
+        this._line.buckets.forEach(function(lineBucket) {
+          diffHidden(lineBucket, function(idx, nowHidden) {
+            self._patchHiddenLine(lineBucket, idx, nowHidden);
+          });
+        });
+      }
+      if (this._circles) {
+        this._circles.runs.forEach(function(run) {
+          diffHidden(run.bucket, function(idx, nowHidden) {
+            self._patchHiddenCircle(run, idx, nowHidden);
+          });
+        });
       }
       this._hiddenEpoch = this._computeHiddenEpoch();
     },
 
-    // Re-emits one polyline's segment records with either the real z range
-    // (restore) or the HIDDEN_Z sentinels (hide -- the shader's altitude
-    // gate then rejects every segment regardless of the active filter).
-    _patchHiddenLine: function(run, lineIdx, hidden) {
+    // Rewrites one polyline's per-segment z range with either the real
+    // bounds (restore) or the HIDDEN_Z sentinels (hide -- the shader's
+    // altitude gate then rejects every segment regardless of the active
+    // filter). Only the two z floats are touched; the line's segments sit
+    // contiguously at _glLineFirstSlot (see _buildLineStream).
+    _patchHiddenLine: function(bucket, lineIdx, hidden) {
       var gl = this._gl;
-      var bucket = run.bucket;
-      var segStart = bucket._glLineSegStart;
-      if (!segStart || lineIdx >= bucket.lines.length) {
+      var firstSlot = bucket._glLineFirstSlot;
+      var segCounts = bucket._glSegCounts;
+      if (!this._line || !firstSlot || lineIdx >= firstSlot.length || firstSlot[lineIdx] < 0) {
         return;
       }
-      var first = segStart[lineIdx], last = segStart[lineIdx + 1];
-      if (last <= first) {
-        return;
-      }
-      var pts = bucket.lines[lineIdx];
       var lb = bucket._lineBounds && bucket._lineBounds[lineIdx];
       var zmin = hidden ? HIDDEN_Z : (lb ? lb.minZ : -ALT_SENTINEL);
       var zmax = hidden ? -HIDDEN_Z : (lb ? lb.maxZ : ALT_SENTINEL);
-      var data = new ArrayBuffer((last - first) * 4 * 28);
-      this._writeLineSegments(new Float32Array(data), new Uint8Array(data), 0, pts, bucket.pointStride, zmin, zmax);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this._lineCircle.lineBuffer);
-      gl.bufferSubData(gl.ARRAY_BUFFER, (run.first + first) * 4 * 28, data);
+      var two = new Float32Array([zmin, zmax]);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._line.buffer);
+      var first = firstSlot[lineIdx];
+      for (var s = 0; s < segCounts[lineIdx]; s++) {
+        for (var k = 0; k < 4; k++) {
+          gl.bufferSubData(gl.ARRAY_BUFFER, ((first + s) * 4 + k) * 32 + 16, two);
+        }
+      }
     },
 
     _patchHiddenCircle: function(run, pointIdx, hidden) {
@@ -1267,7 +1458,7 @@
       var stride = bucket.pointStride;
       var z = hidden ? HIDDEN_Z : bucket.points[pointIdx * stride + (stride - 1)];
       var one = new Float32Array([z]);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this._lineCircle.circleBuffer);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._circles.buffer);
       for (var k = 0; k < 4; k++) {
         gl.bufferSubData(gl.ARRAY_BUFFER, ((run.first + pointIdx) * 4 + k) * 16 + 8, one);
       }
@@ -1289,6 +1480,17 @@
         for (var b = 0; b < list.length; b++) {
           if (list[b].visible) {
             data[Math.min(b, VIS_TEX_WIDTH - 1)] = 255;
+          }
+        }
+      }
+      // Line buckets take the ordinals after the rect buckets' (matching
+      // _buildLineStream's assignment).
+      var lines = this._lineBucketList;
+      if (lines) {
+        var base = list ? list.length : 0;
+        for (var lb = 0; lb < lines.length; lb++) {
+          if (lines[lb].visible) {
+            data[Math.min(base + lb, VIS_TEX_WIDTH - 1)] = 255;
           }
         }
       }
@@ -1362,49 +1564,96 @@
         this._sortedBuckets = this.buckets.slice().sort(function(a, b) { return (a.drawPriority || 0) - (b.drawPriority || 0); });
       }
 
-      // 1) Lines and circles, interleaved in drawPriority order (the run
-      // list is prebuilt in that order); program switches only on kind
-      // changes, which happen a handful of times per frame.
+      // 1) Circles first: terrain markers (resource nodes/wells) sit under
+      // the built world.
       var circleRadius = Math.min(3, 1 + Math.max(0, zoom) * 0.4);
-      var lc = this._lineCircle;
-      if (lc) {
-        var curKind = null;
-        var progs = this._programs;
-        for (var r = 0; r < lc.runs.length; r++) {
-          var run = lc.runs[r];
+      var progs = this._programs;
+      if (this._circles) {
+        var cp = progs.circle;
+        gl.useProgram(cp.prog);
+        this._setCommonUniforms(cp, fr);
+        gl.uniform1f(cp.u.u_radiusPx, circleRadius);
+        for (var r = 0; r < this._circles.runs.length; r++) {
+          var run = this._circles.runs[r];
           if (!run.bucket.visible || run.count === 0) {
             continue;
           }
-          var pu = run.kind === "line" ? progs.line : progs.circle;
-          if (curKind !== run.kind) {
-            curKind = run.kind;
-            gl.useProgram(pu.prog);
-            this._setCommonUniforms(pu, fr);
-            if (run.kind === "circle") {
-              gl.uniform1f(pu.u.u_radiusPx, circleRadius);
-            }
-          }
-          gl.uniform4f(pu.u.u_color, run.rgb[0] / 255, run.rgb[1] / 255, run.rgb[2] / 255, 1);
-          if (run.kind === "line") {
-            gl.uniform1f(pu.u.u_halfWidthPx, run.halfWidthPx);
-          }
+          gl.uniform4f(cp.u.u_color, run.rgb[0] / 255, run.rgb[1] / 255, run.rgb[2] / 255, 1);
           gl.bindVertexArray(run.vao);
           gl.drawElements(gl.TRIANGLES, run.count * 6, gl.UNSIGNED_INT, 0);
         }
       }
 
-      // 2) All rects in one draw -- blending follows submission order, and
-      // the stream was baked lowest-z-first, so multi-floor overdraw looks
-      // exactly like the 2D sorted path.
-      if (this._rect && this._rect.count > 0) {
-        var rp = this._programs.rect;
+      // 2) Rects and lines interleaved by altitude bin: both streams are
+      // baked lowest-z-first over the SAME bin mapping (_computeZRange), so
+      // walking "every rect of bin <= b, then bin b's lines" ascending makes
+      // blending follow true altitude across the two primitive classes. A
+      // top-floor belt stays visible over the floors below it instead of
+      // being buried under every rect's 0.55-alpha fill; lines of the same
+      // bin draw after that bin's rects (a belt sits ON its floor). Each
+      // contiguous slot range is one drawElements at an index-buffer offset
+      // (6 u32 indices per quad -> slot * 24 bytes); on real saves lines
+      // cluster into few bins, so this stays a handful of draws per frame.
+      var rect = this._rect, line = this._line;
+      var rp = progs.rect, lp = progs.line;
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this._visTexture);
+      if (rect && rect.count > 0) {
         gl.useProgram(rp.prog);
         this._setCommonUniforms(rp, fr);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this._visTexture);
         gl.uniform1i(rp.u.u_visibility, 0);
-        gl.bindVertexArray(this._rect.vao);
-        gl.drawElements(gl.TRIANGLES, this._rect.count * 6, gl.UNSIGNED_INT, 0);
+      }
+      if (line && line.count > 0) {
+        gl.useProgram(lp.prog);
+        this._setCommonUniforms(lp, fr);
+        gl.uniform1i(lp.u.u_visibility, 0);
+      }
+      var rectCursor = 0;
+      var curProg = null;
+      var pendA = -1, pendB = -1; // pending line slot range, merged across bins with no rects in between
+      function drawLines() {
+        if (pendB <= pendA) {
+          return;
+        }
+        if (curProg !== lp) {
+          gl.useProgram(lp.prog);
+          gl.bindVertexArray(line.vao);
+          curProg = lp;
+        }
+        gl.drawElements(gl.TRIANGLES, (pendB - pendA) * 6, gl.UNSIGNED_INT, pendA * 24);
+        pendA = pendB = -1;
+      }
+      if (line && line.count > 0) {
+        var lbins = line.binStart;
+        var rbins = rect ? rect.binStart : null;
+        for (var bin = 0; bin < Z_SORT_BINS; bin++) {
+          var s0 = lbins[bin], s1 = lbins[bin + 1];
+          if (s1 <= s0) {
+            continue;
+          }
+          if (rbins && rbins[bin + 1] > rectCursor) {
+            drawLines();
+            if (curProg !== rp) {
+              gl.useProgram(rp.prog);
+              gl.bindVertexArray(rect.vao);
+              curProg = rp;
+            }
+            gl.drawElements(gl.TRIANGLES, (rbins[bin + 1] - rectCursor) * 6, gl.UNSIGNED_INT, rectCursor * 24);
+            rectCursor = rbins[bin + 1];
+          }
+          // Contiguous with the pending range whenever no rect draw flushed
+          // it (line slots are bin-ordered, so s0 == previous s1 then).
+          if (pendA < 0) {
+            pendA = s0;
+          }
+          pendB = s1;
+        }
+        drawLines();
+      }
+      if (rect && rect.count > rectCursor) {
+        gl.useProgram(rp.prog);
+        gl.bindVertexArray(rect.vao);
+        gl.drawElements(gl.TRIANGLES, (rect.count - rectCursor) * 6, gl.UNSIGNED_INT, rectCursor * 24);
       }
 
       gl.bindVertexArray(null);
