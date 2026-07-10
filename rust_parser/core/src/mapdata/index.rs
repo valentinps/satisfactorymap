@@ -144,10 +144,10 @@ impl MapIndex {
         }
         // Lightweight buildables' synthetic "LightweightBuildable:<tp>:<idx>"
         // ids fold in (setdefault + extend).
-        for (path, instances) in buildings::find_lightweight_buildable_groups(&scan) {
-            let type_path = path.to_string(data);
+        for group in buildings::find_lightweight_buildable_groups(&scan) {
+            let type_path = group.type_path.to_string(data);
             let bucket = instance_names_by_type_path.entry(type_path.clone()).or_default();
-            for idx in 0..instances.len() {
+            for idx in 0..group.instances.len() {
                 bucket.push(format!("LightweightBuildable:{}:{}", type_path, idx));
             }
         }
@@ -244,9 +244,9 @@ impl MapIndex {
 
         // -- lightweightInstancesById ------------------------------------------
         let mut lightweight_instances_by_id: IndexMap<String, LightweightEntry> = IndexMap::new();
-        for (path, instances) in buildings::find_lightweight_buildable_groups(&scan) {
-            let type_path = path.to_string(data);
-            for (idx, instance) in instances.iter().enumerate() {
+        for group in buildings::find_lightweight_buildable_groups(&scan) {
+            let type_path = group.type_path.to_string(data);
+            for (idx, instance) in group.instances.iter().enumerate() {
                 lightweight_instances_by_id.insert(
                     format!("LightweightBuildable:{}:{}", type_path, idx),
                     LightweightEntry { type_path: type_path.clone(), position: instance.position },

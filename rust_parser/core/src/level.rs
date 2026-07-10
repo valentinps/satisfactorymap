@@ -27,13 +27,17 @@ fn parse_headers_and_level(
     let level_start = c.pos;
     let level_name = if persistent_level_flag { None } else { Some(c.string()?) };
 
+    let header_size_field_off = c.pos as u32;
     let object_header_and_collectable1_size = c.u64()? as usize;
     let header_start = c.pos;
     let actor_and_component_count = c.u32()?;
 
     let mut headers: Vec<Header> = Vec::with_capacity(actor_and_component_count as usize);
+    let mut header_spans: Vec<(u32, u32)> =
+        Vec::with_capacity(actor_and_component_count as usize);
     let mut last_report = c.pos;
     for _ in 0..actor_and_component_count {
+        let header_record_start = c.pos;
         let header_type = c.u32()?;
         let h = match header_type {
             1 => {
@@ -49,6 +53,7 @@ fn parse_headers_and_level(
                         c.data.len()
                     ));
                 }
+                let transform_off = c.pos as u32;
                 let f = |i: usize| -> f32 {
                     f32::from_le_bytes(c.data[c.pos + i * 4..c.pos + i * 4 + 4].try_into().unwrap())
                 };
@@ -67,6 +72,7 @@ fn parse_headers_and_level(
                     position,
                     scale,
                     was_placed_in_level,
+                    transform_off,
                 })
             }
             0 => {
@@ -86,6 +92,7 @@ fn parse_headers_and_level(
             other => return Err(perr!("Invalid headerType {}", other)),
         };
         headers.push(h);
+        header_spans.push((header_record_start as u32, (c.pos - header_record_start) as u32));
         if let Some(cb) = progress.as_deref_mut() {
             if c.pos - last_report > 1 << 20 {
                 cb(1, progress_base + (c.pos - level_start) as u64, progress_total);
@@ -93,6 +100,8 @@ fn parse_headers_and_level(
             }
         }
     }
+
+    let headers_insert_off = c.pos as u32;
 
     let mut level_persistent_flag = None;
     if persistent_level_flag {
@@ -122,10 +131,19 @@ fn parse_headers_and_level(
     }
 
     // Objects blob (separate cursor; the main cursor jumps over it)
+    let objects_size_field_off = c.pos as u32;
     let all_objects_size = c.u64()? as usize;
     let object_start = c.pos;
     let mut oc = Cursor::new(c.data, object_start);
     c.pos += all_objects_size;
+
+    let spans = LevelSpans {
+        header_size_field_off,
+        headers_insert_off,
+        objects_size_field_off,
+        object_count_field_off: object_start as u32,
+        bodies_insert_off: (object_start + all_objects_size) as u32,
+    };
 
     let level_save_version = c.u32()?;
 
@@ -160,8 +178,11 @@ fn parse_headers_and_level(
         ));
     }
     let mut objects = Vec::with_capacity(actor_and_component_count as usize);
+    let mut object_spans: Vec<(u32, u32)> =
+        Vec::with_capacity(actor_and_component_count as usize);
     let mut last_report = oc.pos;
     for idx in 0..actor_and_component_count as usize {
+        let object_record_start = oc.pos;
         let obj = parse_object(
             &mut oc,
             header_save_version,
@@ -171,6 +192,7 @@ fn parse_headers_and_level(
             calculator_extras,
         )?;
         objects.push(obj);
+        object_spans.push((object_record_start as u32, (oc.pos - object_record_start) as u32));
         if let Some(cb) = progress.as_deref_mut() {
             if oc.pos - last_report > 1 << 20 {
                 cb(
@@ -200,6 +222,9 @@ fn parse_headers_and_level(
         level_save_version,
         collectables2,
         save_object_version_data,
+        header_spans,
+        object_spans,
+        spans,
     })
 }
 
@@ -267,6 +292,8 @@ pub fn parse_full_save(
         drop_pod_refs,
         extra_refs,
         calculator_extras,
+        file_header: file_data[..body_offset].to_vec(),
+        padded,
     })
 }
 

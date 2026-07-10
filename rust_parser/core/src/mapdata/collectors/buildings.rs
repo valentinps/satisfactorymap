@@ -12,7 +12,6 @@ use crate::mapdata::jsonval::{jnum, py_hypot};
 use crate::mapdata::names::readable_label;
 use crate::mapdata::props;
 use crate::mapdata::scan::SaveScan;
-use crate::reader::StrRef;
 use crate::store::*;
 use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
@@ -30,7 +29,7 @@ fn f4(v: [f32; 4]) -> [f64; 4] {
 /// [(buildItemTypePath, [instance, ...]), ...].
 pub(crate) fn find_lightweight_buildable_groups<'a>(
     scan: &SaveScan<'a>,
-) -> &'a [(StrRef, Vec<LightweightInstance>)] {
+) -> &'a [LightweightGroup] {
     let data = scan.data();
     let slots = scan.actor_slots_of_type(&[LIGHTWEIGHT_BUILDABLE_SUBSYSTEM_TYPE_PATH]);
     let Some(&first) = slots.first() else {
@@ -167,8 +166,8 @@ pub fn collect_buildings(scan: &SaveScan) -> Value {
         }
     }
 
-    for (path, instances) in find_lightweight_buildable_groups(scan) {
-        let type_path = path.to_string(data);
+    for group in find_lightweight_buildable_groups(scan) {
+        let type_path = group.type_path.to_string(data);
         if line_rendered.contains(type_path.as_str())
             || EXCLUDED_BUILDING_TYPE_PATHS.contains(&type_path.as_str())
         {
@@ -180,7 +179,7 @@ pub fn collect_buildings(scan: &SaveScan) -> Value {
             .or_default()
             .entry(type_path.clone())
             .or_insert_with(|| new_building_bucket(&type_path));
-        for (idx, instance) in instances.iter().enumerate() {
+        for (idx, instance) in group.instances.iter().enumerate() {
             append_building_instance(
                 bucket,
                 &type_path,
