@@ -1412,7 +1412,7 @@ var Filters = {};
   // sidebar checkbox, so "Check all" doesn't reach them -- this is the only
   // way to undo one short of reloading the save. Hidden entirely (rather
   // than just disabled) when there's nothing to reset, matching how e.g.
-  // #sftpPanel/#gameSettingsPanel/#altitudePanel only appear once relevant.
+  // #gameSettingsPanel/#altitudePanel only appear once relevant.
   var resetHiddenButton = document.getElementById("resetHiddenButton");
   Filters.refreshHiddenObjectsIndicator = function() {
     if (!resetHiddenButton) {

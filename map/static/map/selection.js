@@ -272,12 +272,7 @@ var SelectionTool = {};
     }
     openModal("Selection inventory", "Summing inventories…");
     modalList.innerHTML = "";
-    fetch("/api/selection-inventory", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ file: window.MapApp.currentFile, instances: lastSelection.ids }),
-    })
-      .then(function(response) { return response.json(); })
+    SaveClient.selectionInventory(lastSelection.ids)
       .then(function(result) {
         if (result.error) {
           modalSummary.textContent = result.error;

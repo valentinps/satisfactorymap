@@ -41,3 +41,6 @@ __pycache__/
 .venv
 # Rust parser build artifacts
 rust_parser/target/
+
+# Assembled static site (tools/build_site.py output)
+dist/

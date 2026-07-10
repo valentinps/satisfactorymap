@@ -1,9 +1,0 @@
-{
-  "host": "your-server-ip-or-hostname",
-  "port": 22,
-  "username": "your-sftp-username",
-  "password": "your-sftp-password",
-  "remote_path": "/home/.config/Epic/FactoryGame/Saved/SaveGames/server",
-  "local_dir": "sftp_saves",
-  "sync_interval_seconds": 60
-}

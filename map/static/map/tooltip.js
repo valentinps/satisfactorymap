@@ -455,8 +455,7 @@ var Tooltip = {};
 
     var requestedId = spec.key;
     pendingTimer = setTimeout(function() {
-      fetch("/api/instance?file=" + encodeURIComponent(filename) + "&instance=" + encodeURIComponent(spec.instanceName))
-        .then(function(response) { return response.json(); })
+      SaveClient.describeInstance(spec.instanceName)
         .then(function(detail) {
           if (currentId !== requestedId) return; // Hovered/clicked away before this resolved.
           if (detail.error) {
