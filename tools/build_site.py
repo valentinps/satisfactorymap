@@ -65,14 +65,25 @@ def main():
         sys.exit("map_highres.png missing -- extract game data first (see README)")
     shutil.copy2(mapImage, os.path.join(DIST, "map_highres.png"))
 
-    # WASM package.
+    # WASM package. wasm-pack (and the cargo it spawns) live in ~/.cargo/bin,
+    # which isn't always on PATH -- resolve it ourselves and pass an env with
+    # cargo's bin dir prepended so this works from any shell.
     if not skip_wasm:
+        cargo_bin = os.path.join(os.path.expanduser("~"), ".cargo", "bin")
+        env = dict(os.environ, PATH=cargo_bin + os.pathsep + os.environ.get("PATH", ""))
+        wasm_pack = shutil.which("wasm-pack", path=env["PATH"])
+        if wasm_pack is None:
+            sys.exit(
+                "wasm-pack not found (looked on PATH and in ~/.cargo/bin).\n"
+                "Install the Rust toolchain (https://rustup.rs/) and then:\n"
+                "    cargo install wasm-pack"
+            )
         subprocess.run(
-            ["wasm-pack", "build", os.path.join(REPO, "rust_parser", "wasm"),
+            [wasm_pack, "build", os.path.join(REPO, "rust_parser", "wasm"),
              "--release", "--target", "no-modules",
              "--out-dir", os.path.join(DIST, "pkg"), "--out-name", "sav_wasm",
              "--no-typescript"],
-            check=True, shell=(os.name == "nt"),
+            check=True, env=env,
         )
         # wasm-pack drops package.json/.gitignore into out-dir; not needed.
         for junk in ("package.json", ".gitignore", "README.md", "LICENSE"):
