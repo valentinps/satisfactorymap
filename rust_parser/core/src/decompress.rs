@@ -18,6 +18,28 @@ struct Chunk {
     uncomp_len: usize,
 }
 
+/// Total decompressed body size from the chunk table alone (no inflation) --
+/// the wasm loader uses it to pre-grow the heap in one step (thousands of
+/// incremental memory.grows during parse are quadratically slow in V8).
+pub fn decompressed_size(data: &[u8], start: usize) -> PResult<u64> {
+    let mut c = Cursor::new(data, start);
+    let mut total: u64 = 0;
+    while c.pos < data.len() {
+        c.confirm_u32(0x9e2a83c1)?;
+        c.confirm_u32(0x22222222)?;
+        c.confirm_u8(0)?;
+        let _maximum_chunk_size = c.u32()?;
+        c.confirm_u32(0x03000000)?;
+        let comp = c.u64()?;
+        let uncomp = c.u64()?;
+        let _comp2 = c.u64()?;
+        let _uncomp2 = c.u64()?;
+        total = total.checked_add(uncomp).ok_or_else(|| perr!("Total uncompressed size overflow"))?;
+        c.pos += comp as usize;
+    }
+    Ok(total)
+}
+
 /// Mirrors decompressSaveFile(offset, data) including its confirm checks.
 /// `progress(bytes_of_file_consumed, total_file_bytes)` fires as chunks finish.
 pub fn decompress_save_file(

@@ -23,7 +23,8 @@ fn flat_points_value(flat: Vec<f64>) -> Value {
 /// collectSplinePaths: {"polylines", "ids", "pointStride": 7}.
 fn collect_spline_paths(scan: &SaveScan, type_paths: &[&str], spline_property: &str) -> Value {
     let owned: Vec<String> = type_paths.iter().map(|s| s.to_string()).collect();
-    let bulk = spline_polylines(scan.store, &owned, spline_property, &projection_params());
+    let bulk =
+        spline_polylines(scan.store, &owned, spline_property, &projection_params(), scan.instance_slots());
     let mut polylines: Vec<Value> = Vec::new();
     let mut ids: Vec<Value> = Vec::new();
     for (instance_name, _type_path, flat) in bulk {
@@ -85,7 +86,7 @@ fn collect_spline_path_groups(
 
     let owned: Vec<String> = type_paths.iter().map(|s| s.to_string()).collect();
     for (instance_name, type_path, flat) in
-        spline_polylines(scan.store, &owned, spline_property, &projection_params())
+        spline_polylines(scan.store, &owned, spline_property, &projection_params(), scan.instance_slots())
     {
         let label = label_of(&type_path);
         let idx = match groups.iter().position(|g| g.label == label) {

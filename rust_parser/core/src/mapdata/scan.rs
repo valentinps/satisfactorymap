@@ -4,8 +4,11 @@
 //! last value wins, first position kept).
 
 use super::consts::GAME_STATE_TYPE_PATH_SUBSTRING;
+use crate::extract::InstanceSlots;
 use crate::store::*;
 use indexmap::IndexMap;
+use std::cell::OnceCell;
+use std::collections::HashMap;
 
 /// (levelIdx, slotIdx) into store.levels[li].headers / .objects (the two are
 /// index-aligned).
@@ -23,6 +26,10 @@ pub struct SaveScan<'a> {
     /// BP_GameState_C objects (matched on instanceName substring) in save
     /// order.
     pub game_state_objects: Vec<Slot>,
+    /// Cached extract::InstanceSlots view of by_instance_name -- built on
+    /// first use and shared by every bulk-extractor call (previously each
+    /// call re-walked all objects: 6+ redundant full passes per load).
+    instance_slots: OnceCell<InstanceSlots<'a>>,
 }
 
 impl<'a> SaveScan<'a> {
@@ -49,7 +56,26 @@ impl<'a> SaveScan<'a> {
                 }
             }
         }
-        SaveScan { store, by_instance_name, actor_seqs_by_type_path, game_state_objects }
+        SaveScan {
+            store,
+            by_instance_name,
+            actor_seqs_by_type_path,
+            game_state_objects,
+            instance_slots: OnceCell::new(),
+        }
+    }
+
+    /// The extractor-shaped (slots, slotIndexByName) pair, derived from
+    /// by_instance_name (identical content and order: last value wins, first
+    /// position kept).
+    pub fn instance_slots(&self) -> &InstanceSlots<'a> {
+        self.instance_slots.get_or_init(|| {
+            let slots: Vec<(&[u8], Slot)> =
+                self.by_instance_name.iter().map(|(&name, &slot)| (name, slot)).collect();
+            let slot_by_name: HashMap<&[u8], usize> =
+                slots.iter().enumerate().map(|(i, &(name, _))| (name, i)).collect();
+            (slots, slot_by_name)
+        })
     }
 
     #[inline]

@@ -3,6 +3,75 @@
 //! Runs inside a Web Worker (map/static/map/worker.js); all methods are
 //! synchronous from the worker's point of view.
 
+// Allocator story (measured, not theoretical): V8 makes each wasm
+// memory.grow progressively more expensive, so letting the allocator extend
+// the heap thousands of times during a parse turns allocation cost
+// quadratic (25M allocs took 175s; with a pre-grown heap the same pattern
+// runs at a flat ~23ns/alloc). rlsf (TLSF) is the O(1) block manager; the
+// GrowAhead wrapper watches for heap growth and immediately claims 25%
+// headroom into the pool, making memory.grow logarithmic in total heap
+// size regardless of save size.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+mod wasm_alloc {
+    use core::alloc::{GlobalAlloc, Layout};
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+
+    static INNER: rlsf::GlobalTlsf = rlsf::GlobalTlsf::new();
+    static LAST_PAGES: AtomicUsize = AtomicUsize::new(0);
+    static IN_BALLAST: AtomicBool = AtomicBool::new(false);
+
+    fn maybe_grow_ahead() {
+        let pages = core::arch::wasm32::memory_size(0);
+        if pages <= LAST_PAGES.load(Relaxed) {
+            return;
+        }
+        if IN_BALLAST.swap(true, Relaxed) {
+            return; // the ballast's own allocation landed here
+        }
+        // The pool just grew: claim generous headroom in ONE go so the next
+        // thousands of allocations never touch memory.grow. Capped at 256MB
+        // so peak memory overshoots the natural high-water mark by at most
+        // that; past 3.5GB stop growing ahead entirely (4GB wasm ceiling --
+        // rlsf then grows in small steps for the tail). Failure is fine.
+        let heap = pages << 16;
+        if heap <= 3_500 << 20 {
+            let headroom = (heap / 4).clamp(32 << 20, 256 << 20);
+            let mut ballast: Vec<u8> = Vec::new();
+            let _ = ballast.try_reserve_exact(headroom);
+            drop(ballast);
+        }
+        LAST_PAGES.store(core::arch::wasm32::memory_size(0), Relaxed);
+        IN_BALLAST.store(false, Relaxed);
+    }
+
+    pub struct GrowAhead;
+
+    unsafe impl GlobalAlloc for GrowAhead {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { INNER.alloc(layout) };
+            maybe_grow_ahead();
+            ptr
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { INNER.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let ptr = unsafe { INNER.realloc(ptr, layout, new_size) };
+            maybe_grow_ahead();
+            ptr
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { INNER.alloc_zeroed(layout) };
+            maybe_grow_ahead();
+            ptr
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+#[global_allocator]
+static ALLOC: wasm_alloc::GrowAhead = wasm_alloc::GrowAhead;
+
 use sav_core::level::{parse_full_save, ProgressFn};
 use sav_core::mapdata;
 use sav_core::mapdata::index::MapIndex;
@@ -48,13 +117,11 @@ impl SaveSession {
         drop(bytes);
 
         // 17 payload steps + the index build = BUILD_STEP_COUNT ticks, same
-        // as Python's buildAll.
-        let mut build_progress =
-            |current: u64, _total: u64| call(2, current, mapdata::BUILD_STEP_COUNT);
-        let payload_json = mapdata::build_payload_json(&store, None, Some(&mut build_progress))
-            .map_err(|e| JsError::new(&e))?;
-        let index = MapIndex::build(&store);
-        call(2, mapdata::BUILD_STEP_COUNT, mapdata::BUILD_STEP_COUNT);
+        // as Python's buildAll; one shared SaveScan for both.
+        let mut build_progress = |current: u64, total: u64| call(2, current, total);
+        let (payload_json, index) =
+            mapdata::build_all_json(&store, Some(&mut build_progress))
+                .map_err(|e| JsError::new(&e))?;
 
         Ok(SaveSession { store: Arc::new(store), index, payload_json })
     }

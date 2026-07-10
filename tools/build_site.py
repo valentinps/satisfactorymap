@@ -71,6 +71,9 @@ def main():
     if not skip_wasm:
         cargo_bin = os.path.join(os.path.expanduser("~"), ".cargo", "bin")
         env = dict(os.environ, PATH=cargo_bin + os.pathsep + os.environ.get("PATH", ""))
+        # SIMD (zlib-rs has simd128 paths) + bulk-memory (fast memory.copy).
+        # Supported by every browser that runs wasm-bindgen output anyway.
+        env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " -C target-feature=+simd128,+bulk-memory").strip()
         wasm_pack = shutil.which("wasm-pack", path=env["PATH"])
         if wasm_pack is None:
             sys.exit(

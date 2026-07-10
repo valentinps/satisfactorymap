@@ -118,7 +118,13 @@ impl MapIndex {
     }
 
     pub fn build(store: &SaveStore) -> MapIndex {
-        let scan = SaveScan::new(store);
+        Self::build_with_scan(&SaveScan::new(store))
+    }
+
+    /// Build from an existing SaveScan (shared with the payload build --
+    /// avoids a second full pass over every object).
+    pub fn build_with_scan(scan: &SaveScan) -> MapIndex {
+        let store = scan.store;
         let data = scan.data();
 
         let by_instance_name: IndexMap<Vec<u8>, Slot> =
@@ -279,7 +285,9 @@ impl MapIndex {
 
         // -- itemLocationIndex ---------------------------------------------------
         let item_location_index: IndexMap<Vec<u8>, Vec<(Vec<u8>, i64)>> =
-            crate::extract::item_location_index(store).into_iter().collect();
+            crate::extract::item_location_index(store, scan.instance_slots())
+                .into_iter()
+                .collect();
 
         // -- dimensionalDepotByItem ------------------------------------------------
         // {entry["itemPath"]: entry["count"]} over the depot rows -- a dict

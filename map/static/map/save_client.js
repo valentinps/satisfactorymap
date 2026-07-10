@@ -17,7 +17,9 @@ const SaveClient = (() => {
          const msg = event.data;
          if (msg.type === "progress") {
             if (activeProgress) {
-               activeProgress(msg.phase, msg.current, msg.total);
+               // memBytes: wasm memory size, for perf instrumentation --
+               // the UI's progress callback just ignores the extra arg.
+               activeProgress(msg.phase, msg.current, msg.total, msg.memBytes);
             }
             return;
          }

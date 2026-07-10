@@ -77,7 +77,7 @@ fn write_entry(out: &mut Vec<u8>, first: &mut bool, key: &str, value: &Value) {
 pub fn build_payload_json(
     store: &SaveStore,
     steps: Option<&[String]>,
-    mut progress: Option<&mut dyn FnMut(u64, u64)>,
+    progress: Option<&mut dyn FnMut(u64, u64)>,
 ) -> Result<Vec<u8>, String> {
     let registry = collectors::registry();
     let requested: Vec<&str> = match steps {
@@ -104,7 +104,22 @@ pub fn build_payload_json(
     }
 
     let scan = SaveScan::new(store);
-    let mut out: Vec<u8> = Vec::with_capacity(1 << 20);
+    build_payload_json_with_scan(&scan, requested, progress)
+}
+
+/// build_payload_json over an existing SaveScan (shared with the index build
+/// -- see build_all_json).
+fn build_payload_json_with_scan(
+    scan: &SaveScan,
+    requested: Vec<&str>,
+    mut progress: Option<&mut dyn FnMut(u64, u64)>,
+) -> Result<Vec<u8>, String> {
+    let store = scan.store;
+    let registry = collectors::registry();
+    // The payload serializes to roughly a quarter of the decompressed save
+    // on big saves; reserving up front avoids the doubling-realloc copies of
+    // a ~100MB Vec (transient 2x spikes that permanently grow wasm memory).
+    let mut out: Vec<u8> = Vec::with_capacity((store.data.len() / 4).max(1 << 20));
     out.push(b'{');
     let mut first = true;
     write_entry(&mut out, &mut first, "mapSize", &json!(8192));
@@ -121,7 +136,7 @@ pub fn build_payload_json(
     let mut done: u64 = 0;
     for key in requested {
         let (_, collector) = registry.iter().find(|(k, _)| *k == key).unwrap();
-        let value = collector(&scan);
+        let value = collector(scan);
         write_entry(&mut out, &mut first, key, &value);
         done += 1;
         if let Some(cb) = progress.as_deref_mut() {
@@ -130,4 +145,28 @@ pub fn build_payload_json(
     }
     out.push(b'}');
     Ok(out)
+}
+
+/// Full load: payload + save index sharing one SaveScan (and its cached
+/// instance-slot table) -- the browser path.
+pub fn build_all_json(
+    store: &SaveStore,
+    mut progress: Option<&mut dyn FnMut(u64, u64)>,
+) -> Result<(Vec<u8>, index::MapIndex), String> {
+    let scan = SaveScan::new(store);
+    // One local closure owns the progress borrow: passing the trait object
+    // itself twice trips &'a mut (dyn ... + 'a) invariance.
+    let mut tick = |current: u64, total: u64| {
+        if let Some(cb) = progress.as_deref_mut() {
+            cb(current, total);
+        }
+    };
+    let payload = build_payload_json_with_scan(
+        &scan,
+        collectors::STEP_ORDER.to_vec(),
+        Some(&mut tick),
+    )?;
+    let map_index = index::MapIndex::build_with_scan(&scan);
+    tick(BUILD_STEP_COUNT, BUILD_STEP_COUNT);
+    Ok((payload, map_index))
 }

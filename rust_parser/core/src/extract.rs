@@ -57,6 +57,11 @@ pub fn stack_item<'a>(pl: &PropList, data: &'a [u8]) -> Option<(&'a [u8], i64)> 
     Some((item_path, num_items))
 }
 
+/// (slots, slotIndexByName) -- the shared instance-name index consumed by
+/// the bulk extractors. Build once per save (SaveScan caches it) and pass
+/// to every extractor call.
+pub type InstanceSlots<'a> = (Vec<(&'a [u8], (usize, usize))>, HashMap<&'a [u8], usize>);
+
 /// objectsByInstanceName with Python dict semantics: last value wins, first
 /// insertion position kept. Slots are (nameBytes, (levelIdx, objectIdx)).
 pub fn build_instance_slots(
@@ -90,9 +95,12 @@ struct ItemIndex<'a> {
 /// _inventoryComponentObjects / the stack walk). Returns
 /// [(itemShortName, [(instanceName, count)])] in the same insertion order the
 /// Python implementation's dict produces.
-pub fn item_location_index(store: &SaveStore) -> Vec<(Vec<u8>, Vec<(Vec<u8>, i64)>)> {
+pub fn item_location_index<'a>(
+    store: &'a SaveStore,
+    instance_slots: &InstanceSlots<'a>,
+) -> Vec<(Vec<u8>, Vec<(Vec<u8>, i64)>)> {
     let data: &[u8] = &store.data;
-    let (slots, slot_by_name) = build_instance_slots(store);
+    let (slots, slot_by_name) = instance_slots;
     let object_at = |(li, oi): (usize, usize)| -> &Object { &store.levels[li].objects[oi] };
 
     let mut index = ItemIndex { order: Vec::new(), by_name: HashMap::new() };
@@ -252,16 +260,17 @@ pub fn vector_prop(pl: &PropList, data: &[u8], name: &[u8]) -> Option<[f64; 3]> 
 /// [px, py, arriveX, arriveY, leaveX, leaveY, zMeters, ...] vertex list.
 /// Objects with fewer than 2 points are skipped, mirroring the `>= 14`
 /// length check. Returns [(instanceName, typePath, flatPoints)].
-pub fn spline_polylines(
-    store: &SaveStore,
+pub fn spline_polylines<'a>(
+    store: &'a SaveStore,
     type_paths: &[String],
     spline_property: &str,
     proj: &Proj,
+    instance_slots: &InstanceSlots<'a>,
 ) -> Vec<(String, String, Vec<f64>)> {
     let data: &[u8] = &store.data;
     let wanted: HashSet<&[u8]> = type_paths.iter().map(|s| s.as_bytes()).collect();
     let spline_prop = spline_property.as_bytes();
-    let (slots, slot_by_name) = build_instance_slots(store);
+    let (slots, slot_by_name) = instance_slots;
     let zero = [0.0f64; 3];
 
     let mut out: Vec<(String, String, Vec<f64>)> = Vec::new();

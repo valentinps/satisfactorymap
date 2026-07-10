@@ -19,8 +19,17 @@ importScripts("pkg/sav_wasm.js");
 
 const PHASE_LABELS = ["Decompressing", "Parsing", "Building map data"];
 
-let wasmReady = wasm_bindgen("pkg/sav_wasm_bg.wasm");
+let wasmExports = null;
+let wasmReady = wasm_bindgen("pkg/sav_wasm_bg.wasm").then(function(exports) {
+   wasmExports = exports;
+});
 let session = null;
+
+// Current wasm linear-memory size -- the tab's dominant footprint; attached
+// to progress events so perf runs can track the high-water mark for free.
+function wasmMemBytes() {
+   return wasmExports && wasmExports.memory ? wasmExports.memory.buffer.byteLength : 0;
+}
 
 function reply(id, result, transfer) {
    self.postMessage({ id, ok: true, result }, transfer || []);
@@ -50,6 +59,7 @@ self.onmessage = async (event) => {
                phase: PHASE_LABELS[phase] || "Loading",
                current,
                total,
+               memBytes: wasmMemBytes(),
             });
          });
          const payload = session.payload_json();
