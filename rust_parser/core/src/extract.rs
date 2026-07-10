@@ -71,7 +71,7 @@ pub fn build_instance_slots(
     let mut slots: Vec<(&[u8], (usize, usize))> = Vec::new();
     let mut slot_by_name: HashMap<&[u8], usize> = HashMap::new();
     for (li, level) in store.levels.iter().enumerate() {
-        for (oi, _) in level.objects.iter().enumerate() {
+        for oi in 0..level.headers.len() {
             let name = level.headers[oi].instance_name().bytes(data);
             match slot_by_name.get(name) {
                 Some(&idx) => slots[idx].1 = (li, oi),
@@ -101,7 +101,7 @@ pub fn item_location_index<'a>(
 ) -> Vec<(Vec<u8>, Vec<(Vec<u8>, i64)>)> {
     let data: &[u8] = &store.data;
     let (slots, slot_by_name) = instance_slots;
-    let object_at = |(li, oi): (usize, usize)| -> &Object { &store.levels[li].objects[oi] };
+    let object_at = |(li, oi): (usize, usize)| -> &Object { &store.levels[li].parsed_objects()[oi] };
 
     let mut index = ItemIndex { order: Vec::new(), by_name: HashMap::new() };
     let mut suffix_key: Vec<u8> = Vec::new();
@@ -287,7 +287,7 @@ pub fn spline_polylines<'a>(
             let object = match slot_by_name.get(name) {
                 Some(&idx) => {
                     let (li, oi) = slots[idx].1;
-                    &store.levels[li].objects[oi]
+                    &store.levels[li].parsed_objects()[oi]
                 }
                 None => continue,
             };

@@ -346,7 +346,7 @@ fn crash_site_state<'a>(
     // Inventory instance path name -> crash site instance path name.
     let mut crash_site_inventory_path_name: HashMap<Vec<u8>, &[u8]> = HashMap::new();
     for level in &scan.store.levels {
-        for (header, object) in level.headers.iter().zip(&level.objects) {
+        for (header, object) in level.headers.iter().zip(level.parsed_objects()) {
             let instance_name = header.instance_name().bytes(data);
             if !crash_sites.contains_key(utf8(instance_name)) {
                 continue;
@@ -379,7 +379,7 @@ fn crash_site_state<'a>(
     }
 
     for level in &scan.store.levels {
-        for (header, object) in level.headers.iter().zip(&level.objects) {
+        for (header, object) in level.headers.iter().zip(level.parsed_objects()) {
             let instance_name = header.instance_name().bytes(data);
             let Some(&site) = crash_site_inventory_path_name.get(instance_name) else { continue };
             let Some(stacks) = props::array_structs(&object.properties, data, b"mInventoryStacks")

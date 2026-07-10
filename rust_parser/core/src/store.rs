@@ -325,8 +325,13 @@ pub struct Level {
     /// Persistent level only.
     pub level_persistent_flag: Option<bool>,
     pub collectables1: Option<Vec<ObjectRef>>,
-    /// Index-aligned with `headers`.
-    pub objects: Vec<Object>,
+    /// Index-aligned with `headers`. `None` after `drop_object_model` frees
+    /// the parsed model; re-parse individual objects via `parse_object_at`
+    /// (spans/headers/data stay index-aligned and retained).
+    pub objects: Option<Vec<Object>>,
+    /// The level-default UE5 object version handed to every `parse_object`
+    /// call (-1 when absent); retained so spans can be re-parsed on demand.
+    pub object_ue5_version: i32,
     pub level_save_version: u32,
     pub collectables2: Vec<ObjectRef>,
     pub save_object_version_data: Option<VersionData>,
@@ -337,6 +342,15 @@ pub struct Level {
     /// through the v53+ trailing version block), index-aligned with `objects`.
     pub object_spans: Vec<(u32, u32)>,
     pub spans: LevelSpans,
+}
+
+impl Level {
+    /// The full parsed object model. Panics if it was dropped -- callers are
+    /// the payload/index builders and the edit planner, which only run while
+    /// the model is present (rehydrate first after a drop).
+    pub fn parsed_objects(&self) -> &[Object] {
+        self.objects.as_deref().expect("object model dropped; rehydrate first")
+    }
 }
 
 #[derive(Debug)]
@@ -368,11 +382,27 @@ pub struct SaveStore {
     /// True when the "Missing final array count" quirk appended 4 zero bytes
     /// to `data`; export must strip them to match the original body.
     pub padded: bool,
+    /// Retained so dropped objects can be re-parsed on demand from their
+    /// spans without threading tables through every query signature.
+    pub tables: crate::object::ClassTables,
 }
 
 impl SaveStore {
     #[inline]
     pub fn s(&self, r: StrRef) -> String {
         r.to_string(&self.data)
+    }
+
+    pub fn has_object_model(&self) -> bool {
+        self.levels.iter().all(|l| l.objects.is_some())
+    }
+
+    /// Free the parsed per-object model (the bulk of a loaded save's heap:
+    /// ~1.5-2GB on a 600k-object save). Headers, spans and `data` stay, so
+    /// queries re-parse single objects on demand and edits rehydrate.
+    pub fn drop_object_model(&mut self) {
+        for level in &mut self.levels {
+            level.objects = None;
+        }
     }
 }

@@ -196,6 +196,38 @@ fn patch_add_u64(plan: &mut EditPlan, data: &[u8], off: usize, add: i64) {
 }
 
 // ---------------------------------------------------------------------------
+// Lean object access
+// ---------------------------------------------------------------------------
+// Planning must work on a store whose parsed object model was dropped (the
+// wasm session frees it for memory headroom): objects are re-parsed one at a
+// time from their byte spans, and the special actors a plan needs wholesale
+// (conveyor chains, power lines, the lightweight subsystem) are located by
+// their HEADER type paths -- headers are always retained.
+
+/// Slots of all actors whose type path exactly matches one of `candidates`.
+fn actor_slots_of_types(store: &SaveStore, candidates: &[&str]) -> Vec<(usize, usize)> {
+    let data: &[u8] = &store.data;
+    let mut out = Vec::new();
+    for (li, level) in store.levels.iter().enumerate() {
+        for (oi, header) in level.headers.iter().enumerate() {
+            if let Header::Actor(a) = header {
+                let tp = a.type_path.bytes(data);
+                if candidates.iter().any(|c| c.as_bytes() == tp) {
+                    out.push((li, oi));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One object, re-parsed on demand from its span (identical to the eagerly
+/// parsed model; StrRefs point into the same `store.data`).
+fn fetch(store: &SaveStore, li: usize, oi: usize) -> PResult<Object> {
+    store.parse_object_at(li, oi)
+}
+
+// ---------------------------------------------------------------------------
 // Move
 // ---------------------------------------------------------------------------
 
@@ -205,22 +237,22 @@ struct ChainSplines {
     element_count: usize,
 }
 
-/// belt instance name -> chain spline extents, across every chain actor.
-fn chain_splines_by_belt<'a>(store: &'a SaveStore) -> HashMap<&'a [u8], ChainSplines> {
+/// belt instance name -> chain spline extents, across every chain actor
+/// (found by header type path, parsed on demand).
+fn chain_splines_by_belt(store: &SaveStore) -> PResult<HashMap<Vec<u8>, ChainSplines>> {
     let mut map = HashMap::new();
-    for level in &store.levels {
-        for object in &level.objects {
-            if let ActorSpecific::ConveyorChain { belts, .. } = &object.actor_specific {
-                for cb in belts {
-                    map.insert(
-                        cb.belt.path_name.bytes(&store.data),
-                        ChainSplines { elements_off: cb.elements_off, element_count: cb.elements.len() },
-                    );
-                }
+    for (li, oi) in actor_slots_of_types(store, &crate::object::CONVEYOR_CHAINS) {
+        let object = fetch(store, li, oi)?;
+        if let ActorSpecific::ConveyorChain { belts, .. } = &object.actor_specific {
+            for cb in belts {
+                map.insert(
+                    cb.belt.path_name.bytes(&store.data).to_vec(),
+                    ChainSplines { elements_off: cb.elements_off, element_count: cb.elements.len() },
+                );
             }
         }
     }
-    map
+    Ok(map)
 }
 
 fn plan_move_actors(
@@ -236,14 +268,14 @@ fn plan_move_actors(
         return Err(perr!("rotate requires a pivot"));
     }
     let data: &[u8] = &store.data;
-    let chains = chain_splines_by_belt(store);
+    let chains = chain_splines_by_belt(store)?;
     for name in names {
         let Some(&(li, oi)) = scan.by_instance_name.get(name.as_bytes()) else {
             return Err(perr!("No such instance: {}", name));
         };
         let header = &store.levels[li].headers[oi];
-        let object = &store.levels[li].objects[oi];
-        if let Some(reason) = move_refusal(store, header, object) {
+        let object = fetch(store, li, oi)?;
+        if let Some(reason) = move_refusal(store, header, &object) {
             return Err(perr!("Cannot move {}: {}", name, reason));
         }
         let Header::Actor(actor) = header else { unreachable!() };
@@ -293,13 +325,13 @@ fn plan_move_actors(
 }
 
 /// The one Lightweight subsystem object -- lightweight edits address groups
-/// inside it by type path. Returns (level_idx, object_idx, groups).
-fn lightweight_subsystem<'a>(store: &'a SaveStore) -> PResult<(usize, usize, &'a [LightweightGroup])> {
-    for (li, level) in store.levels.iter().enumerate() {
-        for (oi, object) in level.objects.iter().enumerate() {
-            if let ActorSpecific::Lightweight { items, .. } = &object.actor_specific {
-                return Ok((li, oi, items));
-            }
+/// inside it by type path. Located by header type path and parsed on demand;
+/// returns (level_idx, object_idx, owned groups).
+fn lightweight_subsystem(store: &SaveStore) -> PResult<(usize, usize, Vec<LightweightGroup>)> {
+    for (li, oi) in actor_slots_of_types(store, &[crate::object::LIGHTWEIGHT_SUBSYSTEM]) {
+        let object = fetch(store, li, oi)?;
+        if let ActorSpecific::Lightweight { items, .. } = object.actor_specific {
+            return Ok((li, oi, items));
         }
     }
     Err(perr!("Save has no lightweight buildable subsystem"))
@@ -368,8 +400,8 @@ fn expand_duplicate_set(
                      oi: usize|
      -> PResult<()> {
         let header = &store.levels[li].headers[oi];
-        let object = &store.levels[li].objects[oi];
-        if let Some(reason) = move_refusal(store, header, object) {
+        let object = fetch(store, li, oi)?;
+        if let Some(reason) = move_refusal(store, header, &object) {
             return Err(perr!(
                 "Cannot copy {}: {}",
                 header.instance_name().to_string(data),
@@ -419,12 +451,14 @@ fn expand_duplicate_set(
         actor_names.contains(&path[..dot])
     };
     let mut wires: Vec<(usize, usize)> = Vec::new();
-    for (li, level) in store.levels.iter().enumerate() {
-        for (oi, object) in level.objects.iter().enumerate() {
-            if let ActorSpecific::PowerLine(a, b) = &object.actor_specific {
-                if !set.contains(&(li, oi)) && owner_in_set(a) && owner_in_set(b) {
-                    wires.push((li, oi));
-                }
+    for (li, oi) in actor_slots_of_types(store, &crate::object::POWER_LINES) {
+        if set.contains(&(li, oi)) {
+            continue;
+        }
+        let object = fetch(store, li, oi)?;
+        if let ActorSpecific::PowerLine(a, b) = &object.actor_specific {
+            if owner_in_set(a) && owner_in_set(b) {
+                wires.push((li, oi));
             }
         }
     }
@@ -482,9 +516,9 @@ fn plan_duplicate_actors(
     let mut rng = rename::Rng(seed ^ 0x746f6d6273746f6e); // independent stream for tombstones
     let mut tombstones: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
     for &(li, oi) in &set {
-        let object = &store.levels[li].objects[oi];
+        let object = fetch(store, li, oi)?;
         let mut err: Option<crate::error::PError> = None;
-        rename::visit_object_refs(object, &mut |r: &ObjectRef| {
+        rename::visit_object_refs(&object, &mut |r: &ObjectRef| {
             if err.is_some() || r.path_name.is_empty() {
                 return;
             }
@@ -642,19 +676,19 @@ fn plan_duplicate_lightweight(
 
 /// belt instance names that appear in any conveyor chain (deleting one would
 /// leave the chain actor's packed belt list pointing at nothing, which the
-/// game -- and our own parser's chain handling -- can't tolerate).
-fn chained_belt_names<'a>(store: &'a SaveStore) -> std::collections::HashSet<&'a [u8]> {
+/// game -- and our own parser's chain handling -- can't tolerate). Chain
+/// actors are found by header type path and parsed on demand.
+fn chained_belt_names(store: &SaveStore) -> PResult<std::collections::HashSet<Vec<u8>>> {
     let mut set = std::collections::HashSet::new();
-    for level in &store.levels {
-        for object in &level.objects {
-            if let ActorSpecific::ConveyorChain { belts, .. } = &object.actor_specific {
-                for cb in belts {
-                    set.insert(cb.belt.path_name.bytes(&store.data));
-                }
+    for (li, oi) in actor_slots_of_types(store, &crate::object::CONVEYOR_CHAINS) {
+        let object = fetch(store, li, oi)?;
+        if let ActorSpecific::ConveyorChain { belts, .. } = &object.actor_specific {
+            for cb in belts {
+                set.insert(cb.belt.path_name.bytes(&store.data).to_vec());
             }
         }
     }
-    set
+    Ok(set)
 }
 
 fn plan_delete_actors(
@@ -673,10 +707,10 @@ fn plan_delete_actors(
         return Err(perr!("Cannot delete objects from different world levels at once"));
     }
 
-    let chained = chained_belt_names(store);
+    let chained = chained_belt_names(store)?;
     for &(li, oi) in &set {
         let name = store.levels[li].headers[oi].instance_name().bytes(data);
-        if chained.contains(name) {
+        if chained.contains(&name.to_vec()) {
             return Err(perr!(
                 "Cannot delete {}: the belt is part of a conveyor chain (move it instead, or delete the whole line in game)",
                 String::from_utf8_lossy(name)
@@ -702,22 +736,24 @@ fn plan_delete_actors(
     };
     let mut full_set = set;
     let mut extra_wires: Vec<(usize, usize)> = Vec::new();
-    for (li, level) in store.levels.iter().enumerate() {
-        for (oi, object) in level.objects.iter().enumerate() {
-            if let ActorSpecific::PowerLine(a, b) = &object.actor_specific {
-                if !full_set.contains(&(li, oi)) && (owner_deleted(a) || owner_deleted(b)) {
-                    if li != level_idx {
-                        return Err(perr!("Cannot delete: an attached power line lives in a different world level"));
-                    }
-                    extra_wires.push((li, oi));
+    for (li, oi) in actor_slots_of_types(store, &crate::object::POWER_LINES) {
+        if full_set.contains(&(li, oi)) {
+            continue;
+        }
+        let object = fetch(store, li, oi)?;
+        if let ActorSpecific::PowerLine(a, b) = &object.actor_specific {
+            if owner_deleted(a) || owner_deleted(b) {
+                if li != level_idx {
+                    return Err(perr!("Cannot delete: an attached power line lives in a different world level"));
                 }
+                extra_wires.push((li, oi));
             }
         }
     }
     for (li, oi) in extra_wires {
         full_set.insert((li, oi));
         // A wire's own components (if any) go with it.
-        if let Some((_, components)) = &store.levels[li].objects[oi].actor_reference_associations {
+        if let Some((_, components)) = &fetch(store, li, oi)?.actor_reference_associations {
             for comp in components {
                 if comp.path_name.is_empty() {
                     continue;

@@ -116,7 +116,7 @@ fn move_chained_belt_moves_chain_splines() {
     // Find a belt that appears in some chain actor.
     let mut target: Option<(String, Vec<[[f64; 3]; 3]>)> = None;
     'outer: for level in &store.levels {
-        for object in &level.objects {
+        for object in level.parsed_objects() {
             if let ActorSpecific::ConveyorChain { belts, .. } = &object.actor_specific {
                 let cb = &belts[0];
                 target = Some((
@@ -143,7 +143,7 @@ fn move_chained_belt_moves_chain_splines() {
 
     let mut found = false;
     'outer2: for level in &store2.levels {
-        for object in &level.objects {
+        for object in level.parsed_objects() {
             if let ActorSpecific::ConveyorChain { belts, .. } = &object.actor_specific {
                 for cb in belts {
                     if cb.belt.path_name.eq_ascii(&store2.data, &belt_name) {
@@ -172,7 +172,7 @@ fn move_lightweight_instance() {
 
     let mut target: Option<(String, [f64; 3])> = None;
     for level in &store.levels {
-        for object in &level.objects {
+        for object in level.parsed_objects() {
             if let ActorSpecific::Lightweight { items, .. } = &object.actor_specific {
                 if let Some(group) = items.first() {
                     target = Some((
@@ -198,7 +198,7 @@ fn move_lightweight_instance() {
     let store2 = session::step(&store, &op, &tables).unwrap();
 
     for level in &store2.levels {
-        for object in &level.objects {
+        for object in level.parsed_objects() {
             if let ActorSpecific::Lightweight { items, .. } = &object.actor_specific {
                 let group = items
                     .iter()

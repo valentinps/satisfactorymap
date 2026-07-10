@@ -37,7 +37,7 @@ fn duplicate_constructor_renames_components_consistently() {
     let prefix = "/Game/FactoryGame/Buildable/Factory/ConstructorMk1/";
     let before = actors_of_type(&store, prefix);
     let (li, oi, name) = before[0].clone();
-    let original_components: Vec<String> = match &store.levels[li].objects[oi].actor_reference_associations {
+    let original_components: Vec<String> = match &store.levels[li].parsed_objects()[oi].actor_reference_associations {
         Some((_, comps)) => comps.iter().map(|r| r.path_name.to_string(&store.data)).collect(),
         None => panic!("constructor has no associations"),
     };
@@ -68,7 +68,7 @@ fn duplicate_constructor_renames_components_consistently() {
     // original's component suffixes.
     let scan2 = SaveScan::new(&store2);
     let (nli, noi) = *scan2.by_instance_name.get(new_name.as_bytes()).unwrap();
-    let copy_components: Vec<String> = match &store2.levels[nli].objects[noi].actor_reference_associations {
+    let copy_components: Vec<String> = match &store2.levels[nli].parsed_objects()[noi].actor_reference_associations {
         Some((_, comps)) => comps.iter().map(|r| r.path_name.to_string(&store2.data)).collect(),
         None => panic!("copy has no associations"),
     };
@@ -110,7 +110,7 @@ fn duplicate_powered_pair_includes_and_remaps_wire() {
     let mut target: Option<(String, String, String)> = None; // owner_a, owner_b, wire
     let scan = SaveScan::new(&store);
     'outer: for level in &store.levels {
-        for (oi, object) in level.objects.iter().enumerate() {
+        for (oi, object) in level.parsed_objects().iter().enumerate() {
             if let ActorSpecific::PowerLine(a, b) = &object.actor_specific {
                 let (pa, pb) = (a.path_name.to_string(data), b.path_name.to_string(data));
                 let (Some(da), Some(db)) = (pa.rfind('.'), pb.rfind('.')) else { continue };
@@ -134,7 +134,7 @@ fn duplicate_powered_pair_includes_and_remaps_wire() {
     let count_wires = |s: &SaveStore| -> usize {
         s.levels
             .iter()
-            .flat_map(|l| &l.objects)
+            .flat_map(|l| l.parsed_objects())
             .filter(|o| matches!(o.actor_specific, ActorSpecific::PowerLine(..)))
             .count()
     };
@@ -155,7 +155,7 @@ fn duplicate_powered_pair_includes_and_remaps_wire() {
     let data2: &[u8] = &store2.data;
     let mut checked = false;
     for level in &store2.levels {
-        for (oi, object) in level.objects.iter().enumerate() {
+        for (oi, object) in level.parsed_objects().iter().enumerate() {
             if let ActorSpecific::PowerLine(a, b) = &object.actor_specific {
                 let name = level.headers[oi].instance_name().bytes(data2);
                 if scan.by_instance_name.contains_key(name) {
@@ -183,7 +183,7 @@ fn duplicate_lightweight_appends_instance() {
 
     let mut target: Option<(String, usize, [f64; 3])> = None;
     for level in &store.levels {
-        for object in &level.objects {
+        for object in level.parsed_objects() {
             if let ActorSpecific::Lightweight { items, .. } = &object.actor_specific {
                 if let Some(group) = items.first() {
                     target = Some((
@@ -209,7 +209,7 @@ fn duplicate_lightweight_appends_instance() {
     let store2 = session::step(&store, &op, &tables).unwrap();
 
     for level in &store2.levels {
-        for object in &level.objects {
+        for object in level.parsed_objects() {
             if let ActorSpecific::Lightweight { items, .. } = &object.actor_specific {
                 let group = items.iter().find(|g| g.type_path.eq_ascii(&store2.data, &type_path)).unwrap();
                 assert_eq!(group.instances.len(), count_before + 1);

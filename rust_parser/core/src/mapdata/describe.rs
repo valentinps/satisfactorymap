@@ -215,7 +215,7 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
         );
         let mut total_by_item: IndexMap<String, Value> = IndexMap::new();
         for car in &train.cars {
-            let Some(car_object) = index.object_by_name(store, car.id.as_bytes()) else {
+            let Some(car_object) = index.parse_object_by_name(store, car.id.as_bytes()) else {
                 continue;
             };
             let mut car_inventory = inventory_contents(
@@ -225,7 +225,8 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
                     index,
                     &car_object.properties,
                     b"mStorageInventory",
-                ),
+                )
+                .as_ref(),
             );
             if car_inventory.is_empty() {
                 car_inventory = inventory_contents(
@@ -235,7 +236,8 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
                         index,
                         &car_object.properties,
                         b"mInventory",
-                    ),
+                    )
+                    .as_ref(),
                 );
             }
             for entry in car_inventory {
@@ -272,7 +274,7 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
         }
     }
 
-    let Some(object) = index.object_by_name(store, instance_name.as_bytes()) else {
+    let Some(object) = index.parse_object_by_name(store, instance_name.as_bytes()) else {
         return Value::Object(result);
     };
     let properties = &object.properties;
@@ -314,7 +316,7 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
         }
         let inventory = inventory_contents(
             data,
-            queries::resolve_component_object(store, index, properties, b"mInventory"),
+            queries::resolve_component_object(store, index, properties, b"mInventory").as_ref(),
         );
         if !inventory.is_empty() {
             result.insert("playerInventory".into(), Value::Array(inventory));
@@ -406,7 +408,7 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
             connector_key.clear();
             connector_key.extend_from_slice(instance_name.as_bytes());
             connector_key.extend_from_slice(connector_suffix.as_bytes());
-            let Some(connector_object) = index.object_by_name(store, &connector_key) else {
+            let Some(connector_object) = index.parse_object_by_name(store, &connector_key) else {
                 continue;
             };
             let network_id = props::int(&connector_object.properties, data, b"mPipeNetworkID");
@@ -429,7 +431,7 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
             connector_key.clear();
             connector_key.extend_from_slice(instance_name.as_bytes());
             connector_key.extend_from_slice(connector_suffix.as_bytes());
-            let Some(connector_object) = index.object_by_name(store, &connector_key) else {
+            let Some(connector_object) = index.parse_object_by_name(store, &connector_key) else {
                 continue;
             };
             let network_id = props::int(&connector_object.properties, data, b"mPipeNetworkID");
@@ -455,31 +457,32 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
     // Inventories, per component-name convention.
     let mut input_inventory = inventory_contents(
         data,
-        queries::resolve_component_object(store, index, properties, b"mInputInventory"),
+        queries::resolve_component_object(store, index, properties, b"mInputInventory").as_ref(),
     );
     input_inventory.extend(inventory_contents(
         data,
-        queries::resolve_component_object(store, index, properties, b"mFuelInventory"),
+        queries::resolve_component_object(store, index, properties, b"mFuelInventory").as_ref(),
     ));
     if !input_inventory.is_empty() {
         result.insert("inputInventory".into(), Value::Array(input_inventory));
     }
     let output_inventory = inventory_contents(
         data,
-        queries::resolve_component_object(store, index, properties, b"mOutputInventory"),
+        queries::resolve_component_object(store, index, properties, b"mOutputInventory").as_ref(),
     );
     if !output_inventory.is_empty() {
         result.insert("outputInventory".into(), Value::Array(output_inventory));
     }
     let mut storage_inventory = inventory_contents(
         data,
-        queries::resolve_component_object(store, index, properties, b"mStorageInventory"),
+        queries::resolve_component_object(store, index, properties, b"mStorageInventory").as_ref(),
     );
     if storage_inventory.is_empty() {
         // Wheeled vehicles' cargo trunk: name-linked child component.
         let mut key = instance_name.as_bytes().to_vec();
         key.extend_from_slice(b".StorageInventory");
-        storage_inventory = inventory_contents(data, index.object_by_name(store, &key));
+        storage_inventory =
+            inventory_contents(data, index.parse_object_by_name(store, &key).as_ref());
     }
     if !storage_inventory.is_empty() {
         result.insert("storageInventory".into(), Value::Array(storage_inventory));
@@ -489,7 +492,8 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
     if find_prop(properties, data, b"mFuelInventory").is_none() {
         let mut key = instance_name.as_bytes().to_vec();
         key.extend_from_slice(b".FuelInventory");
-        let fuel_inventory = inventory_contents(data, index.object_by_name(store, &key));
+        let fuel_inventory =
+            inventory_contents(data, index.parse_object_by_name(store, &key).as_ref());
         if !fuel_inventory.is_empty() {
             result.insert("fuelInventory".into(), Value::Array(fuel_inventory));
         }
@@ -497,7 +501,7 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
 
     let buffer_inventory = inventory_contents(
         data,
-        queries::resolve_component_object(store, index, properties, b"mBufferInventory"),
+        queries::resolve_component_object(store, index, properties, b"mBufferInventory").as_ref(),
     );
     if !buffer_inventory.is_empty() {
         result.insert("bufferInventory".into(), Value::Array(buffer_inventory));
@@ -506,14 +510,14 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
     // AWESOME Sink / Shop one-off names (overwrite storageInventory in place).
     let coupon_inventory = inventory_contents(
         data,
-        queries::resolve_component_object(store, index, properties, b"mCouponInventory"),
+        queries::resolve_component_object(store, index, properties, b"mCouponInventory").as_ref(),
     );
     if !coupon_inventory.is_empty() {
         result.insert("storageInventory".into(), Value::Array(coupon_inventory));
     }
     let shop_inventory = inventory_contents(
         data,
-        queries::resolve_component_object(store, index, properties, b"mShopInventory"),
+        queries::resolve_component_object(store, index, properties, b"mShopInventory").as_ref(),
     );
     if !shop_inventory.is_empty() {
         result.insert("storageInventory".into(), Value::Array(shop_inventory));
@@ -522,7 +526,7 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
     // Train Docking Stations use a plain "mInventory" for cargo.
     let cargo_inventory = inventory_contents(
         data,
-        queries::resolve_component_object(store, index, properties, b"mInventory"),
+        queries::resolve_component_object(store, index, properties, b"mInventory").as_ref(),
     );
     if !cargo_inventory.is_empty() {
         result.insert("cargoInventory".into(), Value::Array(cargo_inventory));
@@ -541,7 +545,7 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
     // The Power Shard slot.
     let power_shard_slots = inventory_contents(
         data,
-        queries::resolve_component_object(store, index, properties, b"mInventoryPotential"),
+        queries::resolve_component_object(store, index, properties, b"mInventoryPotential").as_ref(),
     );
     if !power_shard_slots.is_empty() {
         result.insert("powerShardSlots".into(), Value::Array(power_shard_slots));

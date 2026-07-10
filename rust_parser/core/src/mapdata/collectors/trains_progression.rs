@@ -386,7 +386,7 @@ fn find_object_by_type_path_substring<'a>(
         for (oi, header) in level.headers.iter().enumerate() {
             // object.instanceName == the index-aligned header's instanceName.
             if find_subslice(header.instance_name().bytes(data), needle) {
-                return Some(&level.objects[oi]);
+                return Some(&level.parsed_objects()[oi]);
             }
         }
     }

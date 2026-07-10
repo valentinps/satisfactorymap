@@ -2,7 +2,7 @@
 
 use crate::decompress::decompress_save_file;
 use crate::error::{perr, PResult};
-use crate::object::{parse_object, ClassTables};
+use crate::object::{parse_object, skip_object, ClassTables};
 use crate::properties::parse_object_reference;
 use crate::reader::Cursor;
 use crate::save_header::parse_save_file_info;
@@ -23,6 +23,9 @@ fn parse_headers_and_level(
     progress: &mut Option<ProgressFn>,
     progress_base: u64,
     progress_total: u64,
+    // Lean mode: record object spans by skipping over each record instead of
+    // parsing it; Level.objects comes out None (headers/spans identical).
+    lean: bool,
 ) -> PResult<Level> {
     let level_start = c.pos;
     let level_name = if persistent_level_flag { None } else { Some(c.string()?) };
@@ -177,21 +180,26 @@ fn parse_headers_and_level(
             actor_and_component_count
         ));
     }
-    let mut objects = Vec::with_capacity(actor_and_component_count as usize);
+    let mut objects =
+        Vec::with_capacity(if lean { 0 } else { actor_and_component_count as usize });
     let mut object_spans: Vec<(u32, u32)> =
         Vec::with_capacity(actor_and_component_count as usize);
     let mut last_report = oc.pos;
     for idx in 0..actor_and_component_count as usize {
         let object_record_start = oc.pos;
-        let obj = parse_object(
-            &mut oc,
-            header_save_version,
-            object_ue5_version,
-            &headers[idx],
-            tables,
-            calculator_extras,
-        )?;
-        objects.push(obj);
+        if lean {
+            skip_object(&mut oc)?;
+        } else {
+            let obj = parse_object(
+                &mut oc,
+                header_save_version,
+                object_ue5_version,
+                &headers[idx],
+                tables,
+                calculator_extras,
+            )?;
+            objects.push(obj);
+        }
         object_spans.push((object_record_start as u32, (oc.pos - object_record_start) as u32));
         if let Some(cb) = progress.as_deref_mut() {
             if oc.pos - last_report > 1 << 20 {
@@ -218,7 +226,8 @@ fn parse_headers_and_level(
         headers,
         level_persistent_flag,
         collectables1,
-        objects,
+        objects: if lean { None } else { Some(objects) },
+        object_ue5_version,
         level_save_version,
         collectables2,
         save_object_version_data,
@@ -269,7 +278,33 @@ pub fn parse_body_bytes(
     file_header: Vec<u8>,
     info: crate::save_header::SaveFileInfo,
     tables: &ClassTables,
+    progress: Option<ProgressFn>,
+) -> PResult<SaveStore> {
+    parse_body_bytes_impl(decompressed, file_header, info, tables, progress, false)
+}
+
+/// parse_body_bytes, but objects are skipped instead of parsed: every
+/// Level.objects is None while headers, byte spans and `data` come out
+/// identical to a full parse (gated by tests). This is the lean-session load
+/// path -- peak memory is ~body + headers instead of body + full model, and
+/// it runs much faster. Queries re-parse via the spans; edits rehydrate.
+pub fn parse_body_bytes_lean(
+    decompressed: Vec<u8>,
+    file_header: Vec<u8>,
+    info: crate::save_header::SaveFileInfo,
+    tables: &ClassTables,
+    progress: Option<ProgressFn>,
+) -> PResult<SaveStore> {
+    parse_body_bytes_impl(decompressed, file_header, info, tables, progress, true)
+}
+
+fn parse_body_bytes_impl(
+    decompressed: Vec<u8>,
+    file_header: Vec<u8>,
+    info: crate::save_header::SaveFileInfo,
+    tables: &ClassTables,
     mut progress: Option<ProgressFn>,
+    lean: bool,
 ) -> PResult<SaveStore> {
     // SaveFileHeader: uncompressedSize (+8), truncate.
     let mut hc = Cursor::new(&decompressed, 0);
@@ -293,6 +328,7 @@ pub fn parse_body_bytes(
         tables,
         &mut calculator_extras,
         &mut progress,
+        lean,
     );
     let (persistent_level_version_data, partitions, levels, a_level_name, drop_pod_refs, extra_refs, padded) =
         match parse_result {
@@ -315,6 +351,7 @@ pub fn parse_body_bytes(
         calculator_extras,
         file_header,
         padded,
+        tables: tables.clone(),
     })
 }
 
@@ -334,6 +371,7 @@ fn parse_body(
     tables: &ClassTables,
     calculator_extras: &mut Vec<String>,
     progress: &mut Option<ProgressFn>,
+    lean: bool,
 ) -> PResult<BodyResult> {
     // The quirk path appends 4 zero bytes to the buffer mid-parse. To keep
     // the buffer immutable during parsing, run against a padded copy only
@@ -383,6 +421,7 @@ fn parse_body(
             progress,
             base,
             progress_total,
+            lean,
         )?;
         levels.push(level);
     }
@@ -397,6 +436,7 @@ fn parse_body(
         progress,
         base,
         progress_total,
+        lean,
     )?;
     levels.push(level);
 

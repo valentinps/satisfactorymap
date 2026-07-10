@@ -19,6 +19,13 @@ mod wasm_alloc {
     static INNER: rlsf::GlobalTlsf = rlsf::GlobalTlsf::new();
     static LAST_PAGES: AtomicUsize = AtomicUsize::new(0);
     static IN_BALLAST: AtomicBool = AtomicBool::new(false);
+    // Live (allocated minus freed) bytes. memory.buffer.byteLength only ever
+    // grows, so this is the metric that shows the object-model drop.
+    static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn live_bytes() -> usize {
+        LIVE_BYTES.load(Relaxed)
+    }
 
     fn maybe_grow_ahead() {
         let pages = core::arch::wasm32::memory_size(0);
@@ -49,19 +56,30 @@ mod wasm_alloc {
     unsafe impl GlobalAlloc for GrowAhead {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             let ptr = unsafe { INNER.alloc(layout) };
+            if !ptr.is_null() {
+                LIVE_BYTES.fetch_add(layout.size(), Relaxed);
+            }
             maybe_grow_ahead();
             ptr
         }
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            LIVE_BYTES.fetch_sub(layout.size(), Relaxed);
             unsafe { INNER.dealloc(ptr, layout) }
         }
         unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            let ptr = unsafe { INNER.realloc(ptr, layout, new_size) };
+            let new_ptr = unsafe { INNER.realloc(ptr, layout, new_size) };
+            if !new_ptr.is_null() {
+                LIVE_BYTES.fetch_add(new_size, Relaxed);
+                LIVE_BYTES.fetch_sub(layout.size(), Relaxed);
+            }
             maybe_grow_ahead();
-            ptr
+            new_ptr
         }
         unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
             let ptr = unsafe { INNER.alloc_zeroed(layout) };
+            if !ptr.is_null() {
+                LIVE_BYTES.fetch_add(layout.size(), Relaxed);
+            }
             maybe_grow_ahead();
             ptr
         }
@@ -83,6 +101,37 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen(start)]
 fn start() {
     console_error_panic_hook::set_once();
+}
+
+/// Debug/regression valve (?keepModel=1): keep the parsed per-object model
+/// resident instead of dropping it after the payload/index build. Queries
+/// re-parse from spans either way -- this only changes what stays allocated.
+static KEEP_MODEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[wasm_bindgen]
+pub fn set_keep_object_model(keep: bool) {
+    KEEP_MODEL.store(keep, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn drop_model_unless_kept(store: &mut SaveStore) {
+    if !KEEP_MODEL.load(std::sync::atomic::Ordering::Relaxed) {
+        store.drop_object_model();
+    }
+}
+
+/// Live (allocated, not yet freed) heap bytes. memory.buffer.byteLength
+/// never shrinks, so it stays at the load high-water mark; this is the
+/// metric that shows the ~1.5-2GB object-model drop after load.
+#[wasm_bindgen]
+pub fn live_heap_bytes() -> f64 {
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    {
+        wasm_alloc::live_bytes() as f64
+    }
+    #[cfg(not(all(target_arch = "wasm32", not(target_feature = "atomics"))))]
+    {
+        0.0
+    }
 }
 
 #[wasm_bindgen]
@@ -114,18 +163,19 @@ impl SaveSession {
         self.index.as_ref().ok_or_else(|| JsError::new(SESSION_LOST))
     }
 
-    /// Swap in a new store and rebuild index + payload, returning the
-    /// payload bytes.
+    /// Rebuild index + payload from the new store, drop its parsed object
+    /// model (queries re-parse from spans), and swap it in.
     fn finish_edit(
         &mut self,
-        new_store: SaveStore,
+        mut new_store: SaveStore,
         call: &dyn Fn(u8, u64, u64),
     ) -> Result<Vec<u8>, JsError> {
-        self.store = Some(Arc::new(new_store));
         let mut build_progress = |current: u64, total: u64| call(2, current, total);
         let (payload_json, index) =
-            mapdata::build_all_json(self.store()?, Some(&mut build_progress))
+            mapdata::build_all_json(&new_store, Some(&mut build_progress))
                 .map_err(|e| JsError::new(&e))?;
+        drop_model_unless_kept(&mut new_store);
+        self.store = Some(Arc::new(new_store));
         self.index = Some(index);
         Ok(payload_json)
     }
@@ -151,7 +201,7 @@ impl SaveSession {
         let tables = ClassTables::embedded();
         let mut parse_progress = |phase: u8, current: u64, total: u64| call(phase, current, total);
         let pf: ProgressFn = &mut parse_progress;
-        let store =
+        let mut store =
             parse_full_save(&bytes, &tables, Some(pf)).map_err(|e| JsError::new(&e.msg))?;
         drop(bytes);
 
@@ -162,6 +212,12 @@ impl SaveSession {
             mapdata::build_all_json(&store, Some(&mut build_progress))
                 .map_err(|e| JsError::new(&e))?;
 
+        // The parsed per-object model (~1.5-2GB on a 600k-object save) is
+        // only consulted by queries and edit planning from here on: queries
+        // re-parse single objects from their spans, edits rehydrate. Freeing
+        // it leaves the heap headroom the edit pipeline needs.
+        drop_model_unless_kept(&mut store);
+
         let file_header = store.file_header.clone();
         let info = store.info.clone();
         Ok(SaveSession {
@@ -171,6 +227,73 @@ impl SaveSession {
             file_header,
             info,
         })
+    }
+
+    /// Build a lean session in a FRESH wasm instance from state extracted
+    /// out of a loaded one (compress_pristine + serialize_index +
+    /// file_header_bytes). Decompresses the body and walks headers + byte
+    /// spans only -- no parsed object model is ever materialized, so this
+    /// instance's memory stays ~body + headers + index (~1.2GB on a
+    /// 600k-object save) instead of the loaded worker's ~3.6GB high-water
+    /// mark. Queries re-parse from spans; the first edit rehydrates.
+    pub fn load_lean(
+        pristine: &[u8],
+        index_bytes: Vec<u8>,
+        file_header: Vec<u8>,
+        on_progress: &js_sys::Function,
+    ) -> Result<SaveSession, JsError> {
+        let call = |phase: u8, current: u64, total: u64| {
+            let this = JsValue::NULL;
+            let _ = on_progress.call3(
+                &this,
+                &JsValue::from_f64(phase as f64),
+                &JsValue::from_f64(current as f64),
+                &JsValue::from_f64(total as f64),
+            );
+        };
+        if pristine.len() < 8 {
+            return Err(JsError::new("Bad pristine blob"));
+        }
+        // Peak-memory ordering: deserialize the index and free its CBOR
+        // buffer BEFORE the ~1GB body inflates.
+        let mut index = MapIndex::from_cbor_partial(&index_bytes).map_err(|e| JsError::new(&e))?;
+        drop(index_bytes);
+        let raw_len = u64::from_le_bytes(pristine[0..8].try_into().unwrap()) as usize;
+        let body = sav_core::editor::session::decompress_body(&pristine[8..], raw_len)
+            .map_err(|e| JsError::new(&e.msg))?;
+        let (info, _body_offset) =
+            sav_core::save_header::parse_save_file_info(&file_header)
+                .map_err(|e| JsError::new(&e.msg))?;
+        let tables = ClassTables::embedded();
+        let mut parse_progress = |phase: u8, current: u64, total: u64| call(phase, current, total);
+        let pf: ProgressFn = &mut parse_progress;
+        let store = sav_core::level::parse_body_bytes_lean(
+            body,
+            file_header,
+            info.clone(),
+            &tables,
+            Some(pf),
+        )
+        .map_err(|e| JsError::new(&e.msg))?;
+        index.rebuild_header_maps(&store);
+        let file_header = store.file_header.clone();
+        Ok(SaveSession {
+            store: Some(Arc::new(store)),
+            index: Some(index),
+            payload_json: Vec::new(), // already delivered by the loaded worker
+            file_header,
+            info,
+        })
+    }
+
+    /// CBOR MapIndex for the lean-worker handoff.
+    pub fn serialize_index(&self) -> Result<Vec<u8>, JsError> {
+        self.index()?.to_cbor().map_err(|e| JsError::new(&e))
+    }
+
+    /// Raw uncompressed .sav header prefix (for the lean-worker handoff).
+    pub fn file_header_bytes(&self) -> Vec<u8> {
+        self.file_header.clone()
     }
 
     /// The current effective body, zlib-compressed with an 8-byte LE raw
@@ -215,24 +338,27 @@ impl SaveSession {
         }
         let tables = ClassTables::embedded();
 
-        // Dry-run the first op's plan while the session is still intact:
-        // semantic refusals (uneditable object, unknown name, chained belt)
-        // surface here as clean errors with nothing torn down. Only after
-        // this do we start consuming state.
-        drop(sav_core::editor::apply::plan_op(self.store()?, &new_ops[0])
-            .map_err(|e| JsError::new(&e.msg))?);
+        // Dry-run the first op's plan while nothing is torn down: planning is
+        // model-independent (objects re-parse on demand from their spans), so
+        // this works directly on the lean store and semantic refusals
+        // (uneditable object, unknown name, chained belt) surface as clean
+        // errors with the session left healthy.
+        drop(
+            sav_core::editor::apply::plan_op(self.store()?, &new_ops[0])
+                .map_err(|e| JsError::new(&e.msg))?,
+        );
 
         // Free the index and stale payload up front -- everything below is
         // memory-critical on 600k-object saves.
         self.index = None;
         self.payload_json = Vec::new();
         let arc = self.store.take().ok_or_else(|| JsError::new(SESSION_LOST))?;
-        let mut store = Arc::try_unwrap(arc).map_err(|_| JsError::new("save store is shared"))?;
-        let total = new_ops.len() as u64;
-        for (i, op) in new_ops.iter().enumerate() {
-            store = session::step_owned(store, op, &tables).map_err(|e| JsError::new(&e.msg))?;
-            call(1, i as u64 + 1, total);
-        }
+        let store = Arc::try_unwrap(arc).map_err(|_| JsError::new("save store is shared"))?;
+        // Intermediate validation re-parses are lean; the last is full (the
+        // payload build below needs the model, which finish_edit re-drops).
+        let mut progress = |current: u64, total: u64| call(1, current, total);
+        let store = session::fold_ops(store, &new_ops, &tables, Some(&mut progress))
+            .map_err(|e| JsError::new(&e.msg))?;
         self.finish_edit(store, &call)
     }
 

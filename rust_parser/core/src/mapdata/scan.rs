@@ -98,7 +98,7 @@ impl<'a> SaveScan<'a> {
 
     #[inline]
     pub fn object(&self, slot: Slot) -> &'a Object {
-        &self.store.levels[slot.0].objects[slot.1]
+        &self.store.levels[slot.0].parsed_objects()[slot.1]
     }
 
     /// scan.objectsByInstanceName.get(name).

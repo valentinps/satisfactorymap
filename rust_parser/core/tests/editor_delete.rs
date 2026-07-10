@@ -34,7 +34,7 @@ fn delete_machine_removes_actor_and_components() {
     let store = load("All_autosave_0.sav");
     let tables = ClassTables::embedded();
     let (li, oi, name) = find_actor(&store, "/Game/FactoryGame/Buildable/Factory/ConstructorMk1/");
-    let components: Vec<String> = match &store.levels[li].objects[oi].actor_reference_associations {
+    let components: Vec<String> = match &store.levels[li].parsed_objects()[oi].actor_reference_associations {
         Some((_, comps)) => comps.iter().map(|r| r.path_name.to_string(&store.data)).collect(),
         None => panic!(),
     };
@@ -64,7 +64,7 @@ fn delete_pole_removes_attached_wires() {
     // Find a wire and one of its endpoint owners.
     let mut target: Option<String> = None;
     for level in &store.levels {
-        for object in &level.objects {
+        for object in level.parsed_objects() {
             if let ActorSpecific::PowerLine(a, _) = &object.actor_specific {
                 let pa = a.path_name.to_string(data);
                 if let Some(dot) = pa.rfind('.') {
@@ -89,7 +89,7 @@ fn delete_pole_removes_attached_wires() {
     let count_wires = |s: &SaveStore| -> usize {
         s.levels
             .iter()
-            .flat_map(|l| &l.objects)
+            .flat_map(|l| l.parsed_objects())
             .filter(|o| matches!(o.actor_specific, ActorSpecific::PowerLine(..)))
             .count()
     };
@@ -109,7 +109,7 @@ fn delete_chained_belt_is_refused() {
 
     let mut belt: Option<String> = None;
     for level in &store.levels {
-        for object in &level.objects {
+        for object in level.parsed_objects() {
             if let ActorSpecific::ConveyorChain { belts, .. } = &object.actor_specific {
                 belt = Some(belts[0].belt.path_name.to_string(&store.data));
             }
@@ -135,7 +135,7 @@ fn delete_lightweight_instance() {
 
     let mut target: Option<(String, usize, [f64; 3])> = None;
     for level in &store.levels {
-        for object in &level.objects {
+        for object in level.parsed_objects() {
             if let ActorSpecific::Lightweight { items, .. } = &object.actor_specific {
                 for group in items {
                     if group.instances.len() >= 2 {
@@ -162,7 +162,7 @@ fn delete_lightweight_instance() {
     let store2 = session::step(&store, &op, &tables).unwrap();
 
     for level in &store2.levels {
-        for object in &level.objects {
+        for object in level.parsed_objects() {
             if let ActorSpecific::Lightweight { items, .. } = &object.actor_specific {
                 let group = items.iter().find(|g| g.type_path.eq_ascii(&store2.data, &type_path)).unwrap();
                 assert_eq!(group.instances.len(), count_before - 1);
