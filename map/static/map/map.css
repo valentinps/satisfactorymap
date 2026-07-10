@@ -882,6 +882,33 @@ body.panelResizing #categoryDetailColumn {
   min-height: 1.2em;
 }
 
+/* Exports the current (possibly edited) save as a new .sav -- the uploaded
+   file itself is never modified (see editor.js). */
+#downloadSaveBtn {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#downloadSaveBtn:hover {
+  color: var(--text);
+  border-color: var(--border-hover);
+  background: var(--raised);
+}
+
+#downloadSaveBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* The one number this whole panel exists to report -- given its own small
    stat-chip treatment (bold accent value + muted label, same pairing as
    .buildingStatValue/.buildingStatLabel in the building modal) instead of a

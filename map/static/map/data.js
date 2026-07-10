@@ -137,6 +137,7 @@
         // Stable per-file key: detail features guard on this, and the
         // pinned-tooltip restore survives re-loading the same file.
         MapApp.currentFile = "local:" + file.name + ":" + file.size + ":" + file.lastModified;
+        EditorTool.onSaveLoaded(file.name);
         Filters.build(payload);
         Altitude.build(payload);
         FindItem.build(payload);

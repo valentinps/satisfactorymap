@@ -7,6 +7,8 @@
 //        {id, op: "vehicleInfo", types: [..]}
 //        {id, op: "trainInfo"}
 //        {id, op: "selectionInventory", names: [..]}
+//        {id, op: "exportSave"}                          (result: transferred
+//        Uint8Array of re-serialized .sav bytes)
 //        {op: "dispose"}
 //   out: {id, ok: true, result}                          (load: result is a
 //        transferred Uint8Array of payload JSON; queries: parsed objects)
@@ -71,6 +73,11 @@ self.onmessage = async (event) => {
       }
       let raw;
       switch (op) {
+         case "exportSave": {
+            const bytes = session.export_sav();
+            reply(id, bytes, [bytes.buffer]);
+            return;
+         }
          case "describeInstance": raw = session.describe_instance(msg.name); break;
          case "findItem": raw = session.find_item(msg.item); break;
          case "buildingInfo": raw = session.building_info(msg.types); break;

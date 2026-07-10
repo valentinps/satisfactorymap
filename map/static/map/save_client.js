@@ -90,6 +90,11 @@ const SaveClient = (() => {
       selectionInventory(names) {
          return request({ op: "selectionInventory", names });
       },
+      // exportSave() -> Promise<Uint8Array of .sav bytes> (the current,
+      // possibly edited, save re-serialized; the uploaded file is untouched).
+      exportSave() {
+         return request({ op: "exportSave" });
+      },
       dispose() {
          if (worker) {
             worker.postMessage({ op: "dispose" });

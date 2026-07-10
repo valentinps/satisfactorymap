@@ -152,6 +152,16 @@ impl SaveSession {
         mapdata::queries::collect_train_info(&self.store, &self.index).to_string()
     }
 
+    /// Serialize the current save body back into a downloadable .sav
+    /// (retained header + re-compressed chunks). Body-identical to the
+    /// original file until edits are applied.
+    pub fn export_sav(&self) -> Vec<u8> {
+        sav_core::editor::export_sav(
+            &self.store.file_header,
+            sav_core::editor::effective_body(&self.store),
+        )
+    }
+
     pub fn selection_inventory(&self, names: Vec<String>) -> String {
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         mapdata::queries::aggregate_selection_inventory(&self.store, &self.index, &names)
