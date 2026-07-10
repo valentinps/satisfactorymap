@@ -2,6 +2,13 @@
 # Exit immediately if a command exits with a non-zero status
 set -e 
 
+echo "Installing Rust..."
+# Install Rust silently and automatically say "yes" to prompts
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# Load the Rust environment variables so the server knows where 'cargo' is
+source "$HOME/.cargo/env"
+
 echo "Installing wasm-pack..."
 curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
