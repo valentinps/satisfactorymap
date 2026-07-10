@@ -33,7 +33,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+    # Not 8080: WSL's wslrelay (and assorted proxies) squat that port and
+    # intercept connections before this server sees them.
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8791
     with http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
         print(f"Serving dist/ at http://127.0.0.1:{port}/")
         server.serve_forever()

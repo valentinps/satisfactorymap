@@ -35,7 +35,7 @@ Then:
 
 ```bash
 py tools/build_site.py     # assembles the deployable static site into dist/
-py tools/serve_site.py     # serves dist/ at http://127.0.0.1:8080/
+py tools/serve_site.py     # serves dist/ at http://127.0.0.1:8791/
 ```
 
 `tools/serve_site.py` sends the same COOP/COEP headers as production
