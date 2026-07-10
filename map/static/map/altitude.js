@@ -31,6 +31,14 @@ var Altitude = {};
   }
   window.addEventListener("resize", layoutSliders);
 
+  // Total height of a slider thumb's box, including its transparent
+  // hit-area border (see map.css's ::-webkit-slider-thumb). The browser
+  // keeps the whole thumb box inside the track, so thumb *centers* only
+  // travel over (track height - THUMB_PX) -- the bg/fill strips are aligned
+  // to that reduced span (not the full wrap height) so the fill's ends land
+  // exactly on the thumb centers instead of poking past the handles.
+  var THUMB_PX = 23;
+
   // Positions the highlighted segment of the shared track between the two
   // handles. direction:rtl on the inputs (see map.css) puts the maximum at
   // the top, so the fraction of the track "used up" from the top is how far
@@ -38,15 +46,14 @@ var Altitude = {};
   // the equivalent point for min.
   function updateTrackFill(min, max, lo, hi) {
     var span = hi - lo;
-    if (span <= 0) {
-      trackFill.style.top = "0%";
-      trackFill.style.height = "100%";
-      return;
+    var fracTop = 0;
+    var fracBottom = 1;
+    if (span > 0) {
+      fracTop = (hi - max) / span;
+      fracBottom = (hi - min) / span;
     }
-    var topPercent = ((hi - max) / span) * 100;
-    var bottomPercent = ((hi - min) / span) * 100;
-    trackFill.style.top = topPercent + "%";
-    trackFill.style.height = Math.max(0, bottomPercent - topPercent) + "%";
+    trackFill.style.top = "calc(" + (THUMB_PX / 2) + "px + (100% - " + THUMB_PX + "px) * " + fracTop + ")";
+    trackFill.style.height = "calc((100% - " + THUMB_PX + "px) * " + Math.max(0, fracBottom - fracTop) + ")";
   }
 
   // Remembers the user's last chosen min/max (in absolute meters) across
@@ -147,9 +154,12 @@ var Altitude = {};
       startMax: parseFloat(maxSlider.value),
       lo: parseFloat(minSlider.min),
       hi: parseFloat(maxSlider.max),
-      trackHeightPx: trackWrap.getBoundingClientRect().height,
+      // Thumb centers (and thus the fill) travel over the reduced span, so
+      // pixel deltas convert to value deltas against it -- see THUMB_PX.
+      trackHeightPx: trackWrap.getBoundingClientRect().height - THUMB_PX,
     };
     trackFill.setPointerCapture(e.pointerId);
+    trackFill.classList.add("dragging"); // swaps cursor: grab -> grabbing (see map.css)
     e.preventDefault();
   });
 
@@ -182,6 +192,7 @@ var Altitude = {};
   function endFillDrag(e) {
     if (fillDrag && (!e || e.pointerId === fillDrag.pointerId)) {
       fillDrag = null;
+      trackFill.classList.remove("dragging");
     }
   }
   trackFill.addEventListener("pointerup", endFillDrag);

@@ -1655,10 +1655,12 @@ body.panelResizing #categoryDetailColumn {
   min-height: 0;
 }
 
+/* Inset by half the thumb box (altitude.js's THUMB_PX / 2) so the track's
+   ends sit where the thumb centers actually stop, matching the fill. */
 .altitudeTrackBg {
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: 11.5px;
+  bottom: 11.5px;
   left: 50%;
   transform: translateX(-50%);
   width: 4px;
@@ -1685,8 +1687,15 @@ body.panelResizing #categoryDetailColumn {
   background-clip: content-box;
   border-radius: 2px;
   pointer-events: auto;
-  cursor: ns-resize;
+  cursor: grab;
   touch-action: none;
+}
+
+/* altitude.js toggles .dragging for the duration of a fill-bar drag (pointer
+   capture keeps events flowing to the element, so the class -- not :hover
+   state -- is the reliable signal that a grab is in progress). */
+.altitudeTrackFill.dragging {
+  cursor: grabbing;
 }
 
 /* writing-mode is the standards-track way to get a vertical range input --
@@ -1727,26 +1736,37 @@ body.panelResizing #categoryDetailColumn {
   border: none;
 }
 
+/* The visible handle stays a 20x11 pill, but a thick transparent border
+   (excluded from the paint via background-clip: padding-box) inflates the
+   pointer target to 32x23 -- an 11px-tall handle on its own is a fiddly
+   thing to hit. The old 1px solid #555 outline can't coexist with the
+   transparent hit-area border, so an inset box-shadow (drawn at the padding
+   edge, i.e. around the visible pill) redraws it. */
 .altitudeRangeInput::-webkit-slider-thumb {
   -webkit-appearance: none;
   pointer-events: auto;
-  width: 20px;
-  height: 11px;
-  border-radius: 3px;
+  box-sizing: border-box;
+  width: 32px;
+  height: 23px;
+  border: 6px solid transparent;
+  border-radius: 9px;
   background: #ddd;
-  border: 1px solid #555;
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 1px #555;
   cursor: ns-resize;
 }
 
 .altitudeRangeInput::-moz-range-thumb {
   pointer-events: auto;
-  width: 20px;
-  height: 11px;
-  border-radius: 3px;
-  background: #ddd;
-  border: 1px solid #555;
-  cursor: ns-resize;
   box-sizing: border-box;
+  width: 32px;
+  height: 23px;
+  border: 6px solid transparent;
+  border-radius: 9px;
+  background: #ddd;
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 1px #555;
+  cursor: ns-resize;
 }
 
 /* Previously a bare, unstyled native <button> (rendered with the browser's
