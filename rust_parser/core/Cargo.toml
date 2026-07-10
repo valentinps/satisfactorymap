@@ -8,16 +8,14 @@ name = "sav_core"
 
 [features]
 default = []
-# Python-facing ParseError exception + PError -> PyErr conversion (error.rs).
-pyo3-errors = ["dep:pyo3"]
-# rayon parallel chunk decompression; without it the same chunks inflate
-# sequentially in the same order (identical output bytes).
+# rayon parallel chunk decompression (native builds); without it the same
+# chunks inflate sequentially in the same order (identical output bytes).
+# The wasm build stays single-threaded.
 parallel = ["dep:rayon"]
 
 [dependencies]
 flate2 = { workspace = true }
 rayon = { version = "1", optional = true }
-pyo3 = { version = "0.23", features = ["abi3-py312"], optional = true }
 serde = { version = "1", features = ["derive"] }
 # preserve_order: JSON object key order == file order == Python dict order;
 # the payload builder's output ordering is gated on it.

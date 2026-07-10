@@ -1,87 +1,75 @@
 # Satisfactory Save Map
 
-Interactive web-based map viewer for [Satisfactory](https://www.satisfactorygame.com/) save files.
+Interactive web-based map viewer for [Satisfactory](https://www.satisfactorygame.com/)
+save files — fully client-side. The save is parsed **in your browser** by a
+Rust parser compiled to WebAssembly; nothing is uploaded anywhere.
 
-## Setup
+Open the site, drop a `.sav` on the page (or click the picker), and the map
+loads: buildings by build-menu category, belts/pipes/railroads/power lines as
+curves, resource nodes with purity, collectables, vehicles, trains, players,
+progression (MAM/alternate recipes/AWESOME Shop/HUB milestones/Space
+Elevator), item search across every inventory, rectangle-selection inventory
+totals, and rich per-building tooltips (recipe, power, clock speed,
+inventories, belt/pipe bottlenecks).
 
-Requires Python 3.10 or newer.
+## Building the site
 
-```bash
-git clone --recurse-submodules https://github.com/valentinps/satisfactorymap.git
-cd satisfactorymap
-pip install -r requirements.txt
-```
-
-If you cloned without `--recurse-submodules`:
-```bash
-git submodule update --init
-```
-
-### Fast parser (Rust) — optional but recommended
-
-Save parsing has two interchangeable backends: a Rust one (`rust_parser/` —
-parsing is ~25× faster, and a full 50MB-save load drops from ~70s to ~11s)
-and a pure-Python fallback that needs no extra tooling. The server picks the Rust backend
-automatically when it's built, and otherwise falls back to Python with a
-notice on stderr — everything works either way, just slower.
-
-To build the Rust backend you need a Rust toolchain
-([rustup](https://rustup.rs/); on Windows also the Visual Studio Build Tools
-"Desktop development with C++" workload) and [maturin](https://www.maturin.rs/)
-in the same Python environment the server runs in:
-
-```bash
-pip install maturin
-cd rust_parser
-maturin develop --release
-```
-
-`SAV_PARSE_IMPL=rust|py` forces a specific backend (e.g. for comparisons);
-see `rust_parser/README.md` for design notes and parity/benchmark tooling.
+Requires a Rust toolchain ([rustup](https://rustup.rs/); on Windows also the
+Visual Studio Build Tools "Desktop development with C++" workload),
+[wasm-pack](https://rustwasm.github.io/wasm-pack/) (`cargo install
+wasm-pack`), and Python 3.10+ for the build script.
 
 The repo does not ship the game-derived data (item/building JSONs, icons, the
-map image) — it's extracted from the game's own files and too large/derivative
-to version. Get it one of two ways:
+map image) — it's extracted from the game's own files and too
+large/derivative to version. Get it one of two ways:
 
 - **Quick setup — download the pre-extracted archive**:
   [game_data.zip on Google Drive](https://drive.google.com/file/d/16JshnM65xrTpwxwbYs2iHmoog2AKDGZN/view?usp=sharing),
-  then unpack it and you're done —
+  then unpack it —
   ```bash
   py game_data/package_game_data.py unpack path/to/game_data.zip
   ```
-- **You have the game installed**: follow the three "Generating ..." sections
-  below.
+- **You have the game installed**: follow the "Generating ..." sections below.
 
-## Usage
+Then:
 
 ```bash
-py map/sav_map_server.py
+py tools/build_site.py     # assembles the deployable static site into dist/
+py tools/serve_site.py     # serves dist/ at http://127.0.0.1:8080/
 ```
 
-The server opens a landing page in your browser where you can choose how to load saves:
+`tools/serve_site.py` sends the same COOP/COEP headers as production
+(`dist/_headers`); any static file host works for deployment. For Cloudflare
+Pages:
 
-- **Upload save** — drag and drop or pick a `.sav` file
-- **Local folder** — point at your Satisfactory save directory
-- **SFTP server** — connect to a dedicated server over SFTP (requires `pip install paramiko`)
+```bash
+npx wrangler pages deploy dist/
+```
 
-Each restart lands on the mode-selection page; it does not remember your last choice.
+(Deploys run from a machine with the game data extracted — CI can't
+regenerate it, since it comes from the game's own files.)
 
 ## Project layout
 
 | Path | Contents |
 | --- | --- |
-| `map/` | Flask server + web frontend |
+| `map/static/map/` | the web frontend (vanilla JS + Leaflet + WebGL layer, `worker.js`/`save_client.js` host the WASM parser) |
 | `map/static/map/icons/` | *(generated)* item/building icon PNGs |
+| `rust_parser/core/` | `sav_core`: the save parser + map-payload builder (pure Rust, embeds the game-data tables) |
+| `rust_parser/wasm/` | `sav_wasm`: the wasm-bindgen boundary the worker loads |
 | `game_data/` | extraction scripts + hand-curated game metadata (`categoryLabels.json`, `categoryOverrides.json`, `SCHEMA.md`) |
+| `game_data/sav_data/` | *(committed)* static world tables (resource nodes, slugs, crash sites...) converted from the upstream parser project |
 | `game_data/docs.json` | *(not committed)* the game's own data dump, input to `extract_docs_json.py` |
 | `game_data/generated/` | *(generated)* item/building/recipe/schematic JSONs + `map_highres.png` |
-| `parser/` | upstream save parser (git submodule) |
-| `patches/` | local overrides of parser files (fixes not yet merged upstream) |
-| `rust_parser/` | Rust (PyO3) rewrite of the save parser — optional fast backend, see Setup |
-| `tools/` | parser parity gates (`diff_parsers.py`, `diff_payload.py`) + benchmarks (`bench_parse.py`) |
+| `tools/` | `build_site.py` / `serve_site.py` |
+| `dist/` | *(generated)* the assembled static site |
 
 Everything marked *(generated)* is git-ignored and produced by the steps
 below — or restored from an archive via `package_game_data.py unpack`.
+
+Note: `sav_core` embeds `game_data/generated/*.json` and the icon manifest at
+compile time, so building the Rust crates also requires the game data to be
+extracted first.
 
 ## Generating game data
 
@@ -156,22 +144,18 @@ The archive contains `game_data/generated/` (JSONs + map image) and
 py game_data/package_game_data.py unpack game_data.zip
 ```
 
-## Parser dependency
+## Save-format lineage
 
-Save file parsing is based on [GreyHak/sat_sav_parse](https://github.com/GreyHak/sat_sav_parse), included as a git submodule at `parser/`.
+The Rust parser is a port of
+[GreyHak/sat_sav_parse](https://github.com/GreyHak/sat_sav_parse) (previously
+included as a git submodule) and of this repo's Python map-data builder; both
+ports were validated field-by-field against the Python reference with
+bit-exact differential gates before the Python side was removed. The static
+world tables in `game_data/sav_data/` were converted from that project by
+`game_data/extract_sav_data_tables.py` — regenerating them after a game
+update means temporarily re-adding the submodule (see that script's
+docstring).
 
-`patches/sav_parse.py` overrides one file from the submodule with a fix not yet merged upstream (TextProperty parsing when `isTextCultureInvariant` is unset).
-
-`map/sav_parse_shim.py` sits between the server and the parser: it exposes the
-`sav_parse` API backed by the Rust rewrite (`rust_parser/`, see Setup) when
-that's built, and by `patches/sav_parse.py` otherwise. The Python parser
-remains the format reference — any change to it must be mirrored in the Rust
-parser and validated with `tools/diff_parsers.py` / `tools/diff_payload.py`
-(see `rust_parser/README.md`).
-
-To update the parser submodule to a newer upstream commit:
-```bash
-git -C parser pull origin main
-git add parser
-git commit -m "parser: update submodule"
-```
+The full server-based history (Flask app, SFTP save sync, the Python
+reference implementation, and the parity tooling) lives in this branch's git
+history and on the `main` branch.

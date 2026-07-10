@@ -807,9 +807,9 @@ body.panelResizing #categoryDetailColumn {
   background: var(--raised);
 }
 
-/* ---- Sidebar footer: save file picker, SFTP sync, game settings --
-   everything only touched around load time, tucked below the category
-   browser instead of pinned above it. */
+/* ---- Sidebar footer: save file picker + game settings -- everything only
+   touched around load time, tucked below the category browser instead of
+   pinned above it. */
 #sidebarFooter {
   flex: none;
   max-height: 46%;
@@ -820,10 +820,6 @@ body.panelResizing #categoryDetailColumn {
   background: var(--surface-0);
 }
 
-/* label[for=saveSelect] doubles as the panel's small header AND an
-   accessible label -- clicking the icon/text opens the select same as
-   clicking the select itself, same association a bare <label> already had,
-   just with room for an icon alongside the text now. */
 #loadPanelHeader {
   display: flex;
   align-items: center;
@@ -834,7 +830,6 @@ body.panelResizing #categoryDetailColumn {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  cursor: pointer;
 }
 
 .loadPanelIcon {
@@ -842,103 +837,9 @@ body.panelResizing #categoryDetailColumn {
   color: var(--brand);
 }
 
-/* Previously an entirely unstyled native <select>/<button> (only
-   width/margin were set) -- against this app's otherwise all-dark chrome
-   that rendered as a jarring light-gray system control. Styled to match
-   #mainSearchInput's dark field treatment (same focus color) below. */
-#saveSelect {
-  width: 100%;
-  box-sizing: border-box;
-  margin-bottom: 8px;
-  padding: 7px 30px 7px 10px;
-  font-size: 12.5px;
-  color: #ddd;
-  background-color: #23262c;
-  border: 1px solid #3a3a3a;
-  border-radius: 6px;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='11' height='11'%3E%3Cpath d='M5 8l5 5 5-5' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  cursor: pointer;
-}
-
-#saveSelect:hover {
-  border-color: #555;
-}
-
-#saveSelect:focus {
-  outline: none;
-  border-color: #5ba3e0;
-}
-
-/* Primary action for this panel -- same accent-blue "filled" treatment used
-   by #buildingModalHighlightToggle/.sftpSyncBtn elsewhere, so the one button
-   that actually does something (as opposed to a passive dropdown) reads as
-   the obvious next step. */
-#loadButton {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px 0;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: #ffc38a;
-  background: #3d2d1c;
-  border: 1px solid #6b4a26;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-#loadButton:hover:not(:disabled) {
-  background: #4a361f;
-  border-color: #8a5e2e;
-  color: #ffd7ae;
-}
-
-#loadButton:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* Opt-in auto-reload switch (see data.js's setAutoRefresh) -- label on the
-   left, the standard toggle switch on the right, same row pattern as the
-   category rows above. */
-#autoRefreshRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 8px;
-  cursor: default;
-}
-
-#autoRefreshLabel {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-#autoRefreshRow .toggleSwitch {
-  width: 32px;
-  height: 18px;
-}
-
-#autoRefreshRow .toggleSlider::before {
-  width: 12px;
-  height: 12px;
-  top: 3px;
-  left: 3px;
-}
-
-#autoRefreshRow .toggleSwitch input:checked + .toggleSlider::before {
-  transform: translateX(14px);
-}
-
-/* Manual-upload mode's quick upload target (see data.js's
-   enableUploadPanel) -- shown in place of #autoRefreshRow. Dashed outline
-   so it reads as a drop zone rather than yet another button, with the same
-   amber accent as #loadButton on hover/drag since it's the same "bring in a
-   save" action. */
+/* The load target (see data.js's loadLocalFile) -- dashed outline so it
+   reads as a drop zone rather than yet another button, amber accent on
+   hover/drag. */
 #uploadDropZone {
   display: flex;
   align-items: center;
@@ -1010,57 +911,6 @@ body.panelResizing #categoryDetailColumn {
   background: linear-gradient(to right, #c96f22, var(--brand));
   border-radius: 999px;
   transition: width 0.2s ease-out;
-}
-
-/* SFTP sync panel -- shown only when sftp_config.json is present on the
-   server side. Sits below the load panel in the sidebar footer. */
-#sftpPanel {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid #444;
-  font-size: 12px;
-}
-
-.sftpHeader {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 3px;
-}
-
-.sftpTitle {
-  font-weight: bold;
-  color: #ddd;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.sftpSyncBtn {
-  font-size: 11px;
-  padding: 2px 8px;
-  cursor: pointer;
-  background: #2a3545;
-  color: #8ab4f8;
-  border: 1px solid #3a5070;
-  border-radius: 3px;
-}
-
-.sftpSyncBtn:hover:not(:disabled) {
-  background: #33435a;
-}
-
-.sftpSyncBtn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.sftpStatus {
-  color: #888;
-}
-
-.sftpStatusError {
-  color: #e07070;
 }
 
 /* Game-mode settings (Power Cost Multiplier / Node Purity / Node
