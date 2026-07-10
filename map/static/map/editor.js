@@ -196,10 +196,74 @@ var EditorTool = (function() {
   }
 
   function failApply(error) {
+    var message = "Edit failed: " + (error && error.message || error);
+    // Semantic refusals (uneditable object, unknown name, ...) leave the
+    // session intact: just report them.
+    if (!error || !error.sessionLost) {
+      applyInFlight = false;
+      SaveLoadFlow.hideProgress();
+      SaveLoadFlow.setStatus(message);
+      updateToolbar();
+      return;
+    }
+    // The wasm session is gone (out-of-memory trap on a huge save). Recover
+    // with a fresh worker: reload the original file, then replay the
+    // committed actions one at a time.
+    recoverSession(message);
+  }
+
+  var recovering = false;
+
+  function recoverSession(message) {
+    if (recovering || !SaveLoadFlow.canReload()) {
+      recovering = false;
+      applyInFlight = false;
+      SaveLoadFlow.hideProgress();
+      SaveLoadFlow.setStatus(message + " — please re-load the save file (pending edits were lost).");
+      actions = [];
+      redoStack = [];
+      updateToolbar();
+      return;
+    }
+    recovering = true;
     applyInFlight = false;
-    SaveLoadFlow.hideProgress();
-    SaveLoadFlow.setStatus("Edit failed: " + (error && error.message || error));
-    updateToolbar();
+    SaveLoadFlow.setStatus(message + " — recovering (reloading save)…");
+    var backup = actions.slice();
+    SaveClient.reset();
+    SaveLoadFlow.reloadCurrentFile() // resets EditorTool via onSaveLoaded
+      .then(function() {
+        return replaySequentially(backup, 0);
+      })
+      .then(function() {
+        recovering = false;
+        SaveLoadFlow.setStatus(message + " — recovered; your " + actions.length
+          + " earlier edit" + (actions.length === 1 ? " was" : "s were") + " re-applied.");
+        updateToolbar();
+      })
+      .catch(function(replayError) {
+        recovering = false;
+        applyInFlight = false;
+        SaveLoadFlow.hideProgress();
+        SaveLoadFlow.setStatus(message + " — recovery incomplete ("
+          + (replayError && replayError.message || replayError)
+          + "); " + actions.length + " of " + backup.length + " edits were restored.");
+        updateToolbar();
+      });
+  }
+
+  function replaySequentially(backup, i) {
+    if (i >= backup.length) {
+      return Promise.resolve();
+    }
+    return SaveClient.applyEdits(backup[i], false, function(phase, current, total) {
+      SaveLoadFlow.showProgress(phase, total > 0 ? (current / total) * 100 : 0);
+    }).then(function(payload) {
+      SaveLoadFlow.hideProgress();
+      SaveLoadFlow.applyPayload(payload);
+      actions.push(backup[i]);
+      updateToolbar();
+      return replaySequentially(backup, i + 1);
+    });
   }
 
   // ---- Toolbar (edit count / undo / redo) ---------------------------------------
@@ -284,6 +348,22 @@ var EditorTool = (function() {
     if (clipboard) {
       startPlacement("paste", clipboard);
     }
+  }
+
+  // Delete applies immediately -- undo (full replay from pristine) is the
+  // safety net, so no confirmation dialog.
+  function deleteTargets(targets) {
+    if (!targets || (targets.actorNames.length + targets.lightweight.length) === 0 || applyInFlight) {
+      return;
+    }
+    var ops = [];
+    if (targets.actorNames.length) {
+      ops.push({ op: "deleteActors", names: targets.actorNames });
+    }
+    if (targets.lightweight.length) {
+      ops.push({ op: "deleteLightweight", items: targets.lightweight });
+    }
+    applyAction(ops);
   }
 
   // Context menu "Paste here": paste immediately at the given map point
@@ -526,6 +606,7 @@ var EditorTool = (function() {
     copyTargets: copyTargets,
     startPaste: startPaste,
     pasteAt: pasteAt,
+    deleteTargets: deleteTargets,
     hasClipboard: function() { return clipboard !== null; },
     undo: undo,
     redo: redo,

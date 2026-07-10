@@ -103,6 +103,9 @@ var ContextMenu = {};
       addItem("Copy this object", function() {
         EditorTool.copyTargets(editTargets);
       });
+      addItem("Delete this object", function() {
+        EditorTool.deleteTargets(editTargets);
+      });
       hasEditItems = true;
     }
     if (addPasteItem(clientX, clientY)) {

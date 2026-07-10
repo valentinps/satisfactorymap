@@ -26,6 +26,10 @@ let wasmReady = wasm_bindgen("pkg/sav_wasm_bg.wasm").then(function(exports) {
    wasmExports = exports;
 });
 let session = null;
+// The unedited save body, zlib-compressed, captured before the first edit.
+// Held HERE (JS memory) rather than inside the session: the wasm heap is
+// capped at 4GB and a parsed 600k-object save already fills most of it.
+let pristine = null;
 
 // Current wasm linear-memory size -- the tab's dominant footprint; attached
 // to progress events so perf runs can track the high-water mark for free.
@@ -37,8 +41,12 @@ function reply(id, result, transfer) {
    self.postMessage({ id, ok: true, result }, transfer || []);
 }
 
-function replyError(id, error) {
-   self.postMessage({ id, ok: false, error: { message: String(error && error.message || error) } });
+function replyError(id, error, sessionLost) {
+   self.postMessage({
+      id,
+      ok: false,
+      error: { message: String(error && error.message || error), sessionLost: !!sessionLost },
+   });
 }
 
 self.onmessage = async (event) => {
@@ -54,6 +62,7 @@ self.onmessage = async (event) => {
          // Free the previous save BEFORE parsing the new one: wasm linear
          // memory never shrinks, so peak usage must stay bounded at one save.
          if (session) { session.free(); session = null; }
+         pristine = null;
          const bytes = new Uint8Array(msg.buffer);
          session = new wasm_bindgen.SaveSession(bytes, (phase, current, total) => {
             self.postMessage({
@@ -76,19 +85,22 @@ self.onmessage = async (event) => {
          case "applyEdits": {
             // Rebuilds the store + payload inside the session; progress
             // events reuse the load phases ("Parsing"/"Building map data").
-            const payload = session.apply_edits(
-               JSON.stringify(msg.ops),
-               !!msg.fromPristine,
-               (phase, current, total) => {
-                  self.postMessage({
-                     type: "progress",
-                     phase: PHASE_LABELS[phase] || "Applying edits",
-                     current,
-                     total,
-                     memBytes: wasmMemBytes(),
-                  });
-               }
-            );
+            const progressCb = (phase, current, total) => {
+               self.postMessage({
+                  type: "progress",
+                  phase: PHASE_LABELS[phase] || "Applying edits",
+                  current,
+                  total,
+                  memBytes: wasmMemBytes(),
+               });
+            };
+            if (!pristine) {
+               pristine = session.compress_pristine();
+            }
+            const opsJson = JSON.stringify(msg.ops);
+            const payload = msg.fromPristine
+               ? session.apply_edits_from_pristine(opsJson, pristine, progressCb)
+               : session.apply_edits(opsJson, progressCb);
             reply(id, payload, [payload.buffer]);
             return;
          }
@@ -111,6 +123,17 @@ self.onmessage = async (event) => {
       }
       reply(id, JSON.parse(raw));
    } catch (error) {
-      replyError(id, error);
+      // A wasm trap (out of memory on huge saves) can leave the session
+      // without usable state; tell the client so it can recover by
+      // reloading the save and replaying its edits.
+      let sessionLost = false;
+      if (session) {
+         try {
+            sessionLost = !session.is_healthy();
+         } catch (probeError) {
+            sessionLost = true;
+         }
+      }
+      replyError(id, error, sessionLost);
    }
 };

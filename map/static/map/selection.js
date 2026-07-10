@@ -20,6 +20,7 @@ var SelectionTool = {};
   var moveBtn = document.getElementById("selectionMoveBtn");
   var offsetBtn = document.getElementById("selectionOffsetBtn");
   var copyBtn = document.getElementById("selectionCopyBtn");
+  var deleteBtn = document.getElementById("selectionDeleteBtn");
   var clearBtn = document.getElementById("selectionClearBtn");
 
   var overlay = document.getElementById("selectionModalOverlay");
@@ -238,6 +239,7 @@ var SelectionTool = {};
     moveBtn.disabled = editable === 0;
     offsetBtn.disabled = editable === 0;
     copyBtn.disabled = editable === 0;
+    deleteBtn.disabled = editable === 0;
     moveBtn.title = editable === 0
       ? "Nothing editable selected"
       : "Move " + editable.toLocaleString() + " object" + (editable === 1 ? "" : "s")
@@ -376,6 +378,15 @@ var SelectionTool = {};
       return;
     }
     EditorTool.copyTargets(lastSelection.editTargets);
+  });
+
+  deleteBtn.addEventListener("click", function() {
+    if (!lastSelection || deleteBtn.disabled) {
+      return;
+    }
+    var targets = lastSelection.editTargets;
+    clearSelection();
+    EditorTool.deleteTargets(targets);
   });
 
   clearBtn.addEventListener("click", clearSelection);

@@ -1,7 +1,10 @@
-//! Applies edit ops as byte transforms over the decompressed body. Every
-//! entry point takes the body the store was parsed from and returns a new
-//! body; the caller re-parses it with the strict parser, which acts as the
-//! corruption gate before anything reaches the user (or the game).
+//! Turns edit ops into byte transforms over the decompressed body. Each op
+//! is first *planned* against the parsed store (producing only small patch/
+//! insert/remove records), so the caller can drop the multi-GB parsed
+//! structures before mutating the body in place -- load-bearing for the
+//! 4GB-capped wasm heap on 600k-object saves. The strict re-parse after
+//! every op is the corruption gate before anything reaches the user (or the
+//! game).
 
 use crate::editor::ops::{EditOp, LwRef};
 use crate::editor::rename;
@@ -9,6 +12,79 @@ use crate::error::{perr, PResult};
 use crate::mapdata::scan::SaveScan;
 use crate::store::*;
 use std::collections::{BTreeSet, HashMap};
+
+/// The byte-level effect of one op, in PRE-op offsets. Patches never overlap
+/// inserts/removes (they target count/size fields and transform blocks), and
+/// a single plan never mixes inserts with removes.
+#[derive(Default)]
+pub struct EditPlan {
+    patches: Vec<(usize, Vec<u8>)>,
+    inserts: Vec<(usize, Vec<u8>)>,
+    removes: Vec<(usize, usize)>,
+}
+
+impl EditPlan {
+    fn patch(&mut self, at: usize, bytes: impl Into<Vec<u8>>) {
+        self.patches.push((at, bytes.into()));
+    }
+}
+
+/// Mutate `body` per the plan. Length changes shift the tail with
+/// copy_within instead of building a second body; the leading u64
+/// uncompressedSize is refreshed at the end.
+pub fn apply_plan(body: &mut Vec<u8>, mut plan: EditPlan) -> PResult<()> {
+    for (at, bytes) in &plan.patches {
+        if at + bytes.len() > body.len() {
+            return Err(perr!("Edit patch out of range"));
+        }
+        body[*at..at + bytes.len()].copy_from_slice(bytes);
+    }
+
+    if !plan.removes.is_empty() && !plan.inserts.is_empty() {
+        return Err(perr!("Edit plan mixes inserts and removes"));
+    }
+
+    if !plan.removes.is_empty() {
+        plan.removes.sort_by_key(|(at, _)| *at);
+        let mut write = plan.removes[0].0;
+        let mut read = write;
+        for &(at, len) in &plan.removes {
+            let keep = at - read;
+            body.copy_within(read..read + keep, write);
+            write += keep;
+            read = at + len;
+        }
+        let tail = body.len() - read;
+        body.copy_within(read.., write);
+        body.truncate(write + tail);
+    }
+
+    if !plan.inserts.is_empty() {
+        plan.inserts.sort_by_key(|(at, _)| *at);
+        let added: usize = plan.inserts.iter().map(|(_, b)| b.len()).sum();
+        let old_len = body.len();
+        body.reserve_exact(added);
+        body.resize(old_len + added, 0);
+        // Shift the pre-existing segments right-to-left so nothing is
+        // clobbered, placing each insert as its gap opens up.
+        let mut src_end = old_len;
+        let mut shift = added;
+        for (at, bytes) in plan.inserts.iter().rev() {
+            body.copy_within(*at..src_end, at + shift);
+            shift -= bytes.len();
+            body[at + shift..at + shift + bytes.len()].copy_from_slice(bytes);
+            src_end = *at;
+        }
+    }
+
+    let size = (body.len() - 8) as u64;
+    body[0..8].copy_from_slice(&size.to_le_bytes());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
 
 /// Everything a transform can't meaningfully or safely apply to. Matched on
 /// the actor's parsed trailing data and type path, not a hardcoded list of
@@ -37,8 +113,7 @@ fn move_refusal(store: &SaveStore, header: &Header, object: &Object) -> Option<&
 /// (sin, cos) of a yaw in degrees -- exact for the 90-degree steps the UI
 /// produces so repeated rotations can't accumulate float drift.
 fn yaw_sin_cos(deg: f64) -> (f64, f64) {
-    let norm = deg.rem_euclid(360.0);
-    match norm {
+    match deg.rem_euclid(360.0) {
         0.0 => (0.0, 1.0),
         90.0 => (1.0, 0.0),
         180.0 => (0.0, -1.0),
@@ -88,17 +163,41 @@ fn rotate_dir_xy(x: f64, y: f64, deg: f64) -> (f64, f64) {
     (x * c - y * s, x * s + y * c)
 }
 
-fn write_f32(body: &mut [u8], off: usize, v: f32) {
-    body[off..off + 4].copy_from_slice(&v.to_le_bytes());
+fn write_f32(buf: &mut [u8], off: usize, v: f32) {
+    buf[off..off + 4].copy_from_slice(&v.to_le_bytes());
 }
 
-fn write_f64(body: &mut [u8], off: usize, v: f64) {
-    body[off..off + 8].copy_from_slice(&v.to_le_bytes());
+fn write_f64(buf: &mut [u8], off: usize, v: f64) {
+    buf[off..off + 8].copy_from_slice(&v.to_le_bytes());
 }
 
-fn read_f64(body: &[u8], off: usize) -> f64 {
-    f64::from_le_bytes(body[off..off + 8].try_into().unwrap())
+fn read_f64(buf: &[u8], off: usize) -> f64 {
+    f64::from_le_bytes(buf[off..off + 8].try_into().unwrap())
 }
+
+fn read_u32(buf: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes(buf[off..off + 4].try_into().unwrap())
+}
+
+fn read_u64_at(buf: &[u8], off: usize) -> u64 {
+    u64::from_le_bytes(buf[off..off + 8].try_into().unwrap())
+}
+
+/// Patch that adds to a u32/u64 field (values read from the pre-op body,
+/// which is `store.data`).
+fn patch_add_u32(plan: &mut EditPlan, data: &[u8], off: usize, add: i64) {
+    let v = (read_u32(data, off) as i64 + add) as u32;
+    plan.patch(off, v.to_le_bytes().to_vec());
+}
+
+fn patch_add_u64(plan: &mut EditPlan, data: &[u8], off: usize, add: i64) {
+    let v = (read_u64_at(data, off) as i64 + add) as u64;
+    plan.patch(off, v.to_le_bytes().to_vec());
+}
+
+// ---------------------------------------------------------------------------
+// Move
+// ---------------------------------------------------------------------------
 
 /// Per-chain-belt patch target: where its world-space spline elements live.
 struct ChainSplines {
@@ -107,8 +206,8 @@ struct ChainSplines {
 }
 
 /// belt instance name -> chain spline extents, across every chain actor.
-fn chain_splines_by_belt<'a>(store: &'a SaveStore) -> std::collections::HashMap<&'a [u8], ChainSplines> {
-    let mut map = std::collections::HashMap::new();
+fn chain_splines_by_belt<'a>(store: &'a SaveStore) -> HashMap<&'a [u8], ChainSplines> {
+    let mut map = HashMap::new();
     for level in &store.levels {
         for object in &level.objects {
             if let ActorSpecific::ConveyorChain { belts, .. } = &object.actor_specific {
@@ -124,10 +223,10 @@ fn chain_splines_by_belt<'a>(store: &'a SaveStore) -> std::collections::HashMap<
     map
 }
 
-fn move_actors(
+fn plan_move_actors(
     store: &SaveStore,
     scan: &SaveScan,
-    body: &mut [u8],
+    plan: &mut EditPlan,
     names: &[String],
     delta: &[f64; 3],
     rotate_yaw_deg: f64,
@@ -136,6 +235,7 @@ fn move_actors(
     if rotate_yaw_deg != 0.0 && pivot.is_none() {
         return Err(perr!("rotate requires a pivot"));
     }
+    let data: &[u8] = &store.data;
     let chains = chain_splines_by_belt(store);
     for name in names {
         let Some(&(li, oi)) = scan.by_instance_name.get(name.as_bytes()) else {
@@ -155,52 +255,59 @@ fn move_actors(
                 [actor.rotation[0] as f64, actor.rotation[1] as f64, actor.rotation[2] as f64, actor.rotation[3] as f64],
                 rotate_yaw_deg,
             );
+            let mut quat = [0u8; 16];
             for (i, v) in q.iter().enumerate() {
-                write_f32(body, t + i * 4, *v as f32);
+                write_f32(&mut quat, i * 4, *v as f32);
             }
+            plan.patch(t, quat.to_vec());
         }
         let (nx, ny) = transform_xy(actor.position[0] as f64, actor.position[1] as f64, rotate_yaw_deg, pivot, delta);
-        write_f32(body, t + 16, nx as f32);
-        write_f32(body, t + 20, ny as f32);
-        write_f32(body, t + 24, (actor.position[2] as f64 + delta[2]) as f32);
+        let mut pos = [0u8; 12];
+        write_f32(&mut pos, 0, nx as f32);
+        write_f32(&mut pos, 4, ny as f32);
+        write_f32(&mut pos, 8, (actor.position[2] as f64 + delta[2]) as f32);
+        plan.patch(t + 16, pos.to_vec());
 
         // Chained belts: their chain actor's spline elements are world-space
         // [location, arriveTangent, leaveTangent] f64 triplets.
         if let Some(cs) = chains.get(name.as_bytes()) {
             for e in 0..cs.element_count {
                 let base = cs.elements_off as usize + e * 72;
-                let (lx, ly) = transform_xy(read_f64(body, base), read_f64(body, base + 8), rotate_yaw_deg, pivot, delta);
-                write_f64(body, base, lx);
-                write_f64(body, base + 8, ly);
-                write_f64(body, base + 16, read_f64(body, base + 16) + delta[2]);
+                let mut elem = data[base..base + 72].to_vec();
+                let (lx, ly) = transform_xy(read_f64(&elem, 0), read_f64(&elem, 8), rotate_yaw_deg, pivot, delta);
+                write_f64(&mut elem, 0, lx);
+                write_f64(&mut elem, 8, ly);
+                let z = read_f64(&elem, 16) + delta[2];
+                write_f64(&mut elem, 16, z);
                 for row in 1..3 {
-                    let r = base + row * 24;
-                    let (tx, ty) = rotate_dir_xy(read_f64(body, r), read_f64(body, r + 8), rotate_yaw_deg);
-                    write_f64(body, r, tx);
-                    write_f64(body, r + 8, ty);
+                    let r = row * 24;
+                    let (tx, ty) = rotate_dir_xy(read_f64(&elem, r), read_f64(&elem, r + 8), rotate_yaw_deg);
+                    write_f64(&mut elem, r, tx);
+                    write_f64(&mut elem, r + 8, ty);
                 }
+                plan.patch(base, elem);
             }
         }
     }
     Ok(())
 }
 
-/// The one Lightweight subsystem object (persistent level) -- lightweight
-/// edits address groups inside it by type path.
-fn lightweight_groups<'a>(store: &'a SaveStore) -> PResult<&'a [LightweightGroup]> {
-    for level in &store.levels {
-        for object in &level.objects {
+/// The one Lightweight subsystem object -- lightweight edits address groups
+/// inside it by type path. Returns (level_idx, object_idx, groups).
+fn lightweight_subsystem<'a>(store: &'a SaveStore) -> PResult<(usize, usize, &'a [LightweightGroup])> {
+    for (li, level) in store.levels.iter().enumerate() {
+        for (oi, object) in level.objects.iter().enumerate() {
             if let ActorSpecific::Lightweight { items, .. } = &object.actor_specific {
-                return Ok(items);
+                return Ok((li, oi, items));
             }
         }
     }
     Err(perr!("Save has no lightweight buildable subsystem"))
 }
 
-fn move_lightweight(
+fn plan_move_lightweight(
     store: &SaveStore,
-    body: &mut [u8],
+    plan: &mut EditPlan,
     items: &[LwRef],
     delta: &[f64; 3],
     rotate_yaw_deg: f64,
@@ -209,7 +316,7 @@ fn move_lightweight(
     if rotate_yaw_deg != 0.0 && pivot.is_none() {
         return Err(perr!("rotate requires a pivot"));
     }
-    let groups = lightweight_groups(store)?;
+    let (_, _, groups) = lightweight_subsystem(store)?;
     for item in items {
         let group = groups
             .iter()
@@ -222,14 +329,18 @@ fn move_lightweight(
         let r = instance.record_off as usize;
         if rotate_yaw_deg != 0.0 {
             let q = rotate_quat_yaw(instance.rotation, rotate_yaw_deg);
+            let mut quat = [0u8; 32];
             for (i, v) in q.iter().enumerate() {
-                write_f64(body, r + i * 8, *v);
+                write_f64(&mut quat, i * 8, *v);
             }
+            plan.patch(r, quat.to_vec());
         }
         let (nx, ny) = transform_xy(instance.position[0], instance.position[1], rotate_yaw_deg, pivot, delta);
-        write_f64(body, r + 32, nx);
-        write_f64(body, r + 40, ny);
-        write_f64(body, r + 48, instance.position[2] + delta[2]);
+        let mut pos = [0u8; 24];
+        write_f64(&mut pos, 0, nx);
+        write_f64(&mut pos, 8, ny);
+        write_f64(&mut pos, 16, instance.position[2] + delta[2]);
+        plan.patch(r + 32, pos.to_vec());
     }
     Ok(())
 }
@@ -237,42 +348,6 @@ fn move_lightweight(
 // ---------------------------------------------------------------------------
 // Duplication
 // ---------------------------------------------------------------------------
-
-fn read_u32(body: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(body[off..off + 4].try_into().unwrap())
-}
-
-fn read_u64_at(body: &[u8], off: usize) -> u64 {
-    u64::from_le_bytes(body[off..off + 8].try_into().unwrap())
-}
-
-fn add_u32(body: &mut [u8], off: usize, add: u32) {
-    let v = read_u32(body, off) + add;
-    body[off..off + 4].copy_from_slice(&v.to_le_bytes());
-}
-
-fn add_u64(body: &mut [u8], off: usize, add: u64) {
-    let v = read_u64_at(body, off) + add;
-    body[off..off + 8].copy_from_slice(&v.to_le_bytes());
-}
-
-/// Assemble a new body from a (field-patched) original plus insertions at
-/// original-space offsets, then fix the leading u64 uncompressedSize.
-fn splice(body: Vec<u8>, mut insertions: Vec<(usize, Vec<u8>)>) -> Vec<u8> {
-    insertions.sort_by_key(|(at, _)| *at);
-    let added: usize = insertions.iter().map(|(_, b)| b.len()).sum();
-    let mut out = Vec::with_capacity(body.len() + added);
-    let mut cursor = 0usize;
-    for (at, bytes) in insertions {
-        out.extend_from_slice(&body[cursor..at]);
-        out.extend_from_slice(&bytes);
-        cursor = at;
-    }
-    out.extend_from_slice(&body[cursor..]);
-    let size = (out.len() - 8) as u64;
-    out[0..8].copy_from_slice(&size.to_le_bytes());
-    out
-}
 
 /// Expand the requested actor names into the full copy set: each actor plus
 /// its components, plus every power line whose BOTH endpoints are owned by
@@ -359,16 +434,16 @@ fn expand_duplicate_set(
     Ok(set)
 }
 
-fn duplicate_actors(
+fn plan_duplicate_actors(
     store: &SaveStore,
     scan: &SaveScan,
-    body: Vec<u8>,
+    plan: &mut EditPlan,
     names: &[String],
     delta: &[f64; 3],
     rotate_yaw_deg: f64,
     pivot: Option<[f64; 2]>,
     seed: u64,
-) -> PResult<Vec<u8>> {
+) -> PResult<()> {
     if rotate_yaw_deg != 0.0 && pivot.is_none() {
         return Err(perr!("rotate requires a pivot"));
     }
@@ -442,12 +517,12 @@ fn duplicate_actors(
     // Copy, substitute, patch transforms.
     let mut new_headers: Vec<u8> = Vec::new();
     let mut new_bodies: Vec<u8> = Vec::new();
-    let n_new = set.len() as u32;
+    let n_new = set.len() as i64;
     for &(li, oi) in &set {
         let (h_off, h_len) = store.levels[li].header_spans[oi];
         let (b_off, b_len) = store.levels[li].object_spans[oi];
-        let mut header_copy = body[h_off as usize..(h_off + h_len) as usize].to_vec();
-        let mut body_copy = body[b_off as usize..(b_off + b_len) as usize].to_vec();
+        let mut header_copy = data[h_off as usize..(h_off + h_len) as usize].to_vec();
+        let mut body_copy = data[b_off as usize..(b_off + b_len) as usize].to_vec();
         rename::substitute_names(&mut header_copy, &substitutions);
         rename::substitute_names(&mut body_copy, &substitutions);
 
@@ -477,60 +552,38 @@ fn duplicate_actors(
         new_bodies.extend_from_slice(&body_copy);
     }
 
-    // Count/size cascade (all offsets are original-space; splice() adjusts
-    // the leading uncompressedSize afterwards).
-    let mut patched = body;
+    // Count/size cascade (apply_plan refreshes the leading uncompressedSize).
     let spans = &level.spans;
-    add_u64(&mut patched, spans.header_size_field_off as usize, new_headers.len() as u64);
-    add_u32(&mut patched, spans.header_size_field_off as usize + 8, n_new);
-    add_u64(&mut patched, spans.objects_size_field_off as usize, new_bodies.len() as u64);
-    add_u32(&mut patched, spans.object_count_field_off as usize, n_new);
-
-    Ok(splice(
-        patched,
-        vec![
-            (spans.headers_insert_off as usize, new_headers),
-            (spans.bodies_insert_off as usize, new_bodies),
-        ],
-    ))
+    patch_add_u64(plan, data, spans.header_size_field_off as usize, new_headers.len() as i64);
+    patch_add_u32(plan, data, spans.header_size_field_off as usize + 8, n_new);
+    patch_add_u64(plan, data, spans.objects_size_field_off as usize, new_bodies.len() as i64);
+    patch_add_u32(plan, data, spans.object_count_field_off as usize, n_new);
+    plan.inserts.push((spans.headers_insert_off as usize, new_headers));
+    plan.inserts.push((spans.bodies_insert_off as usize, new_bodies));
+    Ok(())
 }
 
-fn duplicate_lightweight(
+fn plan_duplicate_lightweight(
     store: &SaveStore,
-    body: Vec<u8>,
+    plan: &mut EditPlan,
     items: &[LwRef],
     delta: &[f64; 3],
     rotate_yaw_deg: f64,
     pivot: Option<[f64; 2]>,
-) -> PResult<Vec<u8>> {
+) -> PResult<()> {
     if rotate_yaw_deg != 0.0 && pivot.is_none() {
         return Err(perr!("rotate requires a pivot"));
     }
-    // Locate the subsystem object (for its object_size field) and its groups.
-    let mut located: Option<(usize, usize)> = None;
-    'outer: for (li, level) in store.levels.iter().enumerate() {
-        for (oi, object) in level.objects.iter().enumerate() {
-            if matches!(object.actor_specific, ActorSpecific::Lightweight { .. }) {
-                located = Some((li, oi));
-                break 'outer;
-            }
-        }
-    }
-    let Some((li, oi)) = located else {
-        return Err(perr!("Save has no lightweight buildable subsystem"));
-    };
-    let ActorSpecific::Lightweight { items: groups, .. } = &store.levels[li].objects[oi].actor_specific else {
-        unreachable!()
-    };
+    let data: &[u8] = &store.data;
+    let (li, oi, groups) = lightweight_subsystem(store)?;
 
-    let mut insertions: Vec<(usize, Vec<u8>)> = Vec::new();
-    let mut added_per_group: HashMap<u32, (u32, usize)> = HashMap::new(); // count_field_off -> (count, bytes)
-    let mut total_added = 0usize;
+    let mut added_per_group: HashMap<u32, i64> = HashMap::new(); // count_field_off -> count
+    let mut total_added = 0i64;
 
     for item in items {
         let group = groups
             .iter()
-            .find(|g| g.type_path.eq_ascii(&store.data, &item.type_path))
+            .find(|g| g.type_path.eq_ascii(data, &item.type_path))
             .ok_or_else(|| perr!("No lightweight group for {}", item.type_path))?;
         let instance = group
             .instances
@@ -538,7 +591,7 @@ fn duplicate_lightweight(
             .ok_or_else(|| perr!("Lightweight index {} out of range for {}", item.index, item.type_path))?;
 
         let r = instance.record_off as usize;
-        let mut copy = body[r..r + instance.record_len as usize].to_vec();
+        let mut copy = data[r..r + instance.record_len as usize].to_vec();
 
         // The copy is hand-placed, not blueprint-placed: empty out a
         // non-empty blueprint proxy ref. (Empty strings are just an i32 0,
@@ -568,49 +621,209 @@ fn duplicate_lightweight(
         write_f64(&mut copy, 40, ny);
         write_f64(&mut copy, 48, instance.position[2] + delta[2]);
 
-        total_added += copy.len();
-        let entry = added_per_group.entry(group.count_field_off).or_insert((0, 0));
-        entry.0 += 1;
-        entry.1 += copy.len();
-        insertions.push((group.end_off as usize, copy));
+        total_added += copy.len() as i64;
+        *added_per_group.entry(group.count_field_off).or_insert(0) += 1;
+        plan.inserts.push((group.end_off as usize, copy));
     }
 
-    let mut patched = body;
-    for (count_field_off, (count, _)) in &added_per_group {
-        add_u32(&mut patched, *count_field_off as usize, *count);
+    for (count_field_off, count) in &added_per_group {
+        patch_add_u32(plan, data, *count_field_off as usize, *count);
     }
     // Subsystem object body grows: [gv u32][migrate u32][object_size u32].
     let object_size_field = store.levels[li].object_spans[oi].0 as usize + 8;
-    add_u32(&mut patched, object_size_field, total_added as u32);
-    add_u64(&mut patched, store.levels[li].spans.objects_size_field_off as usize, total_added as u64);
-
-    Ok(splice(patched, insertions))
+    patch_add_u32(plan, data, object_size_field, total_added);
+    patch_add_u64(plan, data, store.levels[li].spans.objects_size_field_off as usize, total_added);
+    Ok(())
 }
 
-/// Apply ONE op against `body` (the bytes `store` was parsed from, without
-/// the quirk pad -- see `effective_body`). Returns the new body; the caller
-/// must re-parse before applying the next op, so every op sees offsets and
-/// values from the post-prior-op state (see `session::rebuild`).
-pub fn apply_op(store: &SaveStore, body: &[u8], op: &EditOp) -> PResult<Vec<u8>> {
+// ---------------------------------------------------------------------------
+// Deletion
+// ---------------------------------------------------------------------------
+
+/// belt instance names that appear in any conveyor chain (deleting one would
+/// leave the chain actor's packed belt list pointing at nothing, which the
+/// game -- and our own parser's chain handling -- can't tolerate).
+fn chained_belt_names<'a>(store: &'a SaveStore) -> std::collections::HashSet<&'a [u8]> {
+    let mut set = std::collections::HashSet::new();
+    for level in &store.levels {
+        for object in &level.objects {
+            if let ActorSpecific::ConveyorChain { belts, .. } = &object.actor_specific {
+                for cb in belts {
+                    set.insert(cb.belt.path_name.bytes(&store.data));
+                }
+            }
+        }
+    }
+    set
+}
+
+fn plan_delete_actors(
+    store: &SaveStore,
+    scan: &SaveScan,
+    plan: &mut EditPlan,
+    names: &[String],
+) -> PResult<()> {
+    let data: &[u8] = &store.data;
+    let set = expand_duplicate_set(store, scan, names)?;
+    if set.is_empty() {
+        return Err(perr!("Nothing to delete"));
+    }
+    let level_idx = set.iter().next().unwrap().0;
+    if set.iter().any(|&(li, _)| li != level_idx) {
+        return Err(perr!("Cannot delete objects from different world levels at once"));
+    }
+
+    let chained = chained_belt_names(store);
+    for &(li, oi) in &set {
+        let name = store.levels[li].headers[oi].instance_name().bytes(data);
+        if chained.contains(name) {
+            return Err(perr!(
+                "Cannot delete {}: the belt is part of a conveyor chain (move it instead, or delete the whole line in game)",
+                String::from_utf8_lossy(name)
+            ));
+        }
+    }
+
+    // Also delete power lines with EITHER endpoint on a deleted actor -- a
+    // wire to nowhere renders and simulates wrong in game.
+    let mut deleted_actor_names: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
+    for &(li, oi) in &set {
+        deleted_actor_names.insert(store.levels[li].headers[oi].instance_name().bytes(data));
+    }
+    let owner_deleted = |endpoint: &ObjectRef| -> bool {
+        if endpoint.path_name.is_empty() {
+            return false;
+        }
+        let path = endpoint.path_name.bytes(data);
+        match path.iter().rposition(|&b| b == b'.') {
+            Some(dot) => deleted_actor_names.contains(&path[..dot]),
+            None => false,
+        }
+    };
+    let mut full_set = set;
+    let mut extra_wires: Vec<(usize, usize)> = Vec::new();
+    for (li, level) in store.levels.iter().enumerate() {
+        for (oi, object) in level.objects.iter().enumerate() {
+            if let ActorSpecific::PowerLine(a, b) = &object.actor_specific {
+                if !full_set.contains(&(li, oi)) && (owner_deleted(a) || owner_deleted(b)) {
+                    if li != level_idx {
+                        return Err(perr!("Cannot delete: an attached power line lives in a different world level"));
+                    }
+                    extra_wires.push((li, oi));
+                }
+            }
+        }
+    }
+    for (li, oi) in extra_wires {
+        full_set.insert((li, oi));
+        // A wire's own components (if any) go with it.
+        if let Some((_, components)) = &store.levels[li].objects[oi].actor_reference_associations {
+            for comp in components {
+                if comp.path_name.is_empty() {
+                    continue;
+                }
+                if let Some(&slot) = scan.by_instance_name.get(comp.path_name.bytes(data)) {
+                    full_set.insert(slot);
+                }
+            }
+        }
+    }
+
+    let level = &store.levels[level_idx];
+    let mut removed_header_bytes = 0i64;
+    let mut removed_body_bytes = 0i64;
+    for &(li, oi) in &full_set {
+        let (h_off, h_len) = store.levels[li].header_spans[oi];
+        let (b_off, b_len) = store.levels[li].object_spans[oi];
+        plan.removes.push((h_off as usize, h_len as usize));
+        plan.removes.push((b_off as usize, b_len as usize));
+        removed_header_bytes += h_len as i64;
+        removed_body_bytes += b_len as i64;
+    }
+
+    let n_removed = full_set.len() as i64;
+    let spans = &level.spans;
+    patch_add_u64(plan, data, spans.header_size_field_off as usize, -removed_header_bytes);
+    patch_add_u32(plan, data, spans.header_size_field_off as usize + 8, -n_removed);
+    patch_add_u64(plan, data, spans.objects_size_field_off as usize, -removed_body_bytes);
+    patch_add_u32(plan, data, spans.object_count_field_off as usize, -n_removed);
+    Ok(())
+}
+
+fn plan_delete_lightweight(store: &SaveStore, plan: &mut EditPlan, items: &[LwRef]) -> PResult<()> {
+    let data: &[u8] = &store.data;
+    let (li, oi, groups) = lightweight_subsystem(store)?;
+
+    let mut removed_per_group: HashMap<u32, i64> = HashMap::new();
+    let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new(); // (count_field_off, index)
+    let mut total_removed = 0i64;
+    for item in items {
+        let group = groups
+            .iter()
+            .find(|g| g.type_path.eq_ascii(data, &item.type_path))
+            .ok_or_else(|| perr!("No lightweight group for {}", item.type_path))?;
+        let instance = group
+            .instances
+            .get(item.index as usize)
+            .ok_or_else(|| perr!("Lightweight index {} out of range for {}", item.index, item.type_path))?;
+        if !seen.insert((group.count_field_off, item.index)) {
+            continue; // deduplicate
+        }
+        plan.removes.push((instance.record_off as usize, instance.record_len as usize));
+        total_removed += instance.record_len as i64;
+        *removed_per_group.entry(group.count_field_off).or_insert(0) += 1;
+    }
+
+    for (count_field_off, count) in &removed_per_group {
+        patch_add_u32(plan, data, *count_field_off as usize, -count);
+    }
+    let object_size_field = store.levels[li].object_spans[oi].0 as usize + 8;
+    patch_add_u32(plan, data, object_size_field, -total_removed);
+    patch_add_u64(plan, data, store.levels[li].spans.objects_size_field_off as usize, -total_removed);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Entry points
+// ---------------------------------------------------------------------------
+
+/// Plan ONE op against the parsed store. The plan holds only small buffers
+/// (copied objects, field patches), so the caller can drop the store's
+/// parsed structures before applying it to the body.
+pub fn plan_op(store: &SaveStore, op: &EditOp) -> PResult<EditPlan> {
+    let mut plan = EditPlan::default();
     match op {
         EditOp::MoveActors { names, delta, rotate_yaw_deg, pivot } => {
-            let mut out = body.to_vec();
             let scan = SaveScan::new(store);
-            move_actors(store, &scan, &mut out, names, delta, *rotate_yaw_deg, *pivot)?;
-            Ok(out)
+            plan_move_actors(store, &scan, &mut plan, names, delta, *rotate_yaw_deg, *pivot)?;
         }
         EditOp::MoveLightweight { items, delta, rotate_yaw_deg, pivot } => {
-            let mut out = body.to_vec();
-            move_lightweight(store, &mut out, items, delta, *rotate_yaw_deg, *pivot)?;
-            Ok(out)
+            plan_move_lightweight(store, &mut plan, items, delta, *rotate_yaw_deg, *pivot)?;
         }
         EditOp::DuplicateActors { names, delta, rotate_yaw_deg, pivot, seed } => {
             let scan = SaveScan::new(store);
-            duplicate_actors(store, &scan, body.to_vec(), names, delta, *rotate_yaw_deg, *pivot, *seed)
+            plan_duplicate_actors(store, &scan, &mut plan, names, delta, *rotate_yaw_deg, *pivot, *seed)?;
         }
         EditOp::DuplicateLightweight { items, delta, rotate_yaw_deg, pivot } => {
-            duplicate_lightweight(store, body.to_vec(), items, delta, *rotate_yaw_deg, *pivot)
+            plan_duplicate_lightweight(store, &mut plan, items, delta, *rotate_yaw_deg, *pivot)?;
         }
-        other => return Err(perr!("Edit op not yet supported: {:?}", other)),
+        EditOp::DeleteActors { names } => {
+            let scan = SaveScan::new(store);
+            plan_delete_actors(store, &scan, &mut plan, names)?;
+        }
+        EditOp::DeleteLightweight { items } => {
+            plan_delete_lightweight(store, &mut plan, items)?;
+        }
     }
+    Ok(plan)
+}
+
+/// Convenience for tests / borrowed callers: plan + copy + apply. The
+/// memory-conscious path is `session::step_owned`, which applies the plan in
+/// place on the store's own body.
+pub fn apply_op(store: &SaveStore, body: &[u8], op: &EditOp) -> PResult<Vec<u8>> {
+    let plan = plan_op(store, op)?;
+    let mut out = body.to_vec();
+    apply_plan(&mut out, plan)?;
+    Ok(out)
 }

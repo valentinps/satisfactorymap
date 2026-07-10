@@ -87,14 +87,48 @@ fn start() {
 
 #[wasm_bindgen]
 pub struct SaveSession {
-    store: Arc<SaveStore>,
-    index: MapIndex,
+    /// Always Some between successful calls; taken/replaced inside the edit
+    /// paths so the old parsed save can be freed before the edited body
+    /// re-parses (wasm memory is capped at 4GB and one parsed 600k-object
+    /// save is most of it). None after a failed edit until the worker
+    /// restores via apply_edits_from_pristine.
+    store: Option<Arc<SaveStore>>,
+    /// Same story: dropped up front in the edit paths, rebuilt at the end.
+    index: Option<MapIndex>,
     payload_json: Vec<u8>,
-    /// The unedited body (no quirk pad), captured lazily on the first edit --
-    /// undo replays the remaining ops from here.
-    pristine_body: Option<Vec<u8>>,
-    /// Ops applied to reach the current store, in order.
-    ops: Vec<sav_core::editor::EditOp>,
+    /// Small copies kept outside the store so a session whose store was
+    /// lost to a failed edit can still be restored from the pristine blob.
+    file_header: Vec<u8>,
+    info: sav_core::save_header::SaveFileInfo,
+}
+
+const SESSION_LOST: &str =
+    "No usable save state (a failed edit was not recovered) -- reload the save file";
+
+impl SaveSession {
+    fn store(&self) -> Result<&SaveStore, JsError> {
+        self.store.as_ref().map(|a| a.as_ref()).ok_or_else(|| JsError::new(SESSION_LOST))
+    }
+
+    fn index(&self) -> Result<&MapIndex, JsError> {
+        self.index.as_ref().ok_or_else(|| JsError::new(SESSION_LOST))
+    }
+
+    /// Swap in a new store and rebuild index + payload, returning the
+    /// payload bytes.
+    fn finish_edit(
+        &mut self,
+        new_store: SaveStore,
+        call: &dyn Fn(u8, u64, u64),
+    ) -> Result<Vec<u8>, JsError> {
+        self.store = Some(Arc::new(new_store));
+        let mut build_progress = |current: u64, total: u64| call(2, current, total);
+        let (payload_json, index) =
+            mapdata::build_all_json(self.store()?, Some(&mut build_progress))
+                .map_err(|e| JsError::new(&e))?;
+        self.index = Some(index);
+        Ok(payload_json)
+    }
 }
 
 #[wasm_bindgen]
@@ -128,24 +162,39 @@ impl SaveSession {
             mapdata::build_all_json(&store, Some(&mut build_progress))
                 .map_err(|e| JsError::new(&e))?;
 
+        let file_header = store.file_header.clone();
+        let info = store.info.clone();
         Ok(SaveSession {
-            store: Arc::new(store),
-            index,
+            store: Some(Arc::new(store)),
+            index: Some(index),
             payload_json,
-            pristine_body: None,
-            ops: Vec::new(),
+            file_header,
+            info,
         })
     }
 
-    /// Apply edit ops (JSON array of EditOp). `from_pristine` replaces the
-    /// whole op list and replays it from the unedited body (the undo path);
-    /// otherwise the ops append to the current state. Returns the rebuilt
-    /// map payload JSON. On error the previous state is kept.
+    /// The current effective body, zlib-compressed with an 8-byte LE raw
+    /// length prefix. The worker keeps this in JS memory (outside the 4GB
+    /// wasm heap) as the undo baseline and hands it back to
+    /// apply_edits_from_pristine.
+    pub fn compress_pristine(&self) -> Result<Vec<u8>, JsError> {
+        let body = sav_core::editor::effective_body(self.store()?);
+        let (compressed, raw_len) = sav_core::editor::session::compress_body(body);
+        let mut out = Vec::with_capacity(compressed.len() + 8);
+        out.extend_from_slice(&(raw_len as u64).to_le_bytes());
+        out.extend_from_slice(&compressed);
+        Ok(out)
+    }
+
+    /// Apply edit ops (JSON array of EditOp) incrementally to the current
+    /// state and return the rebuilt map payload JSON. On failure the session
+    /// may be left without a usable store (memory headroom on huge saves is
+    /// why the old state can't be kept around) -- the worker then restores
+    /// it via apply_edits_from_pristine with the committed op list.
     /// `on_progress(phase, current, total)` reuses the load progress phases.
     pub fn apply_edits(
         &mut self,
         ops_json: &str,
-        from_pristine: bool,
         on_progress: &js_sys::Function,
     ) -> Result<Vec<u8>, JsError> {
         let call = |phase: u8, current: u64, total: u64| {
@@ -157,58 +206,85 @@ impl SaveSession {
                 &JsValue::from_f64(total as f64),
             );
         };
+        use sav_core::editor::session;
+
         let new_ops = sav_core::editor::ops::parse_ops_json(ops_json)
             .map_err(|e| JsError::new(&e.msg))?;
+        if new_ops.is_empty() {
+            return Err(JsError::new("No edit ops given"));
+        }
         let tables = ClassTables::embedded();
 
-        if self.pristine_body.is_none() {
-            self.pristine_body = Some(sav_core::editor::effective_body(&self.store).to_vec());
-        }
+        // Dry-run the first op's plan while the session is still intact:
+        // semantic refusals (uneditable object, unknown name, chained belt)
+        // surface here as clean errors with nothing torn down. Only after
+        // this do we start consuming state.
+        drop(sav_core::editor::apply::plan_op(self.store()?, &new_ops[0])
+            .map_err(|e| JsError::new(&e.msg))?);
 
-        let new_store = if from_pristine {
-            let pristine = self.pristine_body.as_ref().unwrap();
-            let mut progress = |current: u64, total: u64| call(1, current, total);
-            sav_core::editor::session::rebuild(
-                pristine,
-                &self.store.file_header,
-                &self.store.info,
-                &tables,
-                &new_ops,
-                Some(&mut progress),
-            )
-            .map_err(|e| JsError::new(&e.msg))?
-        } else {
-            let mut store: Option<SaveStore> = None;
-            let total = new_ops.len() as u64;
-            for (i, op) in new_ops.iter().enumerate() {
-                let base: &SaveStore = store.as_ref().unwrap_or(&self.store);
-                store = Some(
-                    sav_core::editor::session::step(base, op, &tables)
-                        .map_err(|e| JsError::new(&e.msg))?,
-                );
-                call(1, i as u64 + 1, total);
-            }
-            match store {
-                Some(s) => s,
-                None => return Err(JsError::new("No edit ops given")),
-            }
+        // Free the index and stale payload up front -- everything below is
+        // memory-critical on 600k-object saves.
+        self.index = None;
+        self.payload_json = Vec::new();
+        let arc = self.store.take().ok_or_else(|| JsError::new(SESSION_LOST))?;
+        let mut store = Arc::try_unwrap(arc).map_err(|_| JsError::new("save store is shared"))?;
+        let total = new_ops.len() as u64;
+        for (i, op) in new_ops.iter().enumerate() {
+            store = session::step_owned(store, op, &tables).map_err(|e| JsError::new(&e.msg))?;
+            call(1, i as u64 + 1, total);
+        }
+        self.finish_edit(store, &call)
+    }
+
+    /// Replace the whole edit state: drop the current save, decompress the
+    /// worker-held pristine blob (8-byte LE raw length + zlib, from
+    /// compress_pristine), replay `ops_json` over it, and return the rebuilt
+    /// payload. This is both the undo path and the recovery path after a
+    /// failed incremental edit.
+    pub fn apply_edits_from_pristine(
+        &mut self,
+        ops_json: &str,
+        pristine: &[u8],
+        on_progress: &js_sys::Function,
+    ) -> Result<Vec<u8>, JsError> {
+        let call = |phase: u8, current: u64, total: u64| {
+            let this = JsValue::NULL;
+            let _ = on_progress.call3(
+                &this,
+                &JsValue::from_f64(phase as f64),
+                &JsValue::from_f64(current as f64),
+                &JsValue::from_f64(total as f64),
+            );
         };
+        use sav_core::editor::session;
 
-        // Swap in the new state, then rebuild index + payload. Drop the old
-        // store first so peak memory stays bounded (wasm memory never
-        // shrinks; the Arc here is the only holder).
-        self.store = Arc::new(new_store);
-        let mut build_progress = |current: u64, total: u64| call(2, current, total);
-        let (payload_json, index) =
-            mapdata::build_all_json(&self.store, Some(&mut build_progress))
-                .map_err(|e| JsError::new(&e))?;
-        self.index = index;
-        if from_pristine {
-            self.ops = new_ops;
-        } else {
-            self.ops.extend(new_ops);
+        let new_ops = sav_core::editor::ops::parse_ops_json(ops_json)
+            .map_err(|e| JsError::new(&e.msg))?;
+        if pristine.len() < 8 {
+            return Err(JsError::new("Bad pristine blob"));
         }
-        Ok(payload_json)
+        let raw_len = u64::from_le_bytes(pristine[0..8].try_into().unwrap()) as usize;
+        let tables = ClassTables::embedded();
+
+        // Free everything before inflating the pristine body (the session's
+        // own file_header/info copies survive independently of the store).
+        self.index = None;
+        self.payload_json = Vec::new();
+        self.store = None;
+
+        let body = session::decompress_body(&pristine[8..], raw_len)
+            .map_err(|e| JsError::new(&e.msg))?;
+        let mut progress = |current: u64, total: u64| call(1, current, total);
+        let store = session::rebuild(
+            body,
+            &self.file_header,
+            &self.info,
+            &tables,
+            &new_ops,
+            Some(&mut progress),
+        )
+        .map_err(|e| JsError::new(&e.msg))?;
+        self.finish_edit(store, &call)
     }
 
     /// The full map payload as JSON bytes (returned as a Uint8Array; decode +
@@ -217,39 +293,46 @@ impl SaveSession {
         std::mem::take(&mut self.payload_json)
     }
 
-    pub fn describe_instance(&self, name: &str) -> String {
-        mapdata::describe::describe_instance(&self.store, &self.index, name).to_string()
+    /// False after a failed edit left the session without usable state --
+    /// the worker then signals the client to recover by reloading.
+    pub fn is_healthy(&self) -> bool {
+        self.store.is_some() && self.index.is_some()
     }
 
-    pub fn find_item(&self, item: &str) -> String {
-        mapdata::queries::find_item_locations(&self.store, &self.index, item).to_string()
+    pub fn describe_instance(&self, name: &str) -> Result<String, JsError> {
+        Ok(mapdata::describe::describe_instance(self.store()?, self.index()?, name).to_string())
     }
 
-    pub fn building_info(&self, types: Vec<String>) -> String {
-        mapdata::queries::collect_building_info(&self.store, &self.index, &types).to_string()
+    pub fn find_item(&self, item: &str) -> Result<String, JsError> {
+        Ok(mapdata::queries::find_item_locations(self.store()?, self.index()?, item).to_string())
     }
 
-    pub fn vehicle_info(&self, types: Vec<String>) -> String {
-        mapdata::queries::collect_vehicle_info(&self.store, &self.index, &types).to_string()
+    pub fn building_info(&self, types: Vec<String>) -> Result<String, JsError> {
+        Ok(mapdata::queries::collect_building_info(self.store()?, self.index()?, &types).to_string())
     }
 
-    pub fn train_info(&self) -> String {
-        mapdata::queries::collect_train_info(&self.store, &self.index).to_string()
+    pub fn vehicle_info(&self, types: Vec<String>) -> Result<String, JsError> {
+        Ok(mapdata::queries::collect_vehicle_info(self.store()?, self.index()?, &types).to_string())
+    }
+
+    pub fn train_info(&self) -> Result<String, JsError> {
+        Ok(mapdata::queries::collect_train_info(self.store()?, self.index()?).to_string())
     }
 
     /// Serialize the current save body back into a downloadable .sav
     /// (retained header + re-compressed chunks). Body-identical to the
     /// original file until edits are applied.
-    pub fn export_sav(&self) -> Vec<u8> {
-        sav_core::editor::export_sav(
-            &self.store.file_header,
-            sav_core::editor::effective_body(&self.store),
-        )
+    pub fn export_sav(&self) -> Result<Vec<u8>, JsError> {
+        let store = self.store()?;
+        Ok(sav_core::editor::export_sav(
+            &store.file_header,
+            sav_core::editor::effective_body(store),
+        ))
     }
 
-    pub fn selection_inventory(&self, names: Vec<String>) -> String {
+    pub fn selection_inventory(&self, names: Vec<String>) -> Result<String, JsError> {
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        mapdata::queries::aggregate_selection_inventory(&self.store, &self.index, &names)
-            .to_string()
+        Ok(mapdata::queries::aggregate_selection_inventory(self.store()?, self.index()?, &names)
+            .to_string())
     }
 }

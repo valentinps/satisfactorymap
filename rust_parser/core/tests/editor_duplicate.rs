@@ -238,7 +238,7 @@ fn duplicate_replay_is_deterministic() {
         EditOp::DuplicateActors { names: vec![name], delta: [2000.0, 0.0, 0.0], rotate_yaw_deg: 0.0, pivot: None, seed: 100 },
     ];
     let pristine = effective_body(&store).to_vec();
-    let a = session::rebuild(&pristine, &store.file_header, &store.info, &tables, &ops, None).unwrap();
-    let b = session::rebuild(&pristine, &store.file_header, &store.info, &tables, &ops, None).unwrap();
+    let a = session::rebuild(pristine.clone(), &store.file_header, &store.info, &tables, &ops, None).unwrap();
+    let b = session::rebuild(pristine.clone(), &store.file_header, &store.info, &tables, &ops, None).unwrap();
     assert_eq!(a.data, b.data);
 }

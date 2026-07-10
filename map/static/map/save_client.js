@@ -31,7 +31,9 @@ const SaveClient = (() => {
          if (msg.ok) {
             entry.resolve(msg.result);
          } else {
-            entry.reject(new Error(msg.error.message));
+            const error = new Error(msg.error.message);
+            error.sessionLost = !!msg.error.sessionLost;
+            entry.reject(error);
          }
       };
       // A crashed worker (wasm panic / OOM) leaves indeterminate state:
@@ -112,6 +114,22 @@ const SaveClient = (() => {
          if (worker) {
             worker.postMessage({ op: "dispose" });
          }
+      },
+      // Terminate the worker and start over with a fresh wasm instance --
+      // used to recover from a lost session (wasm memory never shrinks and
+      // can't be trusted after a trap). Pending requests are rejected.
+      reset() {
+         if (!worker) {
+            return;
+         }
+         const error = new Error("Save worker was reset");
+         for (const entry of pending.values()) {
+            entry.reject(error);
+         }
+         pending.clear();
+         activeProgress = null;
+         worker.terminate();
+         worker = null;
       },
    };
 })();

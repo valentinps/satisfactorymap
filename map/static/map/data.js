@@ -117,24 +117,31 @@
     showGameSettings(payload.gameSettings);
   }
 
-  // Editor.js drives the same progress/status UI during applyEdits.
+  // Editor.js drives the same progress/status UI during applyEdits, and
+  // reloads the original file to recover from a lost worker session.
   window.SaveLoadFlow = {
     applyPayload: applyPayload,
     showProgress: showProgress,
     hideProgress: hideProgress,
     setStatus: setStatus,
+    canReload: function() { return currentFile !== null; },
+    reloadCurrentFile: function() { return loadLocalFile(currentFile); },
   };
+
+  // The last successfully picked File, kept so the editor can recover from
+  // a lost worker session (out of memory on huge saves) by re-reading it.
+  var currentFile = null;
 
   function loadLocalFile(file) {
     if (!file) {
-      return;
+      return Promise.resolve();
     }
     if (!file.name.endsWith(".sav")) {
       setStatus("Only .sav save files can be loaded.");
-      return;
+      return Promise.resolve();
     }
     if (loadInFlight) {
-      return; // A parse is already running; don't queue a second one.
+      return Promise.resolve(); // A parse is already running; don't queue a second one.
     }
     loadInFlight = true;
     uploadDropZone.classList.add("uploading");
@@ -142,7 +149,7 @@
     var pinnedSelection = Tooltip.getPinnedSelection();
     showProgress("Reading file", 0);
 
-    file.arrayBuffer()
+    return file.arrayBuffer()
       .then(function(buffer) {
         return SaveClient.loadSave(buffer, function(phase, current, total) {
           var percent = total > 0 ? (current / total) * 100 : 0;
@@ -156,6 +163,7 @@
         // Stable per-file key: detail features guard on this, and the
         // pinned-tooltip restore survives re-loading the same file.
         MapApp.currentFile = "local:" + file.name + ":" + file.size + ":" + file.lastModified;
+        currentFile = file;
         EditorTool.onSaveLoaded(file.name);
         applyPayload(payload);
         if (pinnedSelection) {
@@ -168,6 +176,7 @@
         loadInFlight = false;
         resetUploadZone();
         setStatus("Failed to load save: " + (error && error.message || error));
+        throw error;
       });
   }
 
