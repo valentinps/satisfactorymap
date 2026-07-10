@@ -109,7 +109,7 @@ it use a hardcoded glyph instead (see filters.js).
   "displayName": "Perpendicular Wall Conveyor",
   "description": "...",
   "dimensions": { "Width": 800.0, "Height": 400.0, "AngularDepth": 0.0 },
-  "clearance": [{ "min": {...}, "max": {...}, "rotated": false }],
+  "clearance": [{ "min": {...}, "max": {...} }],
   "adaptiveLength": {},
   "icon": "/FactoryGame/Buildable/Factory/..."
 }
@@ -176,13 +176,18 @@ then `clearance`, then `adaptiveLength` for whichever is non-empty.
    centimeters. Present on most buildables (even ones that also have
    `dimensions`), and is often the *only* size info for pieces that don't
    expose named width/depth/height (beams, corner pieces, angled buildables).
-   - `rotated: true` means the box came with a `RelativeTransform` rotation
-     in the source data -- **the box's X/Y/Z axes do not necessarily line up
-     with width/depth/height in that case**. The extractor deliberately does
-     NOT try to remap axes here; consume the box as "this is the physical
-     footprint around the origin" rather than "X is width". Example:
-     `Build_Beam_C` has `rotated: true` and its box's short axis (Z, ~0-400)
-     is actually the beam's *length* direction, not height.
+   - A box may carry a `rotation` field (`{x, y, z, w}` quaternion): the
+     box came with a `RelativeTransform` rotation in the source data, so
+     **the box's X/Y/Z axes do not line up with the actor's axes until the
+     rotation is applied**. Both Barriers' boxes are yawed 90 degrees (their
+     400cm X span actually runs along the actor's Y axis); `Build_Beam_C`'s
+     box is rotated so its Z span (~0-400) is the beam's *length* direction,
+     not height. The extractor deliberately does NOT remap axes itself --
+     consumers apply the quaternion (see `box_xy_ranges` in
+     `rust_parser/core/src/mapdata/geometry.rs`). Boxes with a
+     `RelativeTransform` *translation* are still stored relative to their own
+     center: the translation is not captured, since footprints render
+     centered on the actor anyway.
    - Some buildables have more than one clearance box (list, not single dict)
      if the game defines multiple soft-clearance volumes for that piece.
    - Some buildables have `clearance: []` (empty) -- no clearance data in

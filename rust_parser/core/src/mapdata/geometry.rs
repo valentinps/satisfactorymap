@@ -233,13 +233,58 @@ fn box_axis(boxes: &[Value], end: &str, axis: &str) -> impl Iterator<Item = f64>
         .into_iter()
 }
 
+/// Actor-frame ((minX, maxX), (minY, maxY)) of one clearance box, in cm. A
+/// box may carry a RelativeTransform rotation (buildings.json "rotation"):
+/// both Barriers' boxes are yawed 90 degrees, so reading the raw axes renders
+/// them sideways. Pure-yaw rotations rotate the box's XY corners into the
+/// actor frame; rotations with roll/pitch keep the raw axes -- those are the
+/// Beams (whose adaptive-length path has its own axis handling) and the
+/// Particle Accelerator's tilted ring, where a rotated 3D AABB would only
+/// inflate the footprint.
+fn box_xy_ranges(b: &Value) -> ((f64, f64), (f64, f64)) {
+    let axis = |end: &str, ax: &str| b[end][ax].as_f64().expect("clearance box axis");
+    let (min_x, max_x) = (axis("min", "x"), axis("max", "x"));
+    let (min_y, max_y) = (axis("min", "y"), axis("max", "y"));
+    if let Some(rot) = b.get("rotation") {
+        let q = |ax: &str| rot[ax].as_f64().expect("clearance rotation axis");
+        let (qx, qy, qz, qw) = (q("x"), q("y"), q("z"), q("w"));
+        if qx * qx + qy * qy <= TILT_THRESHOLD {
+            let yaw = yaw_from_quaternion([qx, qy, qz, qw]);
+            let (sin, cos) = (yaw.sin(), yaw.cos());
+            let (mut rx0, mut rx1) = (f64::INFINITY, f64::NEG_INFINITY);
+            let (mut ry0, mut ry1) = (f64::INFINITY, f64::NEG_INFINITY);
+            for &(x, y) in &[(min_x, min_y), (min_x, max_y), (max_x, min_y), (max_x, max_y)] {
+                let px = x * cos - y * sin;
+                let py = x * sin + y * cos;
+                if px < rx0 { rx0 = px }
+                if px > rx1 { rx1 = px }
+                if py < ry0 { ry0 = py }
+                if py > ry1 { ry1 = py }
+            }
+            return ((rx0, rx1), (ry0, ry1));
+        }
+    }
+    ((min_x, max_x), (min_y, max_y))
+}
+
+/// Union of every box's actor-frame XY ranges: ((minX,maxX),(minY,maxY)).
+fn boxes_xy_union(boxes: &[Value]) -> ((f64, f64), (f64, f64)) {
+    let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
+    for b in boxes {
+        let ((bx0, bx1), (by0, by1)) = box_xy_ranges(b);
+        if bx0 < min_x { min_x = bx0 }
+        if bx1 > max_x { max_x = bx1 }
+        if by0 < min_y { min_y = by0 }
+        if by1 > max_y { max_y = by1 }
+    }
+    ((min_x, max_x), (min_y, max_y))
+}
+
 /// sav_map_data._footprintMetersFromBuildingEntry.
 fn footprint_meters_from_building_entry(entry: &Value) -> Option<(f64, f64)> {
     if let Some(boxes) = clearance_boxes(entry) {
-        let min_x = fold_min(box_axis(boxes, "min", "x"));
-        let max_x = fold_max(box_axis(boxes, "max", "x"));
-        let min_y = fold_min(box_axis(boxes, "min", "y"));
-        let max_y = fold_max(box_axis(boxes, "max", "y"));
+        let ((min_x, max_x), (min_y, max_y)) = boxes_xy_union(boxes);
         let (mut width_cm, mut depth_cm) = (max_x - min_x, max_y - min_y);
         // Stale-clearance correction (see the BigGarageDoor note in Python):
         // bump the long axis up to dimensions.Width when that's bigger.
@@ -268,10 +313,7 @@ fn footprint_meters_from_building_entry(entry: &Value) -> Option<(f64, f64)> {
 fn footprint_half_extents_meters(class_name: &str) -> Option<(f64, f64, f64)> {
     let entry = gamedata::get().buildings.get(class_name)?;
     if let Some(boxes) = clearance_boxes(entry) {
-        let min_x = fold_min(box_axis(boxes, "min", "x"));
-        let max_x = fold_max(box_axis(boxes, "max", "x"));
-        let min_y = fold_min(box_axis(boxes, "min", "y"));
-        let max_y = fold_max(box_axis(boxes, "max", "y"));
+        let ((min_x, max_x), (min_y, max_y)) = boxes_xy_union(boxes);
         let min_z = fold_min(box_axis(boxes, "min", "z"));
         let max_z = fold_max(box_axis(boxes, "max", "z"));
         return Some((
@@ -427,6 +469,22 @@ mod tests {
         let pts = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.5, 0.5), (1.0, 0.0)];
         let hull = convex_hull(&pts);
         assert_eq!(hull, vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]);
+    }
+
+    #[test]
+    fn barrier_clearance_yaw_is_applied() {
+        // Both Barriers' single clearance box spans x +-200cm, y +-30cm but
+        // carries a 90-degree yaw RelativeTransform: in the actor's frame the
+        // 4m side runs along Y. Ignoring the yaw rendered every barrier
+        // sideways on the map.
+        let fp = footprint_pixels("/Game/FactoryGame/Buildable/Building/Barrier/Build_Barrier_Low_01.Build_Barrier_Low_01_C")
+            .expect("barrier footprint");
+        let (half_width_px, half_depth_px) = (fp[0], fp[1]);
+        // ~0.3m across, ~2.0m along (half extents).
+        assert!((half_width_px - meters_to_pixel_length(0.3)).abs() < 0.01,
+                "half width {half_width_px}");
+        assert!((half_depth_px - meters_to_pixel_length(2.0)).abs() < 0.01,
+                "half depth {half_depth_px}");
     }
 
     #[test]

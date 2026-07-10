@@ -123,13 +123,17 @@ pub fn collect_game_settings(scan: &SaveScan) -> Value {
     for &slot in &scan.game_state_objects {
         // First match, same as the old early-returning scan.
         let properties = &scan.object(slot).properties;
-        let power = match find_prop(properties, data, b"mEnergyCostMultiplier") {
+        // World-creation cost multipliers; each is absent (-> null) when the
+        // world was created with the default 1x.
+        let multiplier = |name: &[u8]| match find_prop(properties, data, name) {
             Some(PropertyValue::Float(f)) => jnum(*f as f64),
             Some(PropertyValue::Double(f)) => jnum(*f),
             _ => Value::Null,
         };
         return json!({
-            "powerCostMultiplier": power,
+            "resourceCostMultiplier": multiplier(b"mPartsCostMultiplier"),
+            "powerCostMultiplier": multiplier(b"mEnergyCostMultiplier"),
+            "spaceElevatorCostMultiplier": multiplier(b"mSpacePartsCostMultiplier"),
             "nodePuritySettings":
                 humanize_enum_value(find_prop(properties, data, b"mNodePuritySettings"), data),
             "nodeRandomization":

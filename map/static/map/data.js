@@ -39,21 +39,27 @@
     uploadDropText.textContent = UPLOAD_DROP_DEFAULT_TEXT;
   }
 
-  // Game-mode settings (Power Cost Multiplier, Purity Modifier, Node
+  // Game-mode settings (cost multipliers, Purity Modifier, Node
   // Randomization) chosen at world creation -- see
-  // sav_map_data.collectGameSettings's Rust port. These can silently change
+  // collect_game_settings in the Rust parser. These can silently change
   // what every resource node on the map actually is/yields relative to a
   // vanilla world, so they're shown unconditionally rather than only when
   // non-default, in case the displayed value itself is what someone's
-  // trying to confirm.
+  // trying to confirm. (A multiplier left at the default 1x is absent from
+  // the save entirely -- null here -- so its row is dropped.)
   function showGameSettings(gameSettings) {
     gameSettingsPanel.innerHTML = "";
     if (!gameSettings || Object.keys(gameSettings).length === 0) {
       gameSettingsPanel.style.display = "none";
       return;
     }
+    function multiplier(value) {
+      return value !== undefined && value !== null ? value + "x" : null;
+    }
     var rows = [
-      ["Power cost", gameSettings.powerCostMultiplier !== undefined && gameSettings.powerCostMultiplier !== null ? gameSettings.powerCostMultiplier + "x" : null],
+      ["Resource cost", multiplier(gameSettings.resourceCostMultiplier)],
+      ["Power cost", multiplier(gameSettings.powerCostMultiplier)],
+      ["Space Elevator cost", multiplier(gameSettings.spaceElevatorCostMultiplier)],
       ["Node purity", gameSettings.nodePuritySettings],
       ["Node randomization", gameSettings.nodeRandomization],
     ];

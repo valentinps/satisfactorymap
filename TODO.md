@@ -8,6 +8,4 @@ Buildings icons: add icons of buildings instead of colored dots in the filter li
 
 Stacking belt issue
 
-Fix Barrier 90 degrees angle
-
-Investigate "pin" lag
+Stackable poles no tooltip

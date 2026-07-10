@@ -99,6 +99,9 @@ CLEARANCE_BOX_RE = re.compile(
    r"ClearanceBox=\(Min=\(X=([\-\d.]+),Y=([\-\d.]+),Z=([\-\d.]+)\),"
    r"Max=\(X=([\-\d.]+),Y=([\-\d.]+),Z=([\-\d.]+)\)"
 )
+CLEARANCE_ROTATION_RE = re.compile(
+   r"RelativeTransform=\(Rotation=\(X=([\-\d.]+),Y=([\-\d.]+),Z=([\-\d.]+),W=([\-\d.]+)\)"
+)
 BUILD_CATEGORY_PATH_RE = re.compile(r"BuildCategories/(Sub_\w+)/(SC_\w+)\.")
 GRID_DIMENSIONS_RE = re.compile(r"\(X=([\-\d.]+),Y=([\-\d.]+),Z=([\-\d.]+)\)")
 # The three Blueprint Designer tiers are the only classes in Docs.json with an
@@ -146,20 +149,31 @@ def parseItemAmountList(raw: str) -> list:
 
 
 def parseClearanceBoxes(raw: str) -> list:
-   # Parses mClearanceData into a list of axis-aligned boxes as given by the
-   # game (no attempt to remap axes to width/depth/height -- some buildables
-   # carry a RelativeTransform rotation, which would make that remapping wrong).
+   # Parses mClearanceData into a list of boxes as given by the game (no
+   # attempt to remap axes to width/depth/height). A box may carry a
+   # RelativeTransform rotation quaternion -- e.g. both Barriers' boxes are
+   # yawed 90 degrees relative to the actor -- captured per box as "rotation"
+   # so footprint code can put the box back into the actor's frame.
+   # (Translations also exist but are not captured: footprints are rendered
+   # centered on the actor, so an off-center box can't be represented anyway.)
    if not raw:
       return []
-   rotated = "Rotation=" in raw
-   return [
-      {
+   boxes = []
+   boxMatches = list(CLEARANCE_BOX_RE.finditer(raw))
+   for i, boxMatch in enumerate(boxMatches):
+      minX, minY, minZ, maxX, maxY, maxZ = boxMatch.groups()
+      box = {
          "min": {"x": float(minX), "y": float(minY), "z": float(minZ)},
          "max": {"x": float(maxX), "y": float(maxY), "z": float(maxZ)},
-         "rotated": rotated,
       }
-      for minX, minY, minZ, maxX, maxY, maxZ in CLEARANCE_BOX_RE.findall(raw)
-   ]
+      # The box's own transform sits between it and the next box entry.
+      segmentEnd = boxMatches[i + 1].start() if i + 1 < len(boxMatches) else len(raw)
+      rotation = CLEARANCE_ROTATION_RE.search(raw, boxMatch.end(), segmentEnd)
+      if rotation:
+         qx, qy, qz, qw = (float(v) for v in rotation.groups())
+         box["rotation"] = {"x": qx, "y": qy, "z": qz, "w": qw}
+      boxes.append(box)
+   return boxes
 
 
 def extractDimensions(entry: dict) -> dict:
