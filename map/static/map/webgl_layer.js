@@ -137,6 +137,11 @@
     "uniform vec2 u_scale;",    // screen px per map px; y negative (flipped axis)
     "uniform vec2 u_viewport;", // CSS px
     "uniform vec2 u_altRange;", // meters, +/-ALT_SENTINEL when unfiltered
+    // (zMin, 2/spread) mapping altitude onto NDC z. Rects and lines write
+    // their altitude into the depth buffer (test ALWAYS -- draw order stays
+    // pure painter's algorithm); the outline pass then depth-tests GEQUAL so
+    // a lower building's border never shows through anything drawn above it.
+    "uniform vec2 u_zRange;",
   ].join("\n");
 
   // screen -> clip. The 0.5px half-texel offset business isn't needed here:
@@ -179,6 +184,7 @@
     "layout(location=6) in float a_flags;",  // bit0 noClamp, bit1 unitX>0, bit2 unitY>0
     COMMON_UNIFORMS,
     "uniform sampler2D u_visibility;",
+    "uniform float u_outlinePass;", // 0: fills; 1: band-only re-draw (see _renderFrame)
     "flat out vec4 v_color;",
     // Outline plumbing (see RECT_FS): the fragment's position and the rect's
     // half extents in the rect's OWN frame, screen px. Interpolating the
@@ -197,6 +203,7 @@
     "  int flags = int(a_flags + 0.5);",
     "  v_localPx = vec2(0.0);",
     "  v_halfPx = vec2(" + OUTLINE_OFF + ");",
+    "  bool outlined = false;",
     "  if ((flags & 1) == 0) {",
     // 2D parity (map.js SMALL_RECT_SCREEN_PX / the 0.75px floor): a rect
     // under 4 screen px on both axes draws as an axis-aligned dot floored
@@ -209,33 +216,54 @@
     "    if (max(halfScreen.x, halfScreen.y) * 2.0 < " + SMALL_RECT_SCREEN_PX.toFixed(1) + ") {",
     "      corner = unit * (max(halfScreen, vec2(" + MIN_HALF_PX + ")) / absScale);",
     "    } else if (min(halfScreen.x, halfScreen.y) * 2.0 >= " + RECT_OUTLINE_MIN_PX.toFixed(1) + ") {",
+    "      outlined = true;",
     "      v_localPx = unit * halfScreen;",
     "      v_halfPx = halfScreen;",
     "    }",
     "  }",
+    // The outline pass collapses band-less quads (small/tilted/too-zoomed-
+    // out) to zero area up front -- they cost no fragments at all.
+    "  if (u_outlinePass > 0.5 && !outlined) {",
+    "    gl_Position = CULLED; v_color = vec4(0.0); return;",
+    "  }",
     "  gl_Position = project(u_anchorScreen + (a_pos.xy + corner - u_anchorMap) * u_scale);",
+    "  gl_Position.z = clamp((a_pos.z - u_zRange.x) * u_zRange.y - 1.0, -1.0, 1.0);",
     "  v_color = vec4(a_color.rgb, " + RECT_ALPHA + ");",
     "}",
   ].join("\n");
 
-  // Rect fragments darken in a ~1px band along each box edge -- the same
-  // "slight outline" the 2D paths stroke (map.js _outlineColor: rgb * 0.55
-  // at 0.85 alpha), so grid-adjacent same-color buildings read as individual
-  // tiles instead of one merged slab. Culled/small/tilted quads arrive with
-  // v_halfPx = OUTLINE_OFF, which keeps the edge distance too big to fire.
-  // highp (not the usual mediump): v_localPx reaches thousands of px at high
-  // zoom, where fp16 ulp (~4 at 4096) would visibly wobble the border.
+  // Fill fragments are the plain flat color; with u_outlinePass set the
+  // same program instead draws ONLY a ~1px darkened band along each box
+  // edge -- the same "slight outline" the 2D paths stroke (map.js
+  // _outlineColor), so grid-adjacent same-color buildings read as
+  // individual tiles instead of one merged slab. The band runs as a
+  // separate depth-tested pass AFTER everything else (see _renderFrame):
+  // drawn inline with the fills, a lower floor's border stayed visible
+  // through the translucent fills of every floor above it, turning
+  // multi-floor bases into a mess of bleed-through grids. highp (not the
+  // usual mediump): v_localPx reaches thousands of px at high zoom, where
+  // fp16 ulp (~4 at 4096) would visibly wobble the border.
   var RECT_FS = [
     "#version 300 es",
     "precision highp float;",
     "flat in vec4 v_color;",
     "in vec2 v_localPx;",
     "flat in vec2 v_halfPx;",
+    "uniform float u_outlinePass;",
     "out vec4 outColor;",
     "void main() {",
-    "  vec2 edge = v_halfPx - abs(v_localPx);",       // px to the two nearest edges
-    "  float t = 1.0 - smoothstep(0.5, 1.5, min(edge.x, edge.y));",
-    "  outColor = mix(v_color, vec4(v_color.rgb * 0.55, 0.85), t);",
+    "  if (u_outlinePass > 0.5) {",
+    "    vec2 edge = v_halfPx - abs(v_localPx);",     // px to the two nearest edges
+    "    float t = 1.0 - smoothstep(0.5, 1.5, min(edge.x, edge.y));",
+    // Strong stroke on purpose: the depth test already guarantees a band
+    // only ever draws on the TOPMOST building, so it can't stack or bleed
+    // -- and a building drawn over a foundation needs the extra contrast
+    // against its own fill-over-fill background to read at all.
+    "    if (t <= 0.004) { discard; }",               // interior: keep the fill as-is
+    "    outColor = vec4(v_color.rgb * 0.65, 0.7 * t);",
+    "  } else {",
+    "    outColor = v_color;",
+    "  }",
     "}",
   ].join("\n");
 
@@ -279,6 +307,9 @@
     "              + dir * (t * 2.0 - 1.0) * halfWidthPx",
     "              + n * (side * halfWidthPx);",
     "  gl_Position = project(screen);",
+    // Depth = the polyline's top z (its draw-order anchor), so the outline
+    // pass can't paint a floor's border across the belts sitting on it.
+    "  gl_Position.z = clamp((a_zrange.y - u_zRange.x) * u_zRange.y - 1.0, -1.0, 1.0);",
     "  v_color = vec4(a_color.rgb, 1.0);",
     "}",
   ].join("\n");
@@ -353,7 +384,8 @@
     // is a spec'd no-op, so programs can share the common-uniform setter.
     var uniforms = {};
     var names = ["u_anchorMap", "u_anchorScreen", "u_scale", "u_viewport",
-                 "u_altRange", "u_visibility", "u_color", "u_halfWidthPx", "u_radiusPx"];
+                 "u_altRange", "u_zRange", "u_visibility", "u_color", "u_radiusPx",
+                 "u_outlinePass"];
     for (var i = 0; i < names.length; i++) {
       uniforms[names[i]] = gl.getUniformLocation(prog, names[i]);
     }
@@ -584,7 +616,11 @@
           // semantics as the 2D canvas this replaces.
           premultipliedAlpha: false,
           antialias: wantAA,
-          depth: false,
+          // Depth carries each primitive's ALTITUDE (see u_zRange): draw
+          // order stays pure painter's algorithm (test ALWAYS), but the
+          // deferred outline pass tests GEQUAL against it so a lower
+          // building's border never shows through buildings above.
+          depth: true,
           stencil: false,
           preserveDrawingBuffer: false,
           powerPreference: "high-performance",
@@ -624,7 +660,11 @@
       // destination-alpha math right so the transparent-cleared buffer
       // composites correctly over the page underneath.
       gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-      gl.disable(gl.DEPTH_TEST);
+      // DEPTH_TEST stays enabled so depth WRITES happen; ALWAYS keeps the
+      // painter's-order passes unaffected by it (see the depth note above).
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.ALWAYS);
+      gl.clearDepth(0); // "nothing drawn" = lowest altitude
       gl.disable(gl.CULL_FACE);
       gl.clearColor(0, 0, 0, 0);
       return true;
@@ -797,6 +837,7 @@
         this._sortedBuckets = this.buckets.slice().sort(function(a, b) { return (a.drawPriority || 0) - (b.drawPriority || 0); });
       }
       var zr = this._computeZRange();
+      this._zRange = zr; // per-frame u_zRange (altitude -> depth) reads this
       this._buildRectStream(zr);
       this._buildLineStream(zr);
       this._buildCircleStream();
@@ -841,7 +882,8 @@
       if (minZ > maxZ) {
         minZ = maxZ = 0;
       }
-      return { minZ: minZ, zScale: maxZ > minZ ? (Z_SORT_BINS - 1) / (maxZ - minZ) : 0 };
+      var spread = maxZ - minZ;
+      return { minZ: minZ, spread: spread, zScale: spread > 0 ? (Z_SORT_BINS - 1) / spread : 0 };
     },
 
     // One merged instance stream for ALL rect buckets, pre-sorted by
@@ -887,6 +929,19 @@
       // verts becomes floor((nv-2)/2) quads plus one triangle if odd.
       function instancesFor(verts) {
         return verts ? Math.max(1, Math.ceil((verts.length / 2 - 2) / 2)) : 1;
+      }
+
+      // Largest min-axis footprint (map px) across rect buckets: lets
+      // _renderFrame skip the outline pass entirely when no bucket can
+      // reach RECT_OUTLINE_MIN_PX at the current scale (every zoomed-out
+      // view), so the second stream draw costs nothing there.
+      var maxMinHalf = 0;
+      for (b = 0; b < rectBuckets.length; b++) {
+        var fpB = rectBuckets[b].footprintPixels;
+        if (fpB) {
+          var mm = Math.min(fpB[0], fpB[1]);
+          if (mm > maxMinHalf) maxMinHalf = mm;
+        }
       }
 
       // Pass 1: count instances (the z spread comes shared from
@@ -1063,6 +1118,7 @@
         vao: vao,
         count: total,
         binStart: binStart,
+        maxMinHalf: maxMinHalf,
         buckets: rectBuckets,
         slotBucket: slotBucket,
         slotPoint: slotPoint,
@@ -1505,6 +1561,7 @@
       gl.uniform2f(pu.u.u_scale, fr.scaleX, fr.scaleY);
       gl.uniform2f(pu.u.u_viewport, fr.viewW, fr.viewH);
       gl.uniform2f(pu.u.u_altRange, fr.altMin, fr.altMax);
+      gl.uniform2f(pu.u.u_zRange, fr.zMin, fr.zToNdc);
     },
 
     _renderFrame: function() {
@@ -1553,19 +1610,22 @@
         viewH: size.y,
         altMin: ar && isFinite(ar.min) ? ar.min : -ALT_SENTINEL,
         altMax: ar && isFinite(ar.max) ? ar.max : ALT_SENTINEL,
+        zMin: this._zRange ? this._zRange.minZ : 0,
+        zToNdc: this._zRange && this._zRange.spread > 0 ? 2 / this._zRange.spread : 0,
       };
 
       this._updateVisibilityTexture();
 
       gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
-      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
       if (!this._sortedBuckets) {
         this._sortedBuckets = this.buckets.slice().sort(function(a, b) { return (a.drawPriority || 0) - (b.drawPriority || 0); });
       }
 
       // 1) Circles first: terrain markers (resource nodes/wells) sit under
-      // the built world.
+      // the built world. They don't participate in altitude depth.
+      gl.depthMask(false);
       var circleRadius = Math.min(3, 1 + Math.max(0, zoom) * 0.4);
       var progs = this._programs;
       if (this._circles) {
@@ -1596,12 +1656,14 @@
       // cluster into few bins, so this stays a handful of draws per frame.
       var rect = this._rect, line = this._line;
       var rp = progs.rect, lp = progs.line;
+      gl.depthMask(true); // fills and lines record their altitude for the outline pass
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this._visTexture);
       if (rect && rect.count > 0) {
         gl.useProgram(rp.prog);
         this._setCommonUniforms(rp, fr);
         gl.uniform1i(rp.u.u_visibility, 0);
+        gl.uniform1f(rp.u.u_outlinePass, 0);
       }
       if (line && line.count > 0) {
         gl.useProgram(lp.prog);
@@ -1654,6 +1716,23 @@
         gl.useProgram(rp.prog);
         gl.bindVertexArray(rect.vao);
         gl.drawElements(gl.TRIANGLES, (rect.count - rectCursor) * 6, gl.UNSIGNED_INT, rectCursor * 24);
+      }
+
+      // 3) Deferred outline pass: re-draw the rect stream band-only (see
+      // RECT_FS/u_outlinePass), depth-tested GEQUAL against the altitudes
+      // every fill and line above just wrote -- a border survives only
+      // where its own building is the topmost thing at that pixel, so
+      // nothing bleeds through buildings (or belts) drawn above. Skipped
+      // whenever no bucket can reach outline size at this scale.
+      if (rect && rect.count > 0 &&
+          rect.maxMinHalf * 2 * Math.abs(fr.scaleX) >= RECT_OUTLINE_MIN_PX) {
+        gl.useProgram(rp.prog);
+        gl.uniform1f(rp.u.u_outlinePass, 1);
+        gl.depthFunc(gl.GEQUAL);
+        gl.depthMask(false);
+        gl.bindVertexArray(rect.vao);
+        gl.drawElements(gl.TRIANGLES, rect.count * 6, gl.UNSIGNED_INT, 0);
+        gl.depthFunc(gl.ALWAYS);
       }
 
       gl.bindVertexArray(null);

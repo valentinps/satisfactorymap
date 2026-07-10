@@ -1905,6 +1905,13 @@ var MapApp = {};
   // Outline shade for rect boxes (see RECT_OUTLINE_MIN_PX): the bucket
   // color darkened rather than a fixed gray/black, so the border reads as
   // an edge of the same building type instead of a foreign grid overlay.
+  // Kept in sync with the WebGL RECT_FS band (color * 0.65 at 0.7 alpha).
+  // Deliberately translucent: a strong/opaque border stayed clearly visible
+  // under the translucent fills of floors drawn above it, turning
+  // multi-floor bases into a mess of bleed-through grids. (The WebGL layer
+  // goes further and occludes covered borders entirely via a depth-tested
+  // outline pass; canvas has no depth buffer, so this fallback only fades
+  // them.)
   var _outlineColorCache = {};
   function _outlineColor(hexColor) {
     var cached = _outlineColorCache[hexColor];
@@ -1914,7 +1921,7 @@ var MapApp = {};
     var r = parseInt(hexColor.slice(1, 3), 16);
     var g = parseInt(hexColor.slice(3, 5), 16);
     var b = parseInt(hexColor.slice(5, 7), 16);
-    var result = "rgba(" + ((r * 0.55) | 0) + "," + ((g * 0.55) | 0) + "," + ((b * 0.55) | 0) + ",0.85)";
+    var result = "rgba(" + ((r * 0.65) | 0) + "," + ((g * 0.65) | 0) + "," + ((b * 0.65) | 0) + ",0.7)";
     _outlineColorCache[hexColor] = result;
     return result;
   }
