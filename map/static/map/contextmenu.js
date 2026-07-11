@@ -65,13 +65,15 @@ var ContextMenu = {};
     return true;
   }
 
-  // hit may be null: a right-click on empty map opens a paste-only menu when
-  // the editor clipboard holds something (see selection.js).
+  // hit may be null: a right-click on empty map opens a paste-only menu --
+  // with a disabled hint when nothing was copied yet, so the gesture is
+  // never silently dead (see selection.js).
   ContextMenu.show = function(clientX, clientY, hit) {
     menu.innerHTML = "";
     if (!hit) {
       if (!addPasteItem(clientX, clientY)) {
-        return;
+        var hint = el("div", "contextMenuItem contextMenuItemDisabled", "Paste here (copy something first)");
+        menu.appendChild(hint);
       }
       positionMenu(clientX, clientY);
       return;

@@ -2264,6 +2264,14 @@ var MapApp = {};
       if (window.EditorTool && EditorTool.isPlacing()) {
         return; // The click places the ghost, it doesn't pin a tooltip (see editor.js).
       }
+      if (e.originalEvent && (e.originalEvent.ctrlKey || e.originalEvent.metaKey)) {
+        // Ctrl+click toggles the object in/out of the selection instead of
+        // pinning a tooltip (see selection.js).
+        if (window.SelectionTool && SelectionTool.toggleAtEvent) {
+          SelectionTool.toggleAtEvent(e);
+        }
+        return;
+      }
       var clickToleranceScreenPx = 8;
       var toleranceMapUnits = clickToleranceScreenPx / Math.pow(2, map.getZoom());
       var hit = MapApp.layer.hitTest(e.latlng.lng, e.latlng.lat, toleranceMapUnits); // MapApp.layer, not `layer` -- see the hover handler.

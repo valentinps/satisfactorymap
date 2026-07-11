@@ -229,9 +229,11 @@ var EditorTool = (function() {
     applyInFlight = false;
     SaveLoadFlow.setStatus(message + " — recovering (reloading save)…");
     var backup = actions.slice();
+    var savedClipboard = clipboard; // survives the reload: same save, same names
     SaveClient.reset();
     SaveLoadFlow.reloadCurrentFile() // resets EditorTool via onSaveLoaded
       .then(function() {
+        clipboard = savedClipboard;
         return replaySequentially(backup, 0);
       })
       .then(function() {

@@ -1487,6 +1487,14 @@ body.panelResizing #categoryDetailColumn {
   color: #fff;
 }
 
+/* Non-actionable hint rows (e.g. "Paste here" with an empty clipboard). */
+.contextMenuItemDisabled,
+.contextMenuItemDisabled:hover {
+  color: #777;
+  background: none;
+  cursor: default;
+}
+
 .contextMenuDivider {
   height: 1px;
   margin: 4px 2px;
