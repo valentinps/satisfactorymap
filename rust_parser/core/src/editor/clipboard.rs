@@ -10,7 +10,8 @@ use crate::editor::apply::{
     patch_add_u32, patch_add_u64, rotate_quat_yaw, transform_xy, transform_vec3, write_f32,
     write_f64, EditPlan,
 };
-use crate::editor::ops::{ForeignActor, ForeignLightweight, LwRef};
+use crate::editor::ops::{ForeignActor, ForeignLightweight, ForeignPayload, LwRef};
+use crate::editor::session::{compress_body, decompress_body};
 use crate::editor::rename;
 use crate::error::{perr, PResult};
 use crate::level::parse_one_header;
@@ -27,6 +28,13 @@ use std::collections::HashMap;
 /// serde_json of its own).
 pub fn parse_lw_refs(json: &str) -> PResult<Vec<LwRef>> {
     serde_json::from_str(json).map_err(|e| perr!("Bad lightweight refs: {}", e))
+}
+
+/// Decode + inflate a v2 blob's compressed payload.
+pub fn inflate_payload(z: &str, z_len: u64) -> PResult<ForeignPayload> {
+    let compressed = B64.decode(z).map_err(|e| perr!("Bad clipboard data: {}", e))?;
+    let raw = decompress_body(&compressed, z_len as usize)?;
+    serde_json::from_slice(&raw).map_err(|e| perr!("Bad clipboard payload: {}", e))
 }
 
 /// Serialize the expanded selection (actors + their components + fully
@@ -104,15 +112,20 @@ pub fn extract_clipboard(
     });
 
     let anchor = [(bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0];
+    // The payload is zlib-compressed: raw save bytes shrink ~6-10x, which is
+    // what keeps six-figure copies inside OS-clipboard and JS-string limits.
+    let payload = json!({ "actors": actors, "lightweight": lightweight }).to_string();
+    let (compressed, raw_len) = compress_body(payload.as_bytes());
+    drop(payload);
     Ok(json!({
-        "smapPaste": 1,
+        "smapPaste": 2,
         "saveVersion": store.info.save_version,
         "objectVersion": object_version,
         "lightweightVersion": lightweight_version,
         "anchor": anchor,
         "bboxWorld": bbox,
-        "actors": actors,
-        "lightweight": lightweight,
+        "zLen": raw_len as u64,
+        "z": B64.encode(&compressed),
     })
     .to_string())
 }
@@ -171,6 +184,8 @@ pub(crate) fn plan_paste_external(
     save_version: u32,
     object_version: i32,
     lightweight_version: Option<u32>,
+    z: Option<&str>,
+    z_len: Option<u64>,
     foreign_actors: &[ForeignActor],
     foreign_lightweight: &[ForeignLightweight],
     anchor: [f64; 2],
@@ -178,6 +193,19 @@ pub(crate) fn plan_paste_external(
     rotate_yaw_deg: f64,
     seed: u64,
 ) -> PResult<()> {
+    // v2 blobs carry the payload compressed; inflate it and shadow the
+    // slices.
+    let inflated: Option<ForeignPayload> = match (z, z_len) {
+        (Some(z), Some(z_len)) => Some(inflate_payload(z, z_len)?),
+        (None, None) => None,
+        _ => return Err(perr!("Bad clipboard data: z/zLen must come together")),
+    };
+    let (foreign_actors, foreign_lightweight): (&[ForeignActor], &[ForeignLightweight]) =
+        match &inflated {
+            Some(p) => (&p.actors, &p.lightweight),
+            None => (foreign_actors, foreign_lightweight),
+        };
+
     let data: &[u8] = &store.data;
     if save_version != store.info.save_version {
         return Err(perr!(
@@ -220,22 +248,14 @@ pub(crate) fn plan_paste_external(
             .filter(|f| matches!(f.header, Header::Actor(_)))
             .map(|f| f.header.instance_name().bytes(&f.combined))
             .collect();
-        let mut substitutions = rename::build_rename_map(&actor_names, seed, &exists)?;
+        let renames = rename::build_rename_map(&actor_names, seed, &exists)?;
+        let rename_matcher = rename::SubstMatcher::new(&renames);
 
         // Refs to anything OUTSIDE the copied set point at objects of the
         // SOURCE save; in this save they'd be dangling or -- worse -- collide
         // with unrelated objects. Neutralize every numbered instance ref
         // (class/static paths start with '/' and are save-independent;
         // digitless instance refs are shared singletons that exist here too).
-        let contains_renamed_segment = |path: &[u8], map: &HashMap<Vec<u8>, Vec<u8>>| -> bool {
-            map.keys().any(|k| {
-                path.windows(k.len()).enumerate().any(|(i, w)| {
-                    w == k.as_slice()
-                        && (i == 0 || !path[i - 1].is_ascii_alphanumeric())
-                        && (i + k.len() == path.len() || !path[i + k.len()].is_ascii_alphanumeric())
-                })
-            })
-        };
         let mut rng = rename::Rng(seed ^ 0x746f6d6273746f6e);
         let mut tombstones: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
         for f in &foreigns {
@@ -246,7 +266,7 @@ pub(crate) fn plan_paste_external(
                 }
                 let path = r.path_name.bytes(&f.combined);
                 if path.starts_with(b"/")
-                    || contains_renamed_segment(path, &substitutions)
+                    || rename_matcher.contains_any(path)
                     || tombstones.contains_key(path)
                 {
                     return;
@@ -263,13 +283,17 @@ pub(crate) fn plan_paste_external(
                 return Err(e);
             }
         }
-        substitutions.extend(tombstones);
+        // Two linear passes (rename keys and tombstone targets are disjoint
+        // by construction).
+        let tombstone_matcher = rename::SubstMatcher::new(&tombstones);
 
         for f in &foreigns {
             let mut header_copy = f.header_blob.clone();
             let mut body_copy = f.body_blob.clone();
-            rename::substitute_names(&mut header_copy, &substitutions);
-            rename::substitute_names(&mut body_copy, &substitutions);
+            rename_matcher.substitute(&mut header_copy);
+            rename_matcher.substitute(&mut body_copy);
+            tombstone_matcher.substitute(&mut header_copy);
+            tombstone_matcher.substitute(&mut body_copy);
 
             if let Header::Actor(actor) = &f.header {
                 // transform_off was recorded relative to the combined buffer,

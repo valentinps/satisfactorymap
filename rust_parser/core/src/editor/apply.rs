@@ -605,19 +605,11 @@ fn plan_duplicate_actors(
         .map(|&(li, oi)| store.levels[li].headers[oi].instance_name().bytes(data))
         .collect();
     let exists = |candidate: &[u8]| scan.by_instance_name.contains_key(candidate);
-    let mut substitutions = rename::build_rename_map(&actor_name_list, seed, &exists)?;
+    let renames = rename::build_rename_map(&actor_name_list, seed, &exists)?;
+    let rename_matcher = rename::SubstMatcher::new(&renames);
 
     // External instance refs (outside the set) get same-length tombstones so
     // the copies don't claim connections the originals still own.
-    let contains_renamed_segment = |path: &[u8], map: &HashMap<Vec<u8>, Vec<u8>>| -> bool {
-        map.keys().any(|k| {
-            path.windows(k.len()).enumerate().any(|(i, w)| {
-                w == k.as_slice()
-                    && (i == 0 || !path[i - 1].is_ascii_alphanumeric())
-                    && (i + k.len() == path.len() || !path[i + k.len()].is_ascii_alphanumeric())
-            })
-        })
-    };
     let mut rng = rename::Rng(seed ^ 0x746f6d6273746f6e); // independent stream for tombstones
     let mut tombstones: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
     for &(li, oi) in &set {
@@ -628,8 +620,8 @@ fn plan_duplicate_actors(
                 return;
             }
             let path = r.path_name.bytes(data);
-            if contains_renamed_segment(path, &substitutions) || tombstones.contains_key(path) {
-                return;
+            if rename_matcher.contains_any(path) || tombstones.contains_key(path) {
+                return; // Internal ref: the rename substitution remaps it.
             }
             if !scan.by_instance_name.contains_key(path) {
                 return; // Class path / static asset: keep verbatim.
@@ -651,7 +643,10 @@ fn plan_duplicate_actors(
             return Err(e);
         }
     }
-    substitutions.extend(tombstones);
+    // Two linear passes: rename keys never appear in tombstone targets (an
+    // external path containing a renamed segment would have been internal)
+    // and vice versa, so order doesn't matter.
+    let tombstone_matcher = rename::SubstMatcher::new(&tombstones);
 
     // Copy, substitute, patch transforms.
     let mut new_headers: Vec<u8> = Vec::new();
@@ -662,8 +657,10 @@ fn plan_duplicate_actors(
         let (b_off, b_len) = store.levels[li].object_spans[oi];
         let mut header_copy = data[h_off as usize..(h_off + h_len) as usize].to_vec();
         let mut body_copy = data[b_off as usize..(b_off + b_len) as usize].to_vec();
-        rename::substitute_names(&mut header_copy, &substitutions);
-        rename::substitute_names(&mut body_copy, &substitutions);
+        rename_matcher.substitute(&mut header_copy);
+        rename_matcher.substitute(&mut body_copy);
+        tombstone_matcher.substitute(&mut header_copy);
+        tombstone_matcher.substitute(&mut body_copy);
 
         if let Header::Actor(actor) = &store.levels[li].headers[oi] {
             let t = (actor.transform_off - h_off) as usize;
@@ -982,6 +979,8 @@ pub fn plan_op(store: &SaveStore, op: &EditOp) -> PResult<EditPlan> {
             save_version,
             object_version,
             lightweight_version,
+            z,
+            z_len,
             actors,
             lightweight,
             anchor,
@@ -995,6 +994,8 @@ pub fn plan_op(store: &SaveStore, op: &EditOp) -> PResult<EditPlan> {
                 *save_version,
                 *object_version,
                 *lightweight_version,
+                z.as_deref(),
+                *z_len,
                 actors,
                 lightweight,
                 *anchor,

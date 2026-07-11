@@ -72,6 +72,14 @@ pub enum EditOp {
         object_version: i32,
         #[serde(default)]
         lightweight_version: Option<u32>,
+        /// zlib-compressed, base64-encoded ForeignPayload JSON (+ its raw
+        /// length) -- the wire format for big copies (raw save bytes
+        /// compress ~6-10x, keeping 100k-object blobs clipboard-sized).
+        #[serde(default)]
+        z: Option<String>,
+        #[serde(default)]
+        z_len: Option<u64>,
+        /// Uncompressed fallback (v1 blobs / tests).
         #[serde(default)]
         actors: Vec<ForeignActor>,
         #[serde(default)]
@@ -84,6 +92,16 @@ pub enum EditOp {
         rotate_yaw_deg: f64,
         seed: u64,
     },
+}
+
+/// The compressible part of a clipboard blob.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignPayload {
+    #[serde(default)]
+    pub actors: Vec<ForeignActor>,
+    #[serde(default)]
+    pub lightweight: Vec<ForeignLightweight>,
 }
 
 /// One copied actor/component: base64 of its header record and object

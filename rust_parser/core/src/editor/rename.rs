@@ -147,37 +147,88 @@ pub fn tombstone_path(
     rewrite_digits(path, run, rng, exists).map(Some)
 }
 
-/// Replace every boundary-delimited occurrence of each key with its
-/// same-length value inside `span`. Boundaries: the bytes just before and
-/// after a match must not be ASCII alphanumeric, so "Build_X_C_123" cannot
-/// match inside "Build_X_C_1234" (names appear inside length-prefixed
-/// null-terminated strings, so real occurrences border '.', '\0', etc).
-pub fn substitute_names(span: &mut [u8], map: &HashMap<Vec<u8>, Vec<u8>>) {
-    // Longest keys first so a key that embeds another key wins.
-    let mut keys: Vec<&Vec<u8>> = map.keys().collect();
-    keys.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
-    for key in keys {
-        let value = &map[key.as_slice()];
-        debug_assert_eq!(key.len(), value.len());
-        let k = key.as_slice();
-        if k.is_empty() || span.len() < k.len() {
-            continue;
-        }
-        let mut i = 0;
-        while i + k.len() <= span.len() {
-            if &span[i..i + k.len()] == k {
-                let before_ok = i == 0 || !span[i - 1].is_ascii_alphanumeric();
-                let after = i + k.len();
-                let after_ok = after == span.len() || !span[after].is_ascii_alphanumeric();
-                if before_ok && after_ok {
-                    span[i..after].copy_from_slice(value);
-                    i = after;
-                    continue;
-                }
+/// Boundary-delimited multi-pattern matcher over a same-length substitution
+/// map. Boundaries: the bytes just before and after a match must not be
+/// ASCII alphanumeric, so "Build_X_C_123" cannot match inside
+/// "Build_X_C_1234" (names appear inside length-prefixed null-terminated
+/// strings, so real occurrences border '.', '\0', etc).
+///
+/// Scales to huge copy sets: one pass over the input with a hash lookup per
+/// (position, distinct key length) instead of one full scan per key --
+/// per-key scanning is O(keys x bytes) and locks up on 100k-object pastes.
+/// Longer keys win at a shared position (a key that embeds another key).
+pub struct SubstMatcher<'a> {
+    map: &'a HashMap<Vec<u8>, Vec<u8>>,
+    /// Distinct key lengths, longest first (game-generated names cluster
+    /// into a handful of lengths).
+    lengths: Vec<usize>,
+    /// Cheap gate: first byte of any key (names start with a letter, spans
+    /// are mostly binary, so most positions fail here).
+    first_bytes: [bool; 256],
+}
+
+impl<'a> SubstMatcher<'a> {
+    pub fn new(map: &'a HashMap<Vec<u8>, Vec<u8>>) -> Self {
+        let mut lengths: Vec<usize> = map.keys().map(|k| k.len()).filter(|&l| l > 0).collect();
+        lengths.sort_unstable_by(|a, b| b.cmp(a));
+        lengths.dedup();
+        let mut first_bytes = [false; 256];
+        for k in map.keys() {
+            if let Some(&b) = k.first() {
+                first_bytes[b as usize] = true;
             }
-            i += 1;
+        }
+        SubstMatcher { map, lengths, first_bytes }
+    }
+
+    /// The key matching at position i, if any (boundary-checked).
+    fn match_at(&self, hay: &[u8], i: usize) -> Option<usize> {
+        if !self.first_bytes[hay[i] as usize] || (i > 0 && hay[i - 1].is_ascii_alphanumeric()) {
+            return None;
+        }
+        for &len in &self.lengths {
+            let after = i + len;
+            if after > hay.len() {
+                continue;
+            }
+            if after < hay.len() && hay[after].is_ascii_alphanumeric() {
+                continue;
+            }
+            if self.map.contains_key(&hay[i..after]) {
+                return Some(len);
+            }
+        }
+        None
+    }
+
+    /// Does any key occur (boundary-delimited) in `hay`?
+    pub fn contains_any(&self, hay: &[u8]) -> bool {
+        (0..hay.len()).any(|i| self.match_at(hay, i).is_some())
+    }
+
+    /// Replace every occurrence in place (same-length values).
+    pub fn substitute(&self, span: &mut [u8]) {
+        let mut i = 0;
+        while i < span.len() {
+            match self.match_at(span, i) {
+                Some(len) => {
+                    let value = &self.map[&span[i..i + len]];
+                    debug_assert_eq!(value.len(), len);
+                    span[i..i + len].copy_from_slice(value);
+                    i += len;
+                }
+                None => i += 1,
+            }
         }
     }
+}
+
+/// One-shot convenience over SubstMatcher (small maps).
+pub fn substitute_names(span: &mut [u8], map: &HashMap<Vec<u8>, Vec<u8>>) {
+    if map.is_empty() || span.is_empty() {
+        return;
+    }
+    SubstMatcher::new(map).substitute(span);
 }
 
 /// Visit every ObjectRef inside an object's parsed model (associations,

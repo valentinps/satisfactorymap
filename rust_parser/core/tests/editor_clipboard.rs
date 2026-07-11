@@ -39,7 +39,7 @@ fn count_of_type(store: &SaveStore, prefix: &str) -> usize {
         .count()
 }
 
-/// Blob JSON -> a pasteExternal op at anchor+delta.
+/// Blob JSON -> a pasteExternal op at anchor+delta (v2 compressed payload).
 fn op_from_blob(blob_json: &str, delta: [f64; 3]) -> sav_core::editor::EditOp {
     let blob: serde_json::Value = serde_json::from_str(blob_json).unwrap();
     let op = json!([{
@@ -47,8 +47,8 @@ fn op_from_blob(blob_json: &str, delta: [f64; 3]) -> sav_core::editor::EditOp {
         "saveVersion": blob["saveVersion"],
         "objectVersion": blob["objectVersion"],
         "lightweightVersion": blob["lightweightVersion"],
-        "actors": blob["actors"],
-        "lightweight": blob["lightweight"],
+        "z": blob["z"],
+        "zLen": blob["zLen"],
         "anchor": blob["anchor"],
         "delta": delta,
         "seed": 4242u64,
@@ -66,7 +66,12 @@ fn paste_constructor_into_another_save() {
 
     let blob_json = extract_clipboard(&source, &[name], &[]).unwrap();
     let blob: serde_json::Value = serde_json::from_str(&blob_json).unwrap();
-    assert!(blob["actors"].as_array().unwrap().len() > 1, "components travel with the actor");
+    let payload = sav_core::editor::clipboard::inflate_payload(
+        blob["z"].as_str().unwrap(),
+        blob["zLen"].as_u64().unwrap(),
+    )
+    .unwrap();
+    assert!(payload.actors.len() > 1, "components travel with the actor");
 
     let before = count_of_type(&target, prefix);
     let op = op_from_blob(&blob_json, [5000.0, -3000.0, 0.0]);
@@ -159,6 +164,59 @@ fn paste_lightweight_into_another_save() {
     let op = op_from_blob(&blob_json, [2000.0, 2000.0, 0.0]);
     let target2 = session::step(&target, &op, &tables).unwrap();
     assert_eq!(count_in(&target2), before + 1);
+}
+
+/// Six-figure copy/paste on the 600k-object save: run explicitly with
+/// `cargo test --release --test editor_clipboard -- --ignored`.
+#[test]
+#[ignore]
+fn paste_100k_objects_scale() {
+    let t0 = std::time::Instant::now();
+    let source = load("BuildITBIIIIIG_autosave_0.sav");
+    println!("source parsed: {:?}", t0.elapsed());
+
+    // Every buildable actor, capped at 100k selected names (component
+    // expansion multiplies that).
+    let mut names: Vec<String> = Vec::new();
+    for level in &source.levels {
+        for header in &level.headers {
+            if let Header::Actor(a) = header {
+                let tp = a.type_path.to_string(&source.data);
+                if tp.contains("/Buildable/") && !tp.contains("/Vehicle/") {
+                    names.push(a.instance_name.to_string(&source.data));
+                    if names.len() >= 100_000 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    println!("selected {} actors", names.len());
+    assert!(names.len() >= 100_000, "save too small for the scale test");
+
+    let t1 = std::time::Instant::now();
+    let blob_json = extract_clipboard(&source, &names, &[]).unwrap();
+    println!("extracted in {:?}: blob {} MB", t1.elapsed(), blob_json.len() / 1_000_000);
+    let blob: serde_json::Value = serde_json::from_str(&blob_json).unwrap();
+    let n_records = sav_core::editor::clipboard::inflate_payload(
+        blob["z"].as_str().unwrap(),
+        blob["zLen"].as_u64().unwrap(),
+    )
+    .unwrap()
+    .actors
+    .len();
+    println!("blob holds {} records (incl components)", n_records);
+
+    let target = load("BuildITBIIIIIG_autosave_0.sav");
+    let count_before: usize = target.levels.iter().map(|l| l.headers.len()).sum();
+    let op = op_from_blob(&blob_json, [50000.0, 0.0, 0.0]);
+    let tables = ClassTables::embedded();
+    let t2 = std::time::Instant::now();
+    let target2 = session::step(&target, &op, &tables).unwrap();
+    println!("pasted + revalidated in {:?}", t2.elapsed());
+    let count_after: usize = target2.levels.iter().map(|l| l.headers.len()).sum();
+    assert_eq!(count_after, count_before + n_records);
+    println!("total {:?}", t0.elapsed());
 }
 
 #[test]

@@ -402,7 +402,7 @@ var EditorTool = (function() {
       } catch (error) {
         return null;
       }
-      if (!blob || blob.smapPaste !== 1 || !blob.anchor || !blob.bboxWorld) {
+      if (!blob || (blob.smapPaste !== 1 && blob.smapPaste !== 2) || !blob.anchor || !blob.bboxWorld) {
         return null;
       }
       return { mode: "external", blob: blob };
@@ -451,6 +451,9 @@ var EditorTool = (function() {
       saveVersion: blob.saveVersion,
       objectVersion: blob.objectVersion,
       lightweightVersion: blob.lightweightVersion,
+      // v2 blobs carry the payload zlib-compressed; v1 fields pass through.
+      z: blob.z,
+      zLen: blob.zLen,
       actors: blob.actors || [],
       lightweight: blob.lightweight || [],
       anchor: blob.anchor,
