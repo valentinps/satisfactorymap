@@ -14,6 +14,9 @@ default = []
 parallel = ["dep:rayon"]
 
 [dependencies]
+# Cross-save clipboard blobs (editor/clipboard.rs) carry raw object bytes
+# through JSON / the OS clipboard.
+base64 = "0.22"
 flate2 = { workspace = true }
 rayon = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"] }

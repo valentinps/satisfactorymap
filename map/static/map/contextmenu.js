@@ -53,9 +53,12 @@ var ContextMenu = {};
     menu.style.top = Math.max(0, y) + "px";
   }
 
-  // "Paste here" resolves the clicked screen point back to map pixels.
+  // "Paste here" resolves the clicked screen point back to map pixels. The
+  // item is always active: the paste itself resolves the in-tab clipboard OR
+  // a cross-tab blob from the OS clipboard, and reports via the status line
+  // when there's nothing to paste.
   function addPasteItem(clientX, clientY) {
-    if (!window.EditorTool || !EditorTool.hasClipboard()) {
+    if (!window.EditorTool) {
       return false;
     }
     var latLng = MapApp.map.mouseEventToLatLng({ clientX: clientX, clientY: clientY });

@@ -18,13 +18,13 @@ use std::collections::{BTreeSet, HashMap};
 /// a single plan never mixes inserts with removes.
 #[derive(Default)]
 pub struct EditPlan {
-    patches: Vec<(usize, Vec<u8>)>,
-    inserts: Vec<(usize, Vec<u8>)>,
-    removes: Vec<(usize, usize)>,
+    pub(crate) patches: Vec<(usize, Vec<u8>)>,
+    pub(crate) inserts: Vec<(usize, Vec<u8>)>,
+    pub(crate) removes: Vec<(usize, usize)>,
 }
 
 impl EditPlan {
-    fn patch(&mut self, at: usize, bytes: impl Into<Vec<u8>>) {
+    pub(crate) fn patch(&mut self, at: usize, bytes: impl Into<Vec<u8>>) {
         self.patches.push((at, bytes.into()));
     }
 }
@@ -112,7 +112,7 @@ fn move_refusal(store: &SaveStore, header: &Header, object: &Object) -> Option<&
 
 /// (sin, cos) of a yaw in degrees -- exact for the 90-degree steps the UI
 /// produces so repeated rotations can't accumulate float drift.
-fn yaw_sin_cos(deg: f64) -> (f64, f64) {
+pub(crate) fn yaw_sin_cos(deg: f64) -> (f64, f64) {
     match deg.rem_euclid(360.0) {
         0.0 => (0.0, 1.0),
         90.0 => (1.0, 0.0),
@@ -123,7 +123,7 @@ fn yaw_sin_cos(deg: f64) -> (f64, f64) {
 }
 
 /// World-frame yaw composition: q' = q_z(theta) * q  (x,y,z,w layout).
-fn rotate_quat_yaw(q: [f64; 4], deg: f64) -> [f64; 4] {
+pub(crate) fn rotate_quat_yaw(q: [f64; 4], deg: f64) -> [f64; 4] {
     // Half-angle sin/cos, exact for the UI's 90-degree steps.
     let (s, c) = match deg.rem_euclid(360.0) {
         0.0 => (0.0, 1.0),
@@ -142,7 +142,7 @@ fn rotate_quat_yaw(q: [f64; 4], deg: f64) -> [f64; 4] {
 }
 
 /// Rotate a world XY about a pivot by yaw degrees, then translate.
-fn transform_xy(x: f64, y: f64, deg: f64, pivot: Option<[f64; 2]>, delta: &[f64; 3]) -> (f64, f64) {
+pub(crate) fn transform_xy(x: f64, y: f64, deg: f64, pivot: Option<[f64; 2]>, delta: &[f64; 3]) -> (f64, f64) {
     let (mut nx, mut ny) = (x, y);
     if deg != 0.0 {
         let [px, py] = pivot.unwrap_or([0.0, 0.0]);
@@ -155,7 +155,7 @@ fn transform_xy(x: f64, y: f64, deg: f64, pivot: Option<[f64; 2]>, delta: &[f64;
 }
 
 /// Rotate a direction vector (tangent) about Z; no translation.
-fn rotate_dir_xy(x: f64, y: f64, deg: f64) -> (f64, f64) {
+pub(crate) fn rotate_dir_xy(x: f64, y: f64, deg: f64) -> (f64, f64) {
     if deg == 0.0 {
         return (x, y);
     }
@@ -163,34 +163,34 @@ fn rotate_dir_xy(x: f64, y: f64, deg: f64) -> (f64, f64) {
     (x * c - y * s, x * s + y * c)
 }
 
-fn write_f32(buf: &mut [u8], off: usize, v: f32) {
+pub(crate) fn write_f32(buf: &mut [u8], off: usize, v: f32) {
     buf[off..off + 4].copy_from_slice(&v.to_le_bytes());
 }
 
-fn write_f64(buf: &mut [u8], off: usize, v: f64) {
+pub(crate) fn write_f64(buf: &mut [u8], off: usize, v: f64) {
     buf[off..off + 8].copy_from_slice(&v.to_le_bytes());
 }
 
-fn read_f64(buf: &[u8], off: usize) -> f64 {
+pub(crate) fn read_f64(buf: &[u8], off: usize) -> f64 {
     f64::from_le_bytes(buf[off..off + 8].try_into().unwrap())
 }
 
-fn read_u32(buf: &[u8], off: usize) -> u32 {
+pub(crate) fn read_u32(buf: &[u8], off: usize) -> u32 {
     u32::from_le_bytes(buf[off..off + 4].try_into().unwrap())
 }
 
-fn read_u64_at(buf: &[u8], off: usize) -> u64 {
+pub(crate) fn read_u64_at(buf: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(buf[off..off + 8].try_into().unwrap())
 }
 
 /// Patch that adds to a u32/u64 field (values read from the pre-op body,
 /// which is `store.data`).
-fn patch_add_u32(plan: &mut EditPlan, data: &[u8], off: usize, add: i64) {
+pub(crate) fn patch_add_u32(plan: &mut EditPlan, data: &[u8], off: usize, add: i64) {
     let v = (read_u32(data, off) as i64 + add) as u32;
     plan.patch(off, v.to_le_bytes().to_vec());
 }
 
-fn patch_add_u64(plan: &mut EditPlan, data: &[u8], off: usize, add: i64) {
+pub(crate) fn patch_add_u64(plan: &mut EditPlan, data: &[u8], off: usize, add: i64) {
     let v = (read_u64_at(data, off) as i64 + add) as u64;
     plan.patch(off, v.to_le_bytes().to_vec());
 }
@@ -205,7 +205,7 @@ fn patch_add_u64(plan: &mut EditPlan, data: &[u8], off: usize, add: i64) {
 // their HEADER type paths -- headers are always retained.
 
 /// Slots of all actors whose type path exactly matches one of `candidates`.
-fn actor_slots_of_types(store: &SaveStore, candidates: &[&str]) -> Vec<(usize, usize)> {
+pub(crate) fn actor_slots_of_types(store: &SaveStore, candidates: &[&str]) -> Vec<(usize, usize)> {
     let data: &[u8] = &store.data;
     let mut out = Vec::new();
     for (li, level) in store.levels.iter().enumerate() {
@@ -223,7 +223,7 @@ fn actor_slots_of_types(store: &SaveStore, candidates: &[&str]) -> Vec<(usize, u
 
 /// One object, re-parsed on demand from its span (identical to the eagerly
 /// parsed model; StrRefs point into the same `store.data`).
-fn fetch(store: &SaveStore, li: usize, oi: usize) -> PResult<Object> {
+pub(crate) fn fetch(store: &SaveStore, li: usize, oi: usize) -> PResult<Object> {
     store.parse_object_at(li, oi)
 }
 
@@ -258,7 +258,7 @@ fn chain_splines_by_belt(store: &SaveStore) -> PResult<HashMap<Vec<u8>, ChainSpl
 /// Absolute world positions cached in a power line's mWireInstances
 /// ("Locations" vectors) -- the wire-mesh endpoints the game and the map
 /// renderer draw from. They must be transformed together with the wire.
-fn wire_cached_locations(object: &Object, data: &[u8]) -> Vec<[f64; 3]> {
+pub(crate) fn wire_cached_locations(object: &Object, data: &[u8]) -> Vec<[f64; 3]> {
     let mut out = Vec::new();
     if let Some(entries) =
         crate::mapdata::props::array_structs(&object.properties, data, b"mWireInstances")
@@ -281,7 +281,7 @@ fn wire_cached_locations(object: &Object, data: &[u8]) -> Vec<[f64; 3]> {
 /// value offsets aren't retained by the parser, so the values locate
 /// themselves by their own bytes -- exact f64 bit patterns, no false hits in
 /// practice, and the strict re-parse gates the result regardless.
-fn find_f64x3(hay: &[u8], v: [f64; 3]) -> Vec<usize> {
+pub(crate) fn find_f64x3(hay: &[u8], v: [f64; 3]) -> Vec<usize> {
     let mut pat = [0u8; 24];
     for (i, x) in v.iter().enumerate() {
         pat[i * 8..i * 8 + 8].copy_from_slice(&x.to_le_bytes());
@@ -292,12 +292,12 @@ fn find_f64x3(hay: &[u8], v: [f64; 3]) -> Vec<usize> {
     (0..hay.len() - 23).filter(|&i| hay[i..i + 24] == pat).collect()
 }
 
-fn transform_vec3(v: [f64; 3], deg: f64, pivot: Option<[f64; 2]>, delta: &[f64; 3]) -> [f64; 3] {
+pub(crate) fn transform_vec3(v: [f64; 3], deg: f64, pivot: Option<[f64; 2]>, delta: &[f64; 3]) -> [f64; 3] {
     let (nx, ny) = transform_xy(v[0], v[1], deg, pivot, delta);
     [nx, ny, v[2] + delta[2]]
 }
 
-fn encode_f64x3(v: [f64; 3]) -> Vec<u8> {
+pub(crate) fn encode_f64x3(v: [f64; 3]) -> Vec<u8> {
     let mut out = Vec::with_capacity(24);
     for x in v {
         out.extend_from_slice(&x.to_le_bytes());
@@ -430,11 +430,13 @@ fn plan_move_actors(
 /// The one Lightweight subsystem object -- lightweight edits address groups
 /// inside it by type path. Located by header type path and parsed on demand;
 /// returns (level_idx, object_idx, owned groups).
-fn lightweight_subsystem(store: &SaveStore) -> PResult<(usize, usize, Vec<LightweightGroup>)> {
+pub(crate) fn lightweight_subsystem(
+    store: &SaveStore,
+) -> PResult<(usize, usize, u32, Vec<LightweightGroup>)> {
     for (li, oi) in actor_slots_of_types(store, &[crate::object::LIGHTWEIGHT_SUBSYSTEM]) {
         let object = fetch(store, li, oi)?;
-        if let ActorSpecific::Lightweight { items, .. } = object.actor_specific {
-            return Ok((li, oi, items));
+        if let ActorSpecific::Lightweight { version, items } = object.actor_specific {
+            return Ok((li, oi, version, items));
         }
     }
     Err(perr!("Save has no lightweight buildable subsystem"))
@@ -451,7 +453,7 @@ fn plan_move_lightweight(
     if rotate_yaw_deg != 0.0 && pivot.is_none() {
         return Err(perr!("rotate requires a pivot"));
     }
-    let (_, _, groups) = lightweight_subsystem(store)?;
+    let (_, _, _, groups) = lightweight_subsystem(store)?;
     for item in items {
         let group = groups
             .iter()
@@ -488,7 +490,7 @@ fn plan_move_lightweight(
 /// its components, plus every power line whose BOTH endpoints are owned by
 /// actors in the set (wires aren't map-selectable, so connected copies
 /// would otherwise always lose their wiring).
-fn expand_duplicate_set(
+pub(crate) fn expand_duplicate_set(
     store: &SaveStore,
     scan: &SaveScan,
     names: &[String],
@@ -728,7 +730,7 @@ fn plan_duplicate_lightweight(
         return Err(perr!("rotate requires a pivot"));
     }
     let data: &[u8] = &store.data;
-    let (li, oi, groups) = lightweight_subsystem(store)?;
+    let (li, oi, _, groups) = lightweight_subsystem(store)?;
 
     let mut added_per_group: HashMap<u32, i64> = HashMap::new(); // count_field_off -> count
     let mut total_added = 0i64;
@@ -743,25 +745,7 @@ fn plan_duplicate_lightweight(
             .get(item.index as usize)
             .ok_or_else(|| perr!("Lightweight index {} out of range for {}", item.index, item.type_path))?;
 
-        let r = instance.record_off as usize;
-        let mut copy = data[r..r + instance.record_len as usize].to_vec();
-
-        // The copy is hand-placed, not blueprint-placed: empty out a
-        // non-empty blueprint proxy ref. (Empty strings are just an i32 0,
-        // so the copied record shrinks -- fine, it's fresh bytes.)
-        let proxy = &instance.blueprint_proxy;
-        if !proxy.path_name.is_empty() || !proxy.level_name.is_empty() {
-            if proxy.level_name.is_empty() || proxy.path_name.is_empty() || proxy.level_name.wide || proxy.path_name.wide {
-                return Err(perr!("Unexpected blueprint proxy encoding on a copied foundation"));
-            }
-            let start = proxy.level_name.off as usize - 4 - r;
-            let end = proxy.path_name.off as usize + proxy.path_name.len as usize + 1 - r;
-            let mut rebuilt = Vec::with_capacity(copy.len() - (end - start) + 8);
-            rebuilt.extend_from_slice(&copy[..start]);
-            rebuilt.extend_from_slice(&[0u8; 8]); // two empty strings
-            rebuilt.extend_from_slice(&copy[end..]);
-            copy = rebuilt;
-        }
+        let mut copy = lightweight_record_bytes(data, instance)?;
 
         if rotate_yaw_deg != 0.0 {
             let q = rotate_quat_yaw(instance.rotation, rotate_yaw_deg);
@@ -787,6 +771,31 @@ fn plan_duplicate_lightweight(
     patch_add_u32(plan, data, object_size_field, total_added);
     patch_add_u64(plan, data, store.levels[li].spans.objects_size_field_off as usize, total_added);
     Ok(())
+}
+
+/// A lightweight record's bytes ready for re-placement: verbatim copy with
+/// the blueprint proxy ref emptied (the copy is hand-placed; empty strings
+/// are just an i32 0, so the record may shrink -- fine, it's fresh bytes).
+pub(crate) fn lightweight_record_bytes(
+    data: &[u8],
+    instance: &LightweightInstance,
+) -> PResult<Vec<u8>> {
+    let r = instance.record_off as usize;
+    let mut copy = data[r..r + instance.record_len as usize].to_vec();
+    let proxy = &instance.blueprint_proxy;
+    if !proxy.path_name.is_empty() || !proxy.level_name.is_empty() {
+        if proxy.level_name.is_empty() || proxy.path_name.is_empty() || proxy.level_name.wide || proxy.path_name.wide {
+            return Err(perr!("Unexpected blueprint proxy encoding on a copied foundation"));
+        }
+        let start = proxy.level_name.off as usize - 4 - r;
+        let end = proxy.path_name.off as usize + proxy.path_name.len as usize + 1 - r;
+        let mut rebuilt = Vec::with_capacity(copy.len() - (end - start) + 8);
+        rebuilt.extend_from_slice(&copy[..start]);
+        rebuilt.extend_from_slice(&[0u8; 8]); // two empty strings
+        rebuilt.extend_from_slice(&copy[end..]);
+        copy = rebuilt;
+    }
+    Ok(copy)
 }
 
 // ---------------------------------------------------------------------------
@@ -907,7 +916,7 @@ fn plan_delete_actors(
 
 fn plan_delete_lightweight(store: &SaveStore, plan: &mut EditPlan, items: &[LwRef]) -> PResult<()> {
     let data: &[u8] = &store.data;
-    let (li, oi, groups) = lightweight_subsystem(store)?;
+    let (li, oi, _, groups) = lightweight_subsystem(store)?;
 
     let mut removed_per_group: HashMap<u32, i64> = HashMap::new();
     let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new(); // (count_field_off, index)
@@ -968,6 +977,31 @@ pub fn plan_op(store: &SaveStore, op: &EditOp) -> PResult<EditPlan> {
         }
         EditOp::DeleteLightweight { items } => {
             plan_delete_lightweight(store, &mut plan, items)?;
+        }
+        EditOp::PasteExternal {
+            save_version,
+            object_version,
+            lightweight_version,
+            actors,
+            lightweight,
+            anchor,
+            delta,
+            rotate_yaw_deg,
+            seed,
+        } => {
+            crate::editor::clipboard::plan_paste_external(
+                store,
+                &mut plan,
+                *save_version,
+                *object_version,
+                *lightweight_version,
+                actors,
+                lightweight,
+                *anchor,
+                delta,
+                *rotate_yaw_deg,
+                *seed,
+            )?;
         }
     }
     Ok(plan)

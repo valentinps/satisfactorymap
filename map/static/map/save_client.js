@@ -229,6 +229,11 @@ const SaveClient = (() => {
       exportSave() {
          return request({ op: "exportSave" });
       },
+      // extractClipboard(names, lightweight) -> Promise<string>: the
+      // cross-save clipboard blob JSON for the given edit targets.
+      extractClipboard(names, lightweight) {
+         return request({ op: "extractClipboard", names, lightweight });
+      },
       dispose() {
          abortHandoff();
          if (worker) {

@@ -445,6 +445,20 @@ impl SaveSession {
         Ok(mapdata::queries::collect_train_info(self.store()?, self.index()?).to_string())
     }
 
+    /// Cross-save clipboard blob (JSON) for the given edit targets -- raw
+    /// object bytes + version metadata, pasteable into another tab/save via
+    /// the pasteExternal edit op (see sav_core::editor::clipboard).
+    pub fn extract_clipboard(
+        &self,
+        names: Vec<String>,
+        lightweight_json: &str,
+    ) -> Result<String, JsError> {
+        let items = sav_core::editor::clipboard::parse_lw_refs(lightweight_json)
+            .map_err(|e| JsError::new(&e.msg))?;
+        sav_core::editor::clipboard::extract_clipboard(self.store()?, &names, &items)
+            .map_err(|e| JsError::new(&e.msg))
+    }
+
     /// Serialize the current save body back into a downloadable .sav
     /// (retained header + re-compressed chunks). Body-identical to the
     /// original file until edits are applied.

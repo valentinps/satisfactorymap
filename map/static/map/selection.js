@@ -563,6 +563,11 @@ var SelectionTool = {};
 
   clearBtn.addEventListener("click", clearSelection);
 
+  // The current selection's edit targets, for Ctrl+C (see editor.js).
+  SelectionTool.currentEditTargets = function() {
+    return lastSelection ? lastSelection.editTargets : null;
+  };
+
   // Called on every save (re)load (see data.js) -- the previous selection's
   // ids belong to the old save's buckets, so drop it.
   SelectionTool.reset = function() {

@@ -155,6 +155,11 @@ self.onmessage = async (event) => {
             reply(id, bytes, [bytes.buffer]);
             return;
          }
+         case "extractClipboard":
+            // Cross-save clipboard blob (JSON string) -- the main thread
+            // puts it on the OS clipboard for other tabs.
+            reply(id, session.extract_clipboard(msg.names, JSON.stringify(msg.lightweight)));
+            return;
          case "memStats":
             reply(id, { memBytes: wasmMemBytes(), liveBytes: wasmLiveBytes(), lean: leanSession });
             return;

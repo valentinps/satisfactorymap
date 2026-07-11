@@ -4,6 +4,7 @@
 //! the game.
 
 pub mod apply;
+pub mod clipboard;
 pub mod export;
 pub mod ops;
 pub mod rename;

@@ -13,6 +13,65 @@ use crate::version_data::parse_save_object_version_data;
 /// (units: compressed file bytes), phase 1 = parsing (units: level bytes).
 pub type ProgressFn<'a> = &'a mut dyn FnMut(u8, u64, u64);
 
+/// One object-header record ([u32 headerType][actor or component fields]).
+/// Also used standalone by the cross-save clipboard, whose blobs are exactly
+/// these records (StrRefs come out relative to the cursor's buffer).
+pub(crate) fn parse_one_header(c: &mut Cursor) -> PResult<Header> {
+    let header_type = c.u32()?;
+    match header_type {
+        1 => {
+            let type_path = c.string()?;
+            let root_object = c.string()?;
+            let instance_name = c.string()?;
+            let flags = c.u32()?;
+            let need_transform = c.bool_u32("needTransform")?;
+            if c.pos + 40 > c.data.len() {
+                return Err(perr!(
+                    "Offset {} too large for ActorHeader transform in {}-byte data.",
+                    c.pos,
+                    c.data.len()
+                ));
+            }
+            let transform_off = c.pos as u32;
+            let f = |i: usize| -> f32 {
+                f32::from_le_bytes(c.data[c.pos + i * 4..c.pos + i * 4 + 4].try_into().unwrap())
+            };
+            let rotation = [f(0), f(1), f(2), f(3)];
+            let position = [f(4), f(5), f(6)];
+            let scale = [f(7), f(8), f(9)];
+            c.pos += 40;
+            let was_placed_in_level = c.bool_u32("wasPlacedInLevel")?;
+            Ok(Header::Actor(ActorHeader {
+                type_path,
+                root_object,
+                instance_name,
+                flags,
+                need_transform,
+                rotation,
+                position,
+                scale,
+                was_placed_in_level,
+                transform_off,
+            }))
+        }
+        0 => {
+            let class_name = c.string()?;
+            let root_object = c.string()?;
+            let instance_name = c.string()?;
+            let flags = c.u32()?;
+            let parent_actor_name = c.string()?;
+            Ok(Header::Component(ComponentHeader {
+                class_name,
+                root_object,
+                instance_name,
+                flags,
+                parent_actor_name,
+            }))
+        }
+        other => Err(perr!("Invalid headerType {}", other)),
+    }
+}
+
 fn parse_headers_and_level(
     c: &mut Cursor,
     header_save_version: u32,
@@ -41,59 +100,7 @@ fn parse_headers_and_level(
     let mut last_report = c.pos;
     for _ in 0..actor_and_component_count {
         let header_record_start = c.pos;
-        let header_type = c.u32()?;
-        let h = match header_type {
-            1 => {
-                let type_path = c.string()?;
-                let root_object = c.string()?;
-                let instance_name = c.string()?;
-                let flags = c.u32()?;
-                let need_transform = c.bool_u32("needTransform")?;
-                if c.pos + 40 > c.data.len() {
-                    return Err(perr!(
-                        "Offset {} too large for ActorHeader transform in {}-byte data.",
-                        c.pos,
-                        c.data.len()
-                    ));
-                }
-                let transform_off = c.pos as u32;
-                let f = |i: usize| -> f32 {
-                    f32::from_le_bytes(c.data[c.pos + i * 4..c.pos + i * 4 + 4].try_into().unwrap())
-                };
-                let rotation = [f(0), f(1), f(2), f(3)];
-                let position = [f(4), f(5), f(6)];
-                let scale = [f(7), f(8), f(9)];
-                c.pos += 40;
-                let was_placed_in_level = c.bool_u32("wasPlacedInLevel")?;
-                Header::Actor(ActorHeader {
-                    type_path,
-                    root_object,
-                    instance_name,
-                    flags,
-                    need_transform,
-                    rotation,
-                    position,
-                    scale,
-                    was_placed_in_level,
-                    transform_off,
-                })
-            }
-            0 => {
-                let class_name = c.string()?;
-                let root_object = c.string()?;
-                let instance_name = c.string()?;
-                let flags = c.u32()?;
-                let parent_actor_name = c.string()?;
-                Header::Component(ComponentHeader {
-                    class_name,
-                    root_object,
-                    instance_name,
-                    flags,
-                    parent_actor_name,
-                })
-            }
-            other => return Err(perr!("Invalid headerType {}", other)),
-        };
+        let h = parse_one_header(c)?;
         headers.push(h);
         header_spans.push((header_record_start as u32, (c.pos - header_record_start) as u32));
         if let Some(cb) = progress.as_deref_mut() {

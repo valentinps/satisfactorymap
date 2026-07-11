@@ -30,6 +30,12 @@ var EditorTool = (function() {
     return [wx, wy];
   }
 
+  function worldToMapPx(wx, wy) {
+    var px = ((wx / SCALE + OFF_X) / DESCALE - CROP_LO) * TO_HIGHRES;
+    var py = MAP_SIZE - ((wy / SCALE + OFF_Y) / DESCALE - CROP_LO) * TO_HIGHRES;
+    return [px, py];
+  }
+
   // Map-pixel delta -> world-cm delta (Y flipped).
   function mapDeltaToWorld(dPxX, dPxY) {
     return [dPxX * CM_PER_PIXEL, -dPxY * CM_PER_PIXEL];
@@ -270,9 +276,25 @@ var EditorTool = (function() {
 
   // ---- Toolbar (edit count / undo / redo) ---------------------------------------
 
+  // The top bar centers the search box within a flex row whose sides are
+  // unequal (menu+logo left, status buttons + altitude padding right), so
+  // "centered" for top notifications means the SEARCH BOX's center, not the
+  // viewport's -- align to it directly.
+  function alignToolbar() {
+    var searchBox = document.getElementById("searchBox");
+    if (!searchBox || !toolbar) {
+      return;
+    }
+    var box = searchBox.getBoundingClientRect();
+    if (box.width > 0) {
+      toolbar.style.left = (box.left + box.width / 2) + "px";
+    }
+  }
+
   function updateToolbar() {
     var any = actions.length > 0 || redoStack.length > 0;
     toolbar.style.display = any ? "flex" : "none";
+    alignToolbar();
     editCountEl.textContent = actions.length + " edit" + (actions.length === 1 ? "" : "s");
     undoBtn.disabled = applyInFlight || actions.length === 0;
     redoBtn.disabled = applyInFlight || redoStack.length === 0;
@@ -324,7 +346,7 @@ var EditorTool = (function() {
       cursor: null,
     };
     document.getElementById("map").style.cursor = "crosshair";
-    hintBar.textContent = (mode === "paste" ? "Click to paste" : "Click to place")
+    hintBar.textContent = (mode === "move" ? "Click to place" : "Click to paste")
       + " · R rotate 90° · Esc cancel";
     hintBar.style.display = "block";
     ghost.style.display = "block";
@@ -344,12 +366,98 @@ var EditorTool = (function() {
     var n = targets.actorNames.length + targets.lightweight.length;
     SaveLoadFlow.setStatus("Copied " + n.toLocaleString() + " object" + (n === 1 ? "" : "s")
       + " — Ctrl+V or right-click to paste.");
+    // Also put a portable blob (raw object bytes + version metadata) on the
+    // OS clipboard so another tab -- even another save -- can paste it.
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      SaveClient.extractClipboard(targets.actorNames, targets.lightweight)
+        .then(function(json) {
+          return navigator.clipboard.writeText(json);
+        })
+        .then(function() {
+          SaveLoadFlow.setStatus("Copied " + n.toLocaleString() + " object" + (n === 1 ? "" : "s")
+            + " — paste with Ctrl+V here or in another tab.");
+        })
+        .catch(function(error) {
+          console.warn("System-clipboard copy failed (same-tab paste still works):", error);
+        });
+    }
+  }
+
+  // What a paste would use right now: the in-tab clipboard when set, else a
+  // cross-tab blob from the OS clipboard (written by copyTargets in any tab).
+  function resolvePaste() {
+    if (clipboard) {
+      return Promise.resolve({ mode: "internal" });
+    }
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      return Promise.resolve(null);
+    }
+    return navigator.clipboard.readText().then(function(text) {
+      if (!text || text.length > 200e6 || text.indexOf("\"smapPaste\"") === -1) {
+        return null;
+      }
+      var blob;
+      try {
+        blob = JSON.parse(text);
+      } catch (error) {
+        return null;
+      }
+      if (!blob || blob.smapPaste !== 1 || !blob.anchor || !blob.bboxWorld) {
+        return null;
+      }
+      return { mode: "external", blob: blob };
+    }, function() {
+      return null; // permission denied / unfocused: same-tab paste only
+    });
   }
 
   function startPaste() {
-    if (clipboard) {
-      startPlacement("paste", clipboard);
-    }
+    resolvePaste().then(function(src) {
+      if (!src) {
+        SaveLoadFlow.setStatus("Nothing to paste — copy something first.");
+        return;
+      }
+      if (src.mode === "internal") {
+        startPlacement("paste", clipboard);
+        return;
+      }
+      startExternalPlacement(src.blob);
+    });
+  }
+
+  // Ghost placement for a cross-tab blob: its bbox/anchor are in WORLD
+  // coordinates; convert to map px for the ghost (Y flips, so normalize).
+  function startExternalPlacement(blob) {
+    var lo = worldToMapPx(blob.bboxWorld[0], blob.bboxWorld[1]);
+    var hi = worldToMapPx(blob.bboxWorld[2], blob.bboxWorld[3]);
+    var targets = {
+      actorNames: [],
+      lightweight: [],
+      skipped: 0,
+      external: blob,
+      bbox: {
+        minX: Math.min(lo[0], hi[0]),
+        minY: Math.min(lo[1], hi[1]),
+        maxX: Math.max(lo[0], hi[0]),
+        maxY: Math.max(lo[1], hi[1]),
+      },
+    };
+    startPlacement("external", targets);
+  }
+
+  function buildExternalOps(blob, targetWorld, rotDeg) {
+    return [{
+      op: "pasteExternal",
+      saveVersion: blob.saveVersion,
+      objectVersion: blob.objectVersion,
+      lightweightVersion: blob.lightweightVersion,
+      actors: blob.actors || [],
+      lightweight: blob.lightweight || [],
+      anchor: blob.anchor,
+      delta: [targetWorld[0] - blob.anchor[0], targetWorld[1] - blob.anchor[1], 0],
+      rotateYawDeg: rotDeg,
+      seed: Math.floor(Math.random() * 0x1fffffffffffff),
+    }];
   }
 
   // Delete applies immediately -- undo (full replay from pristine) is the
@@ -371,13 +479,23 @@ var EditorTool = (function() {
   // Context menu "Paste here": paste immediately at the given map point
   // without the ghost flow.
   function pasteAt(mapX, mapY) {
-    if (!clipboard || applyInFlight) {
+    if (applyInFlight) {
       return;
     }
-    var b = clipboard.bbox;
-    var anchor = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 };
-    var deltaXY = mapDeltaToWorld(mapX - anchor.x, mapY - anchor.y);
-    applyAction(buildDuplicateOps(clipboard, [deltaXY[0], deltaXY[1], 0], 0, null));
+    resolvePaste().then(function(src) {
+      if (!src) {
+        SaveLoadFlow.setStatus("Nothing to paste — copy something first.");
+        return;
+      }
+      if (src.mode === "internal") {
+        var b = clipboard.bbox;
+        var anchor = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 };
+        var deltaXY = mapDeltaToWorld(mapX - anchor.x, mapY - anchor.y);
+        applyAction(buildDuplicateOps(clipboard, [deltaXY[0], deltaXY[1], 0], 0, null));
+        return;
+      }
+      applyAction(buildExternalOps(src.blob, mapPxToWorldXY(mapX, mapY), 0));
+    });
   }
 
   function cancelPlacement() {
@@ -427,13 +545,18 @@ var EditorTool = (function() {
       return;
     }
     var p = placement;
-    var dPxX = e.latlng.lng - p.anchor.x;
-    var dPxY = e.latlng.lat - p.anchor.y;
-    var deltaXY = mapDeltaToWorld(dPxX, dPxY);
     var rotDeg = (p.rotSteps * 90) % 360;
-    var pivot = mapPxToWorldXY(p.anchor.x, p.anchor.y);
-    var build = p.mode === "paste" ? buildDuplicateOps : buildMoveOps;
-    var ops = build(p.targets, [deltaXY[0], deltaXY[1], 0], rotDeg, pivot);
+    var ops;
+    if (p.mode === "external") {
+      ops = buildExternalOps(p.targets.external, mapPxToWorldXY(e.latlng.lng, e.latlng.lat), rotDeg);
+    } else {
+      var dPxX = e.latlng.lng - p.anchor.x;
+      var dPxY = e.latlng.lat - p.anchor.y;
+      var deltaXY = mapDeltaToWorld(dPxX, dPxY);
+      var pivot = mapPxToWorldXY(p.anchor.x, p.anchor.y);
+      var build = p.mode === "paste" ? buildDuplicateOps : buildMoveOps;
+      ops = build(p.targets, [deltaXY[0], deltaXY[1], 0], rotDeg, pivot);
+    }
     cancelPlacement();
     applyAction(ops);
   }
@@ -573,11 +696,21 @@ var EditorTool = (function() {
                  && (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z"))) {
         redo();
         e.preventDefault();
-      } else if (!inInput && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
-        if (clipboard) {
-          startPaste();
+      } else if (!inInput && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+        // Don't hijack a real text copy.
+        if (window.getSelection && String(window.getSelection())) {
+          return;
+        }
+        var targets = window.SelectionTool && SelectionTool.currentEditTargets
+          ? SelectionTool.currentEditTargets()
+          : null;
+        if (targets && (targets.actorNames.length + targets.lightweight.length) > 0) {
+          copyTargets(targets);
           e.preventDefault();
         }
+      } else if (!inInput && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+        startPaste();
+        e.preventDefault();
       }
     });
 
@@ -587,6 +720,7 @@ var EditorTool = (function() {
         e.returnValue = "";
       }
     });
+    window.addEventListener("resize", alignToolbar);
   });
 
   return {

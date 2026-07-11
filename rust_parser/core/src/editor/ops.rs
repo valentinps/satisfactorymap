@@ -62,6 +62,46 @@ pub enum EditOp {
     DeleteActors { names: Vec<String> },
     #[serde(rename_all = "camelCase")]
     DeleteLightweight { items: Vec<LwRef> },
+    /// Paste objects copied from ANOTHER session/save (the cross-tab
+    /// clipboard): raw header/body byte blobs plus the version metadata
+    /// needed to validate they're byte-compatible with this save. Produced
+    /// by editor::clipboard::extract_clipboard on the source side.
+    #[serde(rename_all = "camelCase")]
+    PasteExternal {
+        save_version: u32,
+        object_version: i32,
+        #[serde(default)]
+        lightweight_version: Option<u32>,
+        #[serde(default)]
+        actors: Vec<ForeignActor>,
+        #[serde(default)]
+        lightweight: Vec<ForeignLightweight>,
+        /// World XY the blobs were copied around; rotation pivots here and
+        /// `delta` translates from here to the paste point.
+        anchor: [f64; 2],
+        delta: [f64; 3],
+        #[serde(default)]
+        rotate_yaw_deg: f64,
+        seed: u64,
+    },
+}
+
+/// One copied actor/component: base64 of its header record and object
+/// record, verbatim from the source save's decompressed body.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignActor {
+    pub h: String,
+    pub b: String,
+}
+
+/// One copied lightweight buildable record (blueprint proxy already emptied
+/// at extraction, so the record layout is fixed).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignLightweight {
+    pub type_path: String,
+    pub r: String,
 }
 
 /// A lightweight buildable has no instance name; it's addressed by its
