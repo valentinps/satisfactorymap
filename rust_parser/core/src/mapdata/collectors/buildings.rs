@@ -27,20 +27,11 @@ fn f4(v: [f32; 4]) -> [f64; 4] {
 /// _findLightweightBuildableGroups: the FGLightweightBuildableSubsystem
 /// actor's decoded actorSpecificInfo minus the leading lightweightVersion --
 /// [(buildItemTypePath, [instance, ...]), ...].
-pub(crate) fn find_lightweight_buildable_groups<'a>(
-    scan: &SaveScan<'a>,
-) -> &'a [LightweightGroup] {
-    let data = scan.data();
-    let slots = scan.actor_slots_of_type(&[LIGHTWEIGHT_BUILDABLE_SUBSYSTEM_TYPE_PATH]);
-    let Some(&first) = slots.first() else {
-        return &[];
-    };
-    let name = scan.actor(first).instance_name.bytes(data);
-    let Some(object) = scan.object_by_name(name) else {
-        return &[];
-    };
-    match &object.actor_specific {
-        ActorSpecific::Lightweight { items, .. } => items,
+pub(crate) fn find_lightweight_buildable_groups<'s>(
+    scan: &'s SaveScan<'_>,
+) -> &'s [LightweightGroup] {
+    match scan.lightweight_subsystem_object().map(|o| &o.actor_specific) {
+        Some(ActorSpecific::Lightweight { items, .. }) => items,
         _ => &[],
     }
 }

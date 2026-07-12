@@ -5,15 +5,23 @@
 use sav_core::editor::effective_body;
 use sav_core::editor::ops::EditOp;
 use sav_core::editor::session;
-use sav_core::level::{parse_body_bytes_lean, parse_full_save};
+use sav_core::level::{parse_body_bytes_lean, parse_full_save, parse_full_save_lean};
 use sav_core::object::ClassTables;
 use sav_core::store::{Header, SaveStore};
 use std::path::PathBuf;
 
+fn save_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../map/uploads").join(name)
+}
+
 fn load(name: &str) -> SaveStore {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../map/uploads").join(name);
-    let bytes = std::fs::read(path).expect("test save present");
+    let bytes = std::fs::read(save_path(name)).expect("test save present");
     parse_full_save(&bytes, &ClassTables::embedded(), None).unwrap()
+}
+
+fn load_lean(name: &str) -> SaveStore {
+    let bytes = std::fs::read(save_path(name)).expect("test save present");
+    parse_full_save_lean(&bytes, &ClassTables::embedded(), None).unwrap()
 }
 
 /// Every object re-parsed from its recorded span must equal the eagerly
@@ -159,8 +167,30 @@ fn cbor_index_roundtrip_preserves_queries() {
     assert_eq!(a.to_string(), b.to_string());
 }
 
-/// A dropped store can be rehydrated and edited; the edit result matches the
-/// never-dropped path byte for byte.
+/// build_all_json must produce byte-identical payload + index whether the
+/// store holds the full object model or is lean (objects re-parsed on demand
+/// from spans). This is the executable proof that the builder never depends
+/// on the resident model.
+#[test]
+fn build_all_json_on_lean_store_matches_full() {
+    let full = load("All_autosave_0.sav");
+    let (payload_full, index_full) = sav_core::mapdata::build_all_json(&full, None).unwrap();
+
+    let lean = load_lean("All_autosave_0.sav");
+    assert!(!lean.has_object_model(), "lean parse must not build the object model");
+    let (payload_lean, index_lean) = sav_core::mapdata::build_all_json(&lean, None).unwrap();
+
+    assert_eq!(payload_full, payload_lean, "payload diverges on lean store");
+    assert_eq!(
+        index_full.dump(&full).to_string(),
+        index_lean.dump(&lean).to_string(),
+        "index diverges on lean store"
+    );
+}
+
+/// A dropped (model-free) store can be edited directly -- planning re-parses
+/// on demand from spans -- and the result matches the never-dropped path byte
+/// for byte.
 #[test]
 fn edit_after_drop_matches_direct_edit() {
     let store = load("All_autosave_0.sav");
@@ -190,12 +220,11 @@ fn edit_after_drop_matches_direct_edit() {
     // Reference: edit without ever dropping.
     let direct = session::step(&store, &op, &tables).unwrap();
 
-    // Dropped store: rehydrate, then the same edit.
+    // Dropped store: edit directly, without ever rebuilding the model.
     let mut dropped = load("All_autosave_0.sav");
     dropped.drop_object_model();
-    let rehydrated = session::rehydrate(dropped, &tables, None).unwrap();
-    assert!(rehydrated.has_object_model());
-    let edited = session::step_owned(rehydrated, &op, &tables).unwrap();
+    assert!(!dropped.has_object_model());
+    let edited = session::step_owned(dropped, &op, &tables).unwrap();
 
     assert_eq!(direct.data, edited.data, "edited bodies diverge");
 }

@@ -248,7 +248,28 @@ fn parse_headers_and_level(
 pub fn parse_full_save(
     file_data: &[u8],
     tables: &ClassTables,
+    progress: Option<ProgressFn>,
+) -> PResult<SaveStore> {
+    parse_full_save_impl(file_data, tables, progress, false)
+}
+
+/// parse_full_save, but the object model is skipped (every Level.objects is
+/// None; headers/spans/data identical). The payload/index builder re-parses
+/// objects on demand from their spans, so this is the standing load path --
+/// peak memory is ~body + headers, never body + full model.
+pub fn parse_full_save_lean(
+    file_data: &[u8],
+    tables: &ClassTables,
+    progress: Option<ProgressFn>,
+) -> PResult<SaveStore> {
+    parse_full_save_impl(file_data, tables, progress, true)
+}
+
+fn parse_full_save_impl(
+    file_data: &[u8],
+    tables: &ClassTables,
     mut progress: Option<ProgressFn>,
+    lean: bool,
 ) -> PResult<SaveStore> {
     let (info, body_offset) = parse_save_file_info(file_data)?;
 
@@ -266,13 +287,12 @@ pub fn parse_full_save(
         decompress_save_file(file_data, body_offset, dyn_cb.take())?
     };
 
-    parse_body_bytes(
-        decompressed,
-        file_data[..body_offset].to_vec(),
-        info,
-        tables,
-        progress,
-    )
+    let file_header = file_data[..body_offset].to_vec();
+    if lean {
+        parse_body_bytes_lean(decompressed, file_header, info, tables, progress)
+    } else {
+        parse_body_bytes(decompressed, file_header, info, tables, progress)
+    }
 }
 
 /// Parse an already-decompressed body (bytes start at the leading u64
@@ -294,7 +314,8 @@ pub fn parse_body_bytes(
 /// Level.objects is None while headers, byte spans and `data` come out
 /// identical to a full parse (gated by tests). This is the lean-session load
 /// path -- peak memory is ~body + headers instead of body + full model, and
-/// it runs much faster. Queries re-parse via the spans; edits rehydrate.
+/// it runs much faster. Queries, the payload/index builder and edits all
+/// re-parse single objects on demand via the spans.
 pub fn parse_body_bytes_lean(
     decompressed: Vec<u8>,
     file_header: Vec<u8>,

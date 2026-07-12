@@ -90,7 +90,7 @@ mod wasm_alloc {
 #[global_allocator]
 static ALLOC: wasm_alloc::GrowAhead = wasm_alloc::GrowAhead;
 
-use sav_core::level::{parse_full_save, ProgressFn};
+use sav_core::level::{parse_full_save, parse_full_save_lean, ProgressFn};
 use sav_core::mapdata;
 use sav_core::mapdata::index::MapIndex;
 use sav_core::object::ClassTables;
@@ -163,8 +163,9 @@ impl SaveSession {
         self.index.as_ref().ok_or_else(|| JsError::new(SESSION_LOST))
     }
 
-    /// Rebuild index + payload from the new store, drop its parsed object
-    /// model (queries re-parse from spans), and swap it in.
+    /// Rebuild index + payload from the new (lean) store and swap it in. The
+    /// builder re-parses objects on demand; drop_model_unless_kept is a no-op
+    /// unless ?keepModel=1 forced an eager store.
     fn finish_edit(
         &mut self,
         mut new_store: SaveStore,
@@ -201,8 +202,16 @@ impl SaveSession {
         let tables = ClassTables::embedded();
         let mut parse_progress = |phase: u8, current: u64, total: u64| call(phase, current, total);
         let pf: ProgressFn = &mut parse_progress;
-        let mut store =
-            parse_full_save(&bytes, &tables, Some(pf)).map_err(|e| JsError::new(&e.msg))?;
+        // Lean by default: the builder re-parses objects on demand from their
+        // spans, so the full model (~1.5-2GB on a 600k-object save) is never
+        // materialized -- peak memory stays ~body + headers + collector
+        // outputs. ?keepModel=1 keeps the eager path for debugging/regression.
+        let mut store = if KEEP_MODEL.load(std::sync::atomic::Ordering::Relaxed) {
+            parse_full_save(&bytes, &tables, Some(pf))
+        } else {
+            parse_full_save_lean(&bytes, &tables, Some(pf))
+        }
+        .map_err(|e| JsError::new(&e.msg))?;
         drop(bytes);
 
         // 17 payload steps + the index build = BUILD_STEP_COUNT ticks, same
@@ -212,10 +221,8 @@ impl SaveSession {
             mapdata::build_all_json(&store, Some(&mut build_progress))
                 .map_err(|e| JsError::new(&e))?;
 
-        // The parsed per-object model (~1.5-2GB on a 600k-object save) is
-        // only consulted by queries and edit planning from here on: queries
-        // re-parse single objects from their spans, edits rehydrate. Freeing
-        // it leaves the heap headroom the edit pipeline needs.
+        // No-op on the lean path (already model-free); under ?keepModel=1 this
+        // is where the eager model is freed after the build consulted it.
         drop_model_unless_kept(&mut store);
 
         let file_header = store.file_header.clone();
@@ -235,7 +242,7 @@ impl SaveSession {
     /// spans only -- no parsed object model is ever materialized, so this
     /// instance's memory stays ~body + headers + index (~1.2GB on a
     /// 600k-object save) instead of the loaded worker's ~3.6GB high-water
-    /// mark. Queries re-parse from spans; the first edit rehydrates.
+    /// mark. Queries and edits re-parse from spans -- the model is never built.
     pub fn load_lean(
         pristine: &[u8],
         index_bytes: Vec<u8>,
@@ -354,8 +361,8 @@ impl SaveSession {
         self.payload_json = Vec::new();
         let arc = self.store.take().ok_or_else(|| JsError::new(SESSION_LOST))?;
         let store = Arc::try_unwrap(arc).map_err(|_| JsError::new("save store is shared"))?;
-        // Intermediate validation re-parses are lean; the last is full (the
-        // payload build below needs the model, which finish_edit re-drops).
+        // Every re-parse is lean; finish_edit's build re-parses objects on
+        // demand, so the full model is never materialized.
         let mut progress = |current: u64, total: u64| call(1, current, total);
         let store = session::fold_ops(store, &new_ops, &tables, Some(&mut progress))
             .map_err(|e| JsError::new(&e.msg))?;

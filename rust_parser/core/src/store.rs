@@ -345,11 +345,12 @@ pub struct Level {
 }
 
 impl Level {
-    /// The full parsed object model. Panics if it was dropped -- callers are
-    /// the payload/index builders and the edit planner, which only run while
-    /// the model is present (rehydrate first after a drop).
+    /// The full parsed object model. Panics if it was dropped or never built
+    /// (a lean parse). Production code re-parses single objects on demand via
+    /// `SaveStore::parse_object_at`; this eager accessor is used only by tests
+    /// that load a full store.
     pub fn parsed_objects(&self) -> &[Object] {
-        self.objects.as_deref().expect("object model dropped; rehydrate first")
+        self.objects.as_deref().expect("object model absent (lean or dropped store)")
     }
 }
 
@@ -399,7 +400,8 @@ impl SaveStore {
 
     /// Free the parsed per-object model (the bulk of a loaded save's heap:
     /// ~1.5-2GB on a 600k-object save). Headers, spans and `data` stay, so
-    /// queries re-parse single objects on demand and edits rehydrate.
+    /// queries, the payload/index builder and edits all re-parse single
+    /// objects on demand. No-op on an already-lean store.
     pub fn drop_object_model(&mut self) {
         for level in &mut self.levels {
             level.objects = None;

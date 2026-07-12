@@ -3,11 +3,11 @@
 //! index. Insertion order is load-bearing everywhere (Python dict semantics:
 //! last value wins, first position kept).
 
-use super::consts::GAME_STATE_TYPE_PATH_SUBSTRING;
+use super::consts::{GAME_STATE_TYPE_PATH_SUBSTRING, LIGHTWEIGHT_BUILDABLE_SUBSYSTEM_TYPE_PATH};
 use crate::extract::InstanceSlots;
 use crate::store::*;
 use indexmap::IndexMap;
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 
 /// (levelIdx, slotIdx) into store.levels[li].headers / .objects (the two are
@@ -30,6 +30,16 @@ pub struct SaveScan<'a> {
     /// first use and shared by every bulk-extractor call (previously each
     /// call re-walked all objects: 6+ redundant full passes per load).
     instance_slots: OnceCell<InstanceSlots<'a>>,
+    /// Memoized FGLightweightBuildableSubsystem object. Its actor_specific
+    /// holds every lightweight instance (~100k transforms on the big save)
+    /// and three consumers read it, so parse it once and hand out borrows --
+    /// never clone.
+    lightweight_subsystem: OnceCell<Option<Object>>,
+    /// First on-demand re-parse failure seen during a build. Re-parsing bytes
+    /// that already parsed cannot fail, but once the pipeline is lean the
+    /// build IS the deep validation of an edited body -- so build_all_json
+    /// turns a latched error into Err instead of emitting a wrong payload.
+    parse_error: RefCell<Option<String>>,
 }
 
 impl<'a> SaveScan<'a> {
@@ -62,6 +72,8 @@ impl<'a> SaveScan<'a> {
             actor_seqs_by_type_path,
             game_state_objects,
             instance_slots: OnceCell::new(),
+            lightweight_subsystem: OnceCell::new(),
+            parse_error: RefCell::new(None),
         }
     }
 
@@ -96,14 +108,47 @@ impl<'a> SaveScan<'a> {
         }
     }
 
-    #[inline]
-    pub fn object(&self, slot: Slot) -> &'a Object {
-        &self.store.levels[slot.0].parsed_objects()[slot.1]
+    /// Re-parse the object at `slot` from its byte span (owned; identical to
+    /// the eager parse). Returns None on failure, latching the first error so
+    /// the build can fail cleanly. Replaces the old `object()` borrow into the
+    /// resident model, so the builder never needs `parsed_objects()`.
+    pub fn parse_object(&self, slot: Slot) -> Option<Object> {
+        match self.store.parse_object_at(slot.0, slot.1) {
+            Ok(object) => Some(object),
+            Err(e) => {
+                let mut latched = self.parse_error.borrow_mut();
+                if latched.is_none() {
+                    *latched = Some(format!("object at {slot:?}: {e}"));
+                }
+                None
+            }
+        }
     }
 
-    /// scan.objectsByInstanceName.get(name).
-    pub fn object_by_name(&self, name: &[u8]) -> Option<&'a Object> {
-        self.by_instance_name.get(name).map(|&slot| self.object(slot))
+    /// scan.objectsByInstanceName.get(name), re-parsed on demand.
+    pub fn parse_object_by_name(&self, name: &[u8]) -> Option<Object> {
+        let slot = *self.by_instance_name.get(name)?;
+        self.parse_object(slot)
+    }
+
+    /// The FGLightweightBuildableSubsystem object (first of its type, resolved
+    /// by instance name -- last value wins, exactly like the old lookup),
+    /// parsed once and memoized. None when the save has no such subsystem.
+    pub fn lightweight_subsystem_object(&self) -> Option<&Object> {
+        self.lightweight_subsystem
+            .get_or_init(|| {
+                let slots =
+                    self.actor_slots_of_type(&[LIGHTWEIGHT_BUILDABLE_SUBSYSTEM_TYPE_PATH]);
+                let &first = slots.first()?;
+                let name = self.actor(first).instance_name.bytes(self.data());
+                self.parse_object_by_name(name)
+            })
+            .as_ref()
+    }
+
+    /// The first on-demand re-parse error latched during the build, if any.
+    pub fn parse_error(&self) -> Option<String> {
+        self.parse_error.borrow().clone()
     }
 
     pub fn header_by_name(&self, name: &[u8]) -> Option<&'a Header> {

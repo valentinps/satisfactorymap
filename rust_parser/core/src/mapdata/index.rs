@@ -190,7 +190,6 @@ impl MapIndex {
     /// Build from an existing SaveScan (shared with the payload build --
     /// avoids a second full pass over every object).
     pub fn build_with_scan(scan: &SaveScan) -> MapIndex {
-        let store = scan.store;
         let data = scan.data();
 
         let by_instance_name: IndexMap<Vec<u8>, Slot> =
@@ -222,7 +221,7 @@ impl MapIndex {
         let mut station_name_by_station_instance: IndexMap<String, String> = IndexMap::new();
         for (_, obj_slot) in scan.actors_of_type(&[TRAIN_STATION_IDENTIFIER_TYPE_PATH]) {
             let Some(obj_slot) = obj_slot else { continue };
-            let identifier_object = scan.object(obj_slot);
+            let Some(identifier_object) = scan.parse_object(obj_slot) else { continue };
             let station = props::object_ref(&identifier_object.properties, data, b"mStation");
             let station_name = trains_progression::text_property_value(
                 find_prop(&identifier_object.properties, data, b"mStationName"),
@@ -246,7 +245,7 @@ impl MapIndex {
         let mut pipe_network_id_to_members: IndexMap<i32, Vec<String>> = IndexMap::new();
         for (_, obj_slot) in scan.actors_of_type(&[PIPE_NETWORK_TYPE_PATH]) {
             let Some(obj_slot) = obj_slot else { continue };
-            let network_object = scan.object(obj_slot);
+            let Some(network_object) = scan.parse_object(obj_slot) else { continue };
             let fluid_label: Option<String> =
                 props::object_ref(&network_object.properties, data, b"mFluidDescriptor")
                     .and_then(|r| {
@@ -273,7 +272,7 @@ impl MapIndex {
                     continue;
                 }
                 member_names.push(member_reference.path_name.to_string(data));
-                if let Some(member_object) = scan.object_by_name(path) {
+                if let Some(member_object) = scan.parse_object_by_name(path) {
                     // `if memberFluid:` -- truthiness on the float.
                     if let Some(member_fluid) =
                         props::fluid_box(&member_object.properties, data, b"mFluidBox")
@@ -290,7 +289,7 @@ impl MapIndex {
                     connector_key.clear();
                     connector_key.extend_from_slice(path);
                     connector_key.extend_from_slice(connector_suffix.as_bytes());
-                    let Some(connector_object) = scan.object_by_name(&connector_key) else {
+                    let Some(connector_object) = scan.parse_object_by_name(&connector_key) else {
                         continue;
                     };
                     network_id = props::int(&connector_object.properties, data, b"mPipeNetworkID");
@@ -351,9 +350,7 @@ impl MapIndex {
 
         // -- itemLocationIndex ---------------------------------------------------
         let item_location_index: IndexMap<Vec<u8>, Vec<(Vec<u8>, i64)>> =
-            crate::extract::item_location_index(store, scan.instance_slots())
-                .into_iter()
-                .collect();
+            crate::extract::item_location_index(scan).into_iter().collect();
 
         // -- dimensionalDepotByItem ------------------------------------------------
         // {entry["itemPath"]: entry["count"]} over the depot rows -- a dict

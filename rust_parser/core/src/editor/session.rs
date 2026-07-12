@@ -15,13 +15,12 @@ use flate2::{read::ZlibDecoder, read::ZlibEncoder, Compression};
 use std::io::Read;
 
 /// Replay `ops` in order against `pristine_body` (no quirk pad) and return
-/// the FULL-model store of the final state (ready for payload building).
-/// `progress(done_ops, total_ops)` fires after each op's re-parse. Planning
-/// is model-independent, so the pristine parse and every intermediate
-/// validation re-parse are LEAN (span walks); only the final state pays for
-/// the full model. The prior state is dropped before each re-parse so peak
-/// memory stays ~one parsed save (load-bearing for 4GB-limited wasm on
-/// 600k-object saves).
+/// the LEAN store of the final state (the payload/index builder re-parses
+/// objects on demand from spans). `progress(done_ops, total_ops)` fires after
+/// each op's re-parse. Planning is model-independent, so the pristine parse
+/// and every re-parse are LEAN (span walks); the full model is never built.
+/// The prior state is dropped before each re-parse so peak memory stays ~one
+/// lean save (load-bearing for 4GB-limited wasm on 600k-object saves).
 pub fn rebuild(
     pristine_body: Vec<u8>,
     file_header: &[u8],
@@ -31,7 +30,7 @@ pub fn rebuild(
     progress: Option<&mut dyn FnMut(u64, u64)>,
 ) -> PResult<SaveStore> {
     if ops.is_empty() {
-        return parse_body_bytes(pristine_body, file_header.to_vec(), info.clone(), tables, None);
+        return parse_body_bytes_lean(pristine_body, file_header.to_vec(), info.clone(), tables, None);
     }
     let store = parse_body_bytes_lean(
         pristine_body,
@@ -43,9 +42,11 @@ pub fn rebuild(
     fold_ops(store, ops, tables, progress)
 }
 
-/// Apply ops in sequence over an owned store (lean or full): intermediate
-/// validation re-parses are lean, the final one is full so the result is
-/// ready for payload/index building.
+/// Apply ops in sequence over an owned store, returning the LEAN store of the
+/// final state. Every re-parse is a lean span walk -- planning is
+/// model-independent and the payload/index builder re-parses objects on
+/// demand, so the full model is never materialized (the point: peak memory
+/// stays ~one lean save under the 4GB wasm ceiling).
 pub fn fold_ops(
     mut store: SaveStore,
     ops: &[EditOp],
@@ -54,14 +55,10 @@ pub fn fold_ops(
 ) -> PResult<SaveStore> {
     let total = ops.len() as u64;
     for (i, op) in ops.iter().enumerate() {
-        let last = i + 1 == ops.len();
-        store = step_owned_impl(store, op, tables, !last)?;
+        store = step_owned_impl(store, op, tables, true)?;
         if let Some(cb) = progress.as_deref_mut() {
             cb(i as u64 + 1, total);
         }
-    }
-    if !store.has_object_model() {
-        store = rehydrate(store, tables, None)?; // ops was empty on a lean store
     }
     Ok(store)
 }
@@ -106,28 +103,6 @@ fn step_owned_impl(
     } else {
         parse_body_bytes(body, file_header, info, tables, None)
     }
-}
-
-/// Re-parse the full per-object model from the store's own body -- the step
-/// before planning an edit on a store whose model was freed by
-/// drop_object_model. Consumes the store (mirrors step_owned's destructure:
-/// the lean headers/spans are freed, the body moves -- no second body copy).
-/// A parse failure loses the state, recovered like a failed edit via
-/// pristine replay. No-op when the model is already present.
-pub fn rehydrate(
-    store: SaveStore,
-    tables: &ClassTables,
-    progress: Option<crate::level::ProgressFn>,
-) -> PResult<SaveStore> {
-    if store.has_object_model() {
-        return Ok(store);
-    }
-    let padded = store.padded;
-    let SaveStore { data: mut body, file_header, info, .. } = store;
-    if padded {
-        body.truncate(body.len() - 4); // drop the quirk pad; re-parse re-adds it
-    }
-    parse_body_bytes(body, file_header, info, tables, progress)
 }
 
 /// Compress a pristine body for retention (wasm keeps the undo baseline as
