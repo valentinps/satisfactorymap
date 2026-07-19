@@ -2148,7 +2148,7 @@ var MapApp = {};
       .addAttribution(
         'Satisfactory Save Map &middot; ' +
         '<a href="https://satisfactorymap.net/" target="_blank" rel="noopener">satisfactorymap.net</a>' +
-        ' &middot; &copy; 2026 Valentin Planes &middot; ' +
+        ' &middot; &copy; 2026 valentinps &middot; ' +
         '<a href="https://github.com/valentinps/satisfactorymap/blob/main/LICENSE" target="_blank" rel="noopener">GPL-3.0</a>')
       .addTo(map);
     L.control.zoom({ position: "bottomright" }).addTo(map);
