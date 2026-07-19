@@ -57,34 +57,35 @@ fn is_fluid_short(path: &[u8]) -> bool {
 // Shared inventory-walk helpers (sav_map_data 2493-2613, 2892-2936)
 // ---------------------------------------------------------------------------
 
-/// sav_map_data._resolveComponentObject.
-pub fn resolve_component_object<'a>(
-    store: &'a SaveStore,
+/// sav_map_data._resolveComponentObject. Owned: components re-parse from
+/// their spans on demand (the parsed model is dropped post-load).
+pub fn resolve_component_object(
+    store: &SaveStore,
     index: &MapIndex,
     properties: &PropList,
     property_name: &[u8],
-) -> Option<&'a Object> {
+) -> Option<Object> {
     let data: &[u8] = &store.data;
     let reference = props::object_ref(properties, data, property_name)?;
-    index.object_by_name(store, reference.path_name.bytes(data))
+    index.parse_object_by_name(store, reference.path_name.bytes(data))
 }
 
 /// sav_map_data._inventoryComponentObjects: referenced inventory components
 /// first, then the vehicle name-convention ones, deduped by pathName keeping
 /// the first.
-pub fn inventory_component_objects<'a>(
-    store: &'a SaveStore,
+pub fn inventory_component_objects(
+    store: &SaveStore,
     index: &MapIndex,
     instance_name: &[u8],
     properties: &PropList,
-) -> Vec<&'a Object> {
+) -> Vec<Object> {
     let data: &[u8] = &store.data;
     let mut seen_paths: Vec<&[u8]> = Vec::new();
-    let mut components: Vec<&'a Object> = Vec::new();
+    let mut components: Vec<Object> = Vec::new();
     for prop_name in INVENTORY_PROPERTY_NAMES {
         if let Some(PropertyValue::Object(r)) = find_prop(properties, data, prop_name) {
             let path = r.path_name.bytes(data);
-            if let Some(object) = index.object_by_name(store, path) {
+            if let Some(object) = index.parse_object_by_name(store, path) {
                 if !seen_paths.contains(&path) {
                     seen_paths.push(path);
                     components.push(object);
@@ -98,7 +99,7 @@ pub fn inventory_component_objects<'a>(
         key.extend_from_slice(instance_name);
         key.extend_from_slice(suffix);
         if !seen_paths.iter().any(|p| *p == key.as_slice()) {
-            if let Some(object) = index.object_by_name(store, &key) {
+            if let Some(object) = index.parse_object_by_name(store, &key) {
                 components.push(object);
             }
         }
@@ -107,24 +108,24 @@ pub fn inventory_component_objects<'a>(
 }
 
 /// sav_map_data._vehicleStorageComponent.
-pub fn vehicle_storage_component<'a>(
-    store: &'a SaveStore,
+pub fn vehicle_storage_component(
+    store: &SaveStore,
     index: &MapIndex,
     instance_name: &[u8],
     properties: &PropList,
-) -> Option<&'a Object> {
+) -> Option<Object> {
     let data: &[u8] = &store.data;
     if let Some(r) = props::object_ref(properties, data, b"mStorageInventory") {
         let path = r.path_name.bytes(data);
         if !path.is_empty() {
-            if let Some(object) = index.object_by_name(store, path) {
+            if let Some(object) = index.parse_object_by_name(store, path) {
                 return Some(object);
             }
         }
     }
     let mut key = instance_name.to_vec();
     key.extend_from_slice(b".StorageInventory");
-    index.object_by_name(store, &key)
+    index.parse_object_by_name(store, &key)
 }
 
 /// The shared row build + sort of aggregateSelectionInventory /
@@ -153,7 +154,7 @@ fn inventory_rows(solid: IndexMap<Vec<u8>, i64>, fluid: IndexMap<String, f64>) -
 }
 
 /// sav_map_data._sumInventoryComponentStacks.
-pub fn sum_inventory_component_stacks(data: &[u8], component_objects: &[&Object]) -> Value {
+pub fn sum_inventory_component_stacks(data: &[u8], component_objects: &[Object]) -> Value {
     let mut solid: IndexMap<Vec<u8>, i64> = IndexMap::new();
     let mut fluid: IndexMap<String, f64> = IndexMap::new();
     for component_object in component_objects {
@@ -195,7 +196,9 @@ fn add_item(
 /// negative operands == rem_euclid; the slice `chainItems[start:start+count]`
 /// clamps at the end like Python slicing.
 pub fn conveyor_chain_segment_item_paths<'a>(
-    chain_actor_info: &'a ActorSpecific,
+    // NOT tied to 'a: the returned slices borrow only `data` (StrRefs are
+    // offsets), so an owned re-parsed chain actor can be a short-lived local.
+    chain_actor_info: &ActorSpecific,
     data: &'a [u8],
     belt_instance_name: &[u8],
 ) -> Vec<&'a [u8]> {
@@ -541,7 +544,7 @@ pub fn find_item_locations(store: &SaveStore, index: &MapIndex, item_short_name:
         }
         if type_path_bytes == PLAYER_TYPE_PATH.as_bytes() {
             let player_name = index
-                .object_by_name(store, instance_name)
+                .parse_object_by_name(store, instance_name)
                 .and_then(|o| props::string(&o.properties, data, b"mCachedPlayerName"))
                 .map(|s| s.to_string(data));
             label = match player_name {
@@ -653,7 +656,7 @@ pub fn aggregate_selection_inventory(
             continue;
         }
         let name_bytes = instance_name.as_bytes();
-        let Some(object) = index.object_by_name(store, name_bytes) else { continue };
+        let Some(object) = index.parse_object_by_name(store, name_bytes) else { continue };
         let properties = &object.properties;
 
         // Building/player/vehicle inventories.
@@ -675,7 +678,7 @@ pub fn aggregate_selection_inventory(
         {
             let chain_path = chain_reference.path_name.bytes(data);
             if !chain_path.is_empty() {
-                if let Some(chain_actor) = index.object_by_name(store, chain_path) {
+                if let Some(chain_actor) = index.parse_object_by_name(store, chain_path) {
                     for item_path in conveyor_chain_segment_item_paths(
                         &chain_actor.actor_specific,
                         data,
@@ -697,7 +700,7 @@ pub fn aggregate_selection_inventory(
                     connector_key.clear();
                     connector_key.extend_from_slice(name_bytes);
                     connector_key.extend_from_slice(connector_suffix.as_bytes());
-                    let Some(connector_object) = index.object_by_name(store, &connector_key)
+                    let Some(connector_object) = index.parse_object_by_name(store, &connector_key)
                     else {
                         continue;
                     };
@@ -743,7 +746,7 @@ pub fn collect_building_info(store: &SaveStore, index: &MapIndex, type_paths: &[
         }
         for instance_name in instance_names {
             // Lightweight buildables -- no recipe/power/inventory concept.
-            let Some(object) = index.object_by_name(store, instance_name.as_bytes()) else {
+            let Some(object) = index.parse_object_by_name(store, instance_name.as_bytes()) else {
                 continue;
             };
             let properties = &object.properties;
@@ -893,14 +896,14 @@ pub fn collect_vehicle_info(store: &SaveStore, index: &MapIndex, type_paths: &[S
     let mut automated_count: i64 = 0;
     let mut docked_count: i64 = 0;
     let mut has_docking_state = false;
-    let mut cargo_components: Vec<&Object> = Vec::new();
-    let mut fuel_components: Vec<&Object> = Vec::new();
+    let mut cargo_components: Vec<Object> = Vec::new();
+    let mut fuel_components: Vec<Object> = Vec::new();
     let mut fuel_key: Vec<u8> = Vec::new();
     for type_path in type_paths {
         for instance_name in index.instance_names_by_type_path.get(type_path).unwrap_or(&empty) {
             count += 1;
             let name_bytes = instance_name.as_bytes();
-            let Some(object) = index.object_by_name(store, name_bytes) else { continue };
+            let Some(object) = index.parse_object_by_name(store, name_bytes) else { continue };
             let properties = &object.properties;
             if let Some(storage_component) =
                 vehicle_storage_component(store, index, name_bytes, properties)
@@ -910,7 +913,7 @@ pub fn collect_vehicle_info(store: &SaveStore, index: &MapIndex, type_paths: &[S
             fuel_key.clear();
             fuel_key.extend_from_slice(name_bytes);
             fuel_key.extend_from_slice(b".FuelInventory");
-            if let Some(fuel_component) = index.object_by_name(store, &fuel_key) {
+            if let Some(fuel_component) = index.parse_object_by_name(store, &fuel_key) {
                 fuel_components.push(fuel_component);
             }
             if find_prop(properties, data, b"mCurrentVehiclePathSegment").is_some() {
@@ -967,7 +970,7 @@ pub fn collect_train_info(store: &SaveStore, index: &MapIndex) -> Value {
     let mut locomotive_count: i64 = 0;
     let mut wagon_count: i64 = 0;
     let mut composition_counts: IndexMap<(i64, i64), i64> = IndexMap::new();
-    let mut cargo_components: Vec<&Object> = Vec::new();
+    let mut cargo_components: Vec<Object> = Vec::new();
     for train in trains {
         let locomotives =
             train.cars.iter().filter(|car| car.type_path == LOCOMOTIVE_TYPE_PATH).count() as i64;
@@ -980,7 +983,7 @@ pub fn collect_train_info(store: &SaveStore, index: &MapIndex) -> Value {
             if car.type_path != FREIGHT_WAGON_TYPE_PATH {
                 continue;
             }
-            let Some(car_object) = index.object_by_name(store, car.id.as_bytes()) else {
+            let Some(car_object) = index.parse_object_by_name(store, car.id.as_bytes()) else {
                 continue;
             };
             if let Some(storage_component) =

@@ -76,7 +76,7 @@ fn car_entry<'a>(scan: &SaveScan<'a>, name: &'a [u8]) -> Option<Car<'a>> {
 
 /// `ref.pathName if ref is not None and getattr(ref, "pathName", None) else
 /// None` -- an ObjectProperty ref with a non-empty pathName.
-fn ref_path<'a>(r: Option<&'a ObjectRef>, data: &'a [u8]) -> Option<&'a [u8]> {
+fn ref_path<'d>(r: Option<&ObjectRef>, data: &'d [u8]) -> Option<&'d [u8]> {
     let p = r?.path_name.bytes(data);
     if p.is_empty() {
         None
@@ -104,7 +104,7 @@ pub(crate) fn train_consists<'a>(scan: &SaveScan<'a>) -> Vec<Consist<'a>> {
             // objectsByInstanceName.get(instanceName): headers/objects are
             // index-aligned and both maps are last-value-wins, so the slot's
             // own object is exactly that lookup.
-            let train_object = scan.object(slot);
+            let Some(train_object) = scan.parse_object(slot) else { continue };
             let first = props::object_ref(&train_object.properties, data, b"FirstVehicle")
                 .or_else(|| props::object_ref(&train_object.properties, data, b"mFirstVehicle"));
             let last = props::object_ref(&train_object.properties, data, b"LastVehicle")
@@ -121,7 +121,7 @@ pub(crate) fn train_consists<'a>(scan: &SaveScan<'a>) -> Vec<Consist<'a>> {
                 seen.insert(cur);
                 ordered.push(cur);
                 current = None;
-                if let Some(car_object) = scan.object_by_name(cur) {
+                if let Some(car_object) = scan.parse_object_by_name(cur) {
                     // Python: isinstance(list) and len == 3 -- only the
                     // Locomotive/FreightWagon actorSpecificInfo shape.
                     if let ActorSpecific::Train { previous, next } = &car_object.actor_specific {
@@ -376,17 +376,14 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 /// sav_map_data._findObjectByTypePathSubstring.
-fn find_object_by_type_path_substring<'a>(
-    scan: &SaveScan<'a>,
-    substring: &str,
-) -> Option<&'a Object> {
+fn find_object_by_type_path_substring(scan: &SaveScan<'_>, substring: &str) -> Option<Object> {
     let data = scan.data();
     let needle = substring.as_bytes();
-    for level in &scan.store.levels {
+    for (li, level) in scan.store.levels.iter().enumerate() {
         for (oi, header) in level.headers.iter().enumerate() {
             // object.instanceName == the index-aligned header's instanceName.
             if find_subslice(header.instance_name().bytes(data), needle) {
-                return Some(&level.objects[oi]);
+                return scan.parse_object((li, oi));
             }
         }
     }
@@ -395,7 +392,7 @@ fn find_object_by_type_path_substring<'a>(
     for (type_path, seq_headers) in &scan.actor_seqs_by_type_path {
         if find_subslice(type_path, needle) {
             let name = scan.header(seq_headers[0].1).instance_name().bytes(data);
-            return scan.object_by_name(name);
+            return scan.parse_object_by_name(name);
         }
     }
     None
@@ -459,9 +456,11 @@ fn done_count(entries: &[SchematicEntry]) -> usize {
 pub fn collect_progression(scan: &SaveScan) -> Value {
     let data = scan.data();
 
+    // Owned re-parse; kept alive for the whole fn so `purchased` (which
+    // borrows through it) stays valid -- it drops after `purchased` does.
     let schematic_manager =
         find_object_by_type_path_substring(scan, SCHEMATIC_MANAGER_TYPE_PATH_SUBSTRING);
-    let purchased: HashSet<&[u8]> = match schematic_manager {
+    let purchased: HashSet<&[u8]> = match &schematic_manager {
         Some(object) => short_names_from_object_reference_list(
             find_prop(&object.properties, data, b"mPurchasedSchematics"),
             data,
@@ -471,7 +470,7 @@ pub fn collect_progression(scan: &SaveScan) -> Value {
 
     let research_manager =
         find_object_by_type_path_substring(scan, RESEARCH_MANAGER_TYPE_PATH_SUBSTRING);
-    let unlocked_trees: HashSet<String> = match research_manager {
+    let unlocked_trees: HashSet<String> = match &research_manager {
         Some(object) => short_names_from_object_reference_list(
             find_prop(&object.properties, data, b"mUnlockedResearchTrees"),
             data,
@@ -754,8 +753,9 @@ fn collect_space_elevator_state(scan: &SaveScan) -> Value {
     let mut cost_multiplier: f64 = 1.0;
     for &slot in &scan.game_state_objects {
         // save order; last value wins, same as the old full scan
+        let Some(object) = scan.parse_object(slot) else { continue };
         if let Some(multiplier) =
-            props::float(&scan.object(slot).properties, data, b"mSpacePartsCostMultiplier")
+            props::float(&object.properties, data, b"mSpacePartsCostMultiplier")
         {
             cost_multiplier = multiplier;
         }

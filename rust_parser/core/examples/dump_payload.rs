@@ -6,7 +6,7 @@
 //!     cargo run --release --features parallel --example dump_payload -- \
 //!         save.sav out_payload.json out_index.json
 
-use sav_core::level::parse_full_save;
+use sav_core::level::{parse_full_save, parse_full_save_lean};
 use sav_core::mapdata::{self, index::MapIndex};
 use sav_core::object::ClassTables;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,9 +54,17 @@ fn main() {
         std::process::exit(2);
     };
     let bytes = std::fs::read(sav).expect("read save");
+    // DUMP_LEAN=1 exercises the standing production path: a lean parse (no
+    // resident object model) with the builder re-parsing on demand. Output
+    // must be byte-identical to the default full-parse path.
+    let lean = std::env::var("DUMP_LEAN").is_ok();
     let t = std::time::Instant::now();
-    let store = parse_full_save(&bytes, &ClassTables::embedded(), None).expect("parse");
-    eprintln!("parse: {:.2?}", t.elapsed());
+    let store = if lean {
+        parse_full_save_lean(&bytes, &ClassTables::embedded(), None).expect("parse")
+    } else {
+        parse_full_save(&bytes, &ClassTables::embedded(), None).expect("parse")
+    };
+    eprintln!("parse{}: {:.2?}", if lean { " (lean)" } else { "" }, t.elapsed());
     report("after parse");
     drop(bytes);
 

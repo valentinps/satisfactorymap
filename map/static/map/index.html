@@ -89,6 +89,7 @@
         <div id="loadStatus"></div>
         <div id="loadProgressBar"><div id="loadProgressFill"></div></div>
         <div id="totalObjectCount"></div>
+        <button id="downloadSaveBtn" style="display:none" title="Export the current (possibly edited) save as a new .sav file">Download save</button>
       </div>
 
       <div id="gameSettingsPanel" style="display:none"></div>
@@ -213,7 +214,56 @@
   <div id="selectionPanelButtons">
     <button id="selectionObjectsBtn">List objects</button>
     <button id="selectionInventoryBtn">Total inventory</button>
+    <button id="selectionMoveBtn">Move</button>
+    <button id="selectionOffsetBtn" title="Move by exact offsets (the only way to change altitude)">Offset…</button>
+    <button id="selectionCopyBtn" title="Copy the selection; paste with Ctrl+V or right-click">Copy</button>
+    <button id="selectionDeleteBtn" title="Delete the selected objects from the save (undo with Ctrl+Z)">Delete</button>
     <button id="selectionClearBtn" title="Clear selection">&times;</button>
+  </div>
+</div>
+
+<!-- Save-editor overlays (editor.js): pending-edit toolbar, ghost placement
+     rectangle + hint, and the precise-offset dialog. -->
+<div id="editorToolbar" style="display:none">
+  <span id="editorEditCount"></span>
+  <button id="editorUndoBtn" title="Undo last edit (Ctrl+Z)">Undo</button>
+  <button id="editorRedoBtn" title="Redo (Ctrl+Y)">Redo</button>
+</div>
+<div id="editorGhost" style="display:none"></div>
+<div id="editorHint" style="display:none">Click to place &middot; R rotate 90&deg; &middot; Esc cancel</div>
+
+<div id="offsetDialogOverlay" style="display:none">
+  <div id="offsetDialog">
+    <div id="offsetDialogTitle">Move by offset</div>
+    <div class="offsetRow"><label for="offsetDx">East / West (m)</label><input type="number" id="offsetDx" step="1" value="0"></div>
+    <div class="offsetRow"><label for="offsetDy">South / North (m)</label><input type="number" id="offsetDy" step="1" value="0"></div>
+    <div class="offsetRow"><label for="offsetDz">Up / Down (m)</label><input type="number" id="offsetDz" step="1" value="0"></div>
+    <div class="offsetRow"><label for="offsetRot">Rotate</label>
+      <select id="offsetRot">
+        <option value="0">0&deg;</option>
+        <option value="90">90&deg;</option>
+        <option value="180">180&deg;</option>
+        <option value="270">270&deg;</option>
+      </select>
+    </div>
+    <div id="offsetDialogButtons">
+      <button id="offsetCancelBtn">Cancel</button>
+      <button id="offsetApplyBtn">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- Full-screen busy overlay for save-editing operations (copy / paste /
+     delete / undo / redo / export -- see SaveLoadFlow.showBusy in data.js).
+     Blocks all input while the WASM worker crunches so it's unmistakable
+     that something is happening. Shown only for operations that take a
+     noticeable moment (a short delay avoids a flash on instant edits). -->
+<div id="busyOverlay" style="display:none">
+  <div id="busyBox">
+    <div id="busySpinner"></div>
+    <div id="busyLabel">Working&hellip;</div>
+    <div id="busyBar"><div id="busyFill"></div></div>
+    <div id="busyPhase"></div>
   </div>
 </div>
 
@@ -241,6 +291,7 @@
 <script src="selection.js"></script>
 <script src="contextmenu.js"></script>
 <script src="save_client.js"></script>
+<script src="editor.js"></script>
 <script src="data.js"></script>
 </body>
 </html>

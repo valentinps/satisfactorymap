@@ -2234,6 +2234,9 @@ var MapApp = {};
       if (window.ContextMenu && ContextMenu.isOpen()) {
         return; // Leave the right-clicked object's tooltip/highlight alone while its menu is up (see contextmenu.js).
       }
+      if (window.EditorTool && EditorTool.isPlacing()) {
+        return; // The placement ghost owns the cursor (see editor.js).
+      }
       var now = Date.now();
       if (now - lastHoverTime < HOVER_THROTTLE_MS) {
         return;
@@ -2256,6 +2259,17 @@ var MapApp = {};
     });
     map.on("click", function(e) {
       if (!window.Tooltip) {
+        return;
+      }
+      if (window.EditorTool && EditorTool.isPlacing()) {
+        return; // The click places the ghost, it doesn't pin a tooltip (see editor.js).
+      }
+      if (e.originalEvent && (e.originalEvent.ctrlKey || e.originalEvent.metaKey)) {
+        // Ctrl+click toggles the object in/out of the selection instead of
+        // pinning a tooltip (see selection.js).
+        if (window.SelectionTool && SelectionTool.toggleAtEvent) {
+          SelectionTool.toggleAtEvent(e);
+        }
         return;
       }
       var clickToleranceScreenPx = 8;

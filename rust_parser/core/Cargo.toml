@@ -14,6 +14,9 @@ default = []
 parallel = ["dep:rayon"]
 
 [dependencies]
+# Cross-save clipboard blobs (editor/clipboard.rs) carry raw object bytes
+# through JSON / the OS clipboard.
+base64 = "0.22"
 flate2 = { workspace = true }
 rayon = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"] }
@@ -23,6 +26,11 @@ serde = { version = "1", features = ["derive"] }
 # static tables' long decimals (e.g. mercerSpheres positions) can come out
 # 1 ULP off Python's float() and break the bit-exact payload gate.
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+# MapIndex handoff serialization (lean-worker respawn): self-describing like
+# JSON (serde_json::Value round-trips) but binary, and allows the Vec<u8>
+# instance-name map keys JSON forbids.
+ciborium = "0.2"
+ciborium-io = "0.2"
 indexmap = { version = "2", features = ["serde"] }
 # Local-time formatting of the save datetime (Python datetime.fromtimestamp
 # parity). wasmbind routes local-time lookups through JS Date on wasm32.

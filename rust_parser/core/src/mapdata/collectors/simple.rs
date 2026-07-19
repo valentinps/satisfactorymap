@@ -122,7 +122,8 @@ pub fn collect_game_settings(scan: &SaveScan) -> Value {
     let data = scan.data();
     for &slot in &scan.game_state_objects {
         // First match, same as the old early-returning scan.
-        let properties = &scan.object(slot).properties;
+        let Some(object) = scan.parse_object(slot) else { continue };
+        let properties = &object.properties;
         // World-creation cost multipliers; each is absent (-> null) when the
         // world was created with the default 1x.
         let multiplier = |name: &[u8]| match find_prop(properties, data, name) {
@@ -225,7 +226,7 @@ pub fn collect_dimensional_depot_contents(scan: &SaveScan) -> Value {
         return json!([]);
     };
     let name = scan.actor(last).instance_name.bytes(data);
-    let Some(object) = scan.object_by_name(name) else {
+    let Some(object) = scan.parse_object_by_name(name) else {
         return json!([]);
     };
     let stored_items: &[PropList] = match props::array_structs(&object.properties, data, b"mStoredItems") {

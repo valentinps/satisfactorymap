@@ -6,9 +6,14 @@ use crate::error::{perr, PResult};
 
 /// Range into the retained decompressed buffer holding a string's content
 /// bytes (null terminator excluded). `wide` marks UTF-16LE content.
+///
+/// `off` is `usize` so the buffer can exceed 4GB on 64-bit native builds
+/// (the desktop app). On wasm32 `usize` is `u32`, so the browser build keeps
+/// its 4GB address space and footprint unchanged. `len` stays `u32`: a single
+/// string is never that large.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StrRef {
-    pub off: u32,
+    pub off: usize,
     pub len: u32,
     pub wide: bool,
 }
@@ -17,7 +22,7 @@ pub const EMPTY_STR: StrRef = StrRef { off: 0, len: 0, wide: false };
 
 impl StrRef {
     pub fn bytes<'a>(&self, data: &'a [u8]) -> &'a [u8] {
-        &data[self.off as usize..(self.off + self.len) as usize]
+        &data[self.off..self.off + self.len as usize]
     }
     pub fn is_empty(&self) -> bool {
         self.len == 0
@@ -48,13 +53,14 @@ impl StrRef {
 /// Range into the retained buffer holding raw bytes (parseData results).
 #[derive(Debug, Clone, Copy)]
 pub struct DataRef {
-    pub off: u32,
+    /// `usize` for >4GB buffers on native; `u32` on wasm32. See `StrRef`.
+    pub off: usize,
     pub len: u32,
 }
 
 impl DataRef {
     pub fn bytes<'a>(&self, data: &'a [u8]) -> &'a [u8] {
-        &data[self.off as usize..(self.off + self.len) as usize]
+        &data[self.off..self.off + self.len as usize]
     }
 }
 
@@ -149,7 +155,7 @@ impl<'a> Cursor<'a> {
                     strlen
                 ));
             }
-            let r = StrRef { off: self.pos as u32, len: (n - 1) as u32, wide: false };
+            let r = StrRef { off: self.pos, len: (n - 1) as u32, wide: false };
             self.pos += n;
             Ok(r)
         } else {
@@ -170,7 +176,7 @@ impl<'a> Cursor<'a> {
                     byte_len
                 ));
             }
-            let r = StrRef { off: self.pos as u32, len: (byte_len - 2) as u32, wide: true };
+            let r = StrRef { off: self.pos, len: (byte_len - 2) as u32, wide: true };
             self.pos += byte_len;
             Ok(r)
         }
@@ -185,7 +191,7 @@ impl<'a> Cursor<'a> {
                 self.data.len()
             ));
         }
-        let r = DataRef { off: self.pos as u32, len: len as u32 };
+        let r = DataRef { off: self.pos, len: len as u32 };
         self.pos += len;
         Ok(r)
     }

@@ -28,6 +28,8 @@ pub struct ActorHeader {
     pub position: [f32; 3],
     pub scale: [f32; 3],
     pub was_placed_in_level: bool,
+    /// Offset in `SaveStore.data` of the 40-byte rotation/position/scale block.
+    pub transform_off: usize,
 }
 
 #[derive(Debug)]
@@ -209,6 +211,10 @@ pub struct LightweightInstance {
     pub data_property: Option<PropList>,
     pub service_provider: Option<u8>,
     pub player_info_table_index: Option<PlayerIdx>,
+    /// Byte extent of this packed record in `SaveStore.data` (starts at the
+    /// rotation doubles, covers everything through the trailer).
+    pub record_off: usize,
+    pub record_len: u32,
 }
 
 #[derive(Debug)]
@@ -217,9 +223,23 @@ pub enum PlayerIdx {
     U8(u8),
 }
 
+/// One type-path group inside the FGLightweightBuildableSubsystem blob.
+#[derive(Debug)]
+pub struct LightweightGroup {
+    pub type_path: StrRef,
+    /// Offset in `SaveStore.data` of this group's u32 instance count.
+    pub count_field_off: usize,
+    /// Offset just past the group's last instance record (insertion point).
+    pub end_off: usize,
+    pub instances: Vec<LightweightInstance>,
+}
+
 #[derive(Debug)]
 pub struct ChainBelt {
     pub belt: ObjectRef,
+    /// Offset in `SaveStore.data` of the first element double (elements are
+    /// contiguous 72-byte 3×3 f64 records, world-space).
+    pub elements_off: usize,
     /// numElements × 3×3 doubles.
     pub elements: Vec<[[f64; 3]; 3]>,
     pub a: u32,
@@ -251,7 +271,7 @@ pub enum ActorSpecific {
     /// Wheeled vehicles: [[name, bytes(105)], ...]
     Vehicles(Vec<(StrRef, DataRef)>),
     /// FGLightweightBuildableSubsystem: [version, [path, instances], ...]
-    Lightweight { version: u32, items: Vec<(StrRef, Vec<LightweightInstance>)> },
+    Lightweight { version: u32, items: Vec<LightweightGroup> },
     /// FGConveyorChainActor*: 7-element list
     ConveyorChain {
         chain_actor: ObjectRef,
@@ -279,6 +299,24 @@ pub struct Object {
     pub actor_specific: ActorSpecific,
 }
 
+/// Byte offsets (into `SaveStore.data`) of the count/size fields and splice
+/// points the save editor needs when inserting or removing objects.
+#[derive(Debug)]
+pub struct LevelSpans {
+    /// The u64 objectHeaderAndCollectableSize field.
+    pub header_size_field_off: usize,
+    /// Just past the last object header (before the persistent flag /
+    /// collectables#1, which are inside the measured size region).
+    pub headers_insert_off: usize,
+    /// The u64 allObjectsSize field.
+    pub objects_size_field_off: usize,
+    /// The u32 objectCount at the start of the object-body blob (the u32
+    /// actorAndComponentCount lives at header_size_field_off + 8).
+    pub object_count_field_off: usize,
+    /// Just past the last object body (object_start + all_objects_size).
+    pub bodies_insert_off: usize,
+}
+
 #[derive(Debug)]
 pub struct Level {
     /// None for the persistent level.
@@ -287,11 +325,34 @@ pub struct Level {
     /// Persistent level only.
     pub level_persistent_flag: Option<bool>,
     pub collectables1: Option<Vec<ObjectRef>>,
-    /// Index-aligned with `headers`.
-    pub objects: Vec<Object>,
+    /// Index-aligned with `headers`. `None` after `drop_object_model` frees
+    /// the parsed model; re-parse individual objects via `parse_object_at`
+    /// (spans/headers/data stay index-aligned and retained).
+    pub objects: Option<Vec<Object>>,
+    /// The level-default UE5 object version handed to every `parse_object`
+    /// call (-1 when absent); retained so spans can be re-parsed on demand.
+    pub object_ue5_version: i32,
     pub level_save_version: u32,
     pub collectables2: Vec<ObjectRef>,
     pub save_object_version_data: Option<VersionData>,
+    /// (off, len) of each header record (including its u32 headerType),
+    /// index-aligned with `headers`. `off` is `usize` (u32 on wasm32) so the
+    /// body can exceed 4GB natively; `len` (one record) stays u32.
+    pub header_spans: Vec<(usize, u32)>,
+    /// (off, len) of each object body record (from the u32 gameVersion
+    /// through the v53+ trailing version block), index-aligned with `objects`.
+    pub object_spans: Vec<(usize, u32)>,
+    pub spans: LevelSpans,
+}
+
+impl Level {
+    /// The full parsed object model. Panics if it was dropped or never built
+    /// (a lean parse). Production code re-parses single objects on demand via
+    /// `SaveStore::parse_object_at`; this eager accessor is used only by tests
+    /// that load a full store.
+    pub fn parsed_objects(&self) -> &[Object] {
+        self.objects.as_deref().expect("object model absent (lean or dropped store)")
+    }
 }
 
 #[derive(Debug)]
@@ -317,11 +378,34 @@ pub struct SaveStore {
     /// satisfactoryCalculatorInteractiveMapExtras parity (owned strings:
     /// mixes typePaths from data with literal quirk markers).
     pub calculator_extras: Vec<String>,
+    /// Raw uncompressed .sav header (bytes 0..body_offset of the original
+    /// file), retained so an edited save can be re-exported.
+    pub file_header: Vec<u8>,
+    /// True when the "Missing final array count" quirk appended 4 zero bytes
+    /// to `data`; export must strip them to match the original body.
+    pub padded: bool,
+    /// Retained so dropped objects can be re-parsed on demand from their
+    /// spans without threading tables through every query signature.
+    pub tables: crate::object::ClassTables,
 }
 
 impl SaveStore {
     #[inline]
     pub fn s(&self, r: StrRef) -> String {
         r.to_string(&self.data)
+    }
+
+    pub fn has_object_model(&self) -> bool {
+        self.levels.iter().all(|l| l.objects.is_some())
+    }
+
+    /// Free the parsed per-object model (the bulk of a loaded save's heap:
+    /// ~1.5-2GB on a 600k-object save). Headers, spans and `data` stay, so
+    /// queries, the payload/index builder and edits all re-parse single
+    /// objects on demand. No-op on an already-lean store.
+    pub fn drop_object_model(&mut self) {
+        for level in &mut self.levels {
+            level.objects = None;
+        }
     }
 }

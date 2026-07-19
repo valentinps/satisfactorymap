@@ -4,6 +4,7 @@
 //! (named in the doc comment); tools/diff_payload.py compares the two
 //! implementations and is the regression gate.
 
+use crate::mapdata::scan::SaveScan;
 use crate::store::*;
 use std::collections::{HashMap, HashSet};
 
@@ -71,7 +72,7 @@ pub fn build_instance_slots(
     let mut slots: Vec<(&[u8], (usize, usize))> = Vec::new();
     let mut slot_by_name: HashMap<&[u8], usize> = HashMap::new();
     for (li, level) in store.levels.iter().enumerate() {
-        for (oi, _) in level.objects.iter().enumerate() {
+        for oi in 0..level.headers.len() {
             let name = level.headers[oi].instance_name().bytes(data);
             match slot_by_name.get(name) {
                 Some(&idx) => slots[idx].1 = (li, oi),
@@ -95,19 +96,19 @@ struct ItemIndex<'a> {
 /// _inventoryComponentObjects / the stack walk). Returns
 /// [(itemShortName, [(instanceName, count)])] in the same insertion order the
 /// Python implementation's dict produces.
-pub fn item_location_index<'a>(
-    store: &'a SaveStore,
-    instance_slots: &InstanceSlots<'a>,
-) -> Vec<(Vec<u8>, Vec<(Vec<u8>, i64)>)> {
+pub fn item_location_index(scan: &SaveScan) -> Vec<(Vec<u8>, Vec<(Vec<u8>, i64)>)> {
+    let store = scan.store;
     let data: &[u8] = &store.data;
-    let (slots, slot_by_name) = instance_slots;
-    let object_at = |(li, oi): (usize, usize)| -> &Object { &store.levels[li].objects[oi] };
+    let (slots, slot_by_name) = scan.instance_slots();
 
     let mut index = ItemIndex { order: Vec::new(), by_name: HashMap::new() };
     let mut suffix_key: Vec<u8> = Vec::new();
 
     for (slot, (instance_name, loc)) in slots.iter().enumerate() {
-        let object = object_at(*loc);
+        // Owned re-parse; every value we keep (component paths, item short
+        // names) borrows store.data or is copied, so the object drops at the
+        // end of this iteration.
+        let Some(object) = scan.parse_object(*loc) else { continue };
 
         // _inventoryComponentObjects: referenced components first (only
         // ObjectProperty references -- mirrors hasattr(ref, "pathName")),
@@ -139,7 +140,7 @@ pub fn item_location_index<'a>(
         // countByItem, insertion-ordered per object.
         let mut count_by_item: Vec<(&[u8], i64)> = Vec::new();
         for (_, comp_loc) in &components {
-            let comp = object_at(*comp_loc);
+            let Some(comp) = scan.parse_object(*comp_loc) else { continue };
             let stacks = match find_prop(&comp.properties, data, b"mInventoryStacks") {
                 Some(PropertyValue::Array(ArrayValue::Structs(v))) => v,
                 _ => continue,
@@ -260,17 +261,17 @@ pub fn vector_prop(pl: &PropList, data: &[u8], name: &[u8]) -> Option<[f64; 3]> 
 /// [px, py, arriveX, arriveY, leaveX, leaveY, zMeters, ...] vertex list.
 /// Objects with fewer than 2 points are skipped, mirroring the `>= 14`
 /// length check. Returns [(instanceName, typePath, flatPoints)].
-pub fn spline_polylines<'a>(
-    store: &'a SaveStore,
+pub fn spline_polylines(
+    scan: &SaveScan,
     type_paths: &[String],
     spline_property: &str,
     proj: &Proj,
-    instance_slots: &InstanceSlots<'a>,
 ) -> Vec<(String, String, Vec<f64>)> {
+    let store = scan.store;
     let data: &[u8] = &store.data;
     let wanted: HashSet<&[u8]> = type_paths.iter().map(|s| s.as_bytes()).collect();
     let spline_prop = spline_property.as_bytes();
-    let (slots, slot_by_name) = instance_slots;
+    let (slots, slot_by_name) = scan.instance_slots();
     let zero = [0.0f64; 3];
 
     let mut out: Vec<(String, String, Vec<f64>)> = Vec::new();
@@ -284,13 +285,8 @@ pub fn spline_polylines<'a>(
                 continue;
             }
             let name = actor.instance_name.bytes(data);
-            let object = match slot_by_name.get(name) {
-                Some(&idx) => {
-                    let (li, oi) = slots[idx].1;
-                    &store.levels[li].objects[oi]
-                }
-                None => continue,
-            };
+            let Some(&idx) = slot_by_name.get(name) else { continue };
+            let Some(object) = scan.parse_object(slots[idx].1) else { continue };
 
             // (location, arriveTangent, leaveTangent) triples, actor-local.
             let mut local_points: Vec<([f64; 3], [f64; 3], [f64; 3])> = Vec::new();

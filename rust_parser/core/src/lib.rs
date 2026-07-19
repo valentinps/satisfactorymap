@@ -4,6 +4,7 @@
 //! and `wasm/` (wasm-bindgen) crates wrap this.
 
 pub mod decompress;
+pub mod editor;
 pub mod error;
 pub mod extract;
 pub mod gamedata;

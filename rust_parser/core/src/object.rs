@@ -9,6 +9,7 @@ use crate::store::*;
 use crate::version_data::parse_save_object_version_data;
 
 /// Class tables passed in from Python (sav_data.data stays the source of truth).
+#[derive(Clone)]
 pub struct ClassTables {
     pub conveyor_belts: Vec<String>,
 }
@@ -21,7 +22,7 @@ const PLAYER_STATE: &str = "/Game/FactoryGame/Character/Player/BP_PlayerState.BP
 const DRONE_TRANSPORT: &str =
     "/Game/FactoryGame/Buildable/Factory/DroneStation/BP_DroneTransport.BP_DroneTransport_C";
 const CIRCUIT_SUBSYSTEM: &str = "/Game/FactoryGame/-Shared/Blueprint/BP_CircuitSubsystem.BP_CircuitSubsystem_C";
-const POWER_LINES: [&str; 2] = [
+pub(crate) const POWER_LINES: [&str; 2] = [
     "/Game/FactoryGame/Buildable/Factory/PowerLine/Build_PowerLine.Build_PowerLine_C",
     "/Game/FactoryGame/Events/Christmas/Buildings/PowerLineLights/Build_XmassLightsLine.Build_XmassLightsLine_C",
 ];
@@ -37,8 +38,8 @@ const VEHICLES: [&str; 6] = [
     "/Game/FactoryGame/Buildable/Vehicle/Truck/BP_Truck.BP_Truck_C",
     "/Game/FactoryGame/Buildable/Vehicle/Truck/BP_FluidTruck.BP_FluidTruck_C",
 ];
-const LIGHTWEIGHT_SUBSYSTEM: &str = "/Script/FactoryGame.FGLightweightBuildableSubsystem";
-const CONVEYOR_CHAINS: [&str; 5] = [
+pub(crate) const LIGHTWEIGHT_SUBSYSTEM: &str = "/Script/FactoryGame.FGLightweightBuildableSubsystem";
+pub(crate) const CONVEYOR_CHAINS: [&str; 5] = [
     "/Script/FactoryGame.FGConveyorChainActor",
     "/Script/FactoryGame.FGConveyorChainActor_RepSizeNoCull",
     "/Script/FactoryGame.FGConveyorChainActor_RepSizeMedium",
@@ -235,9 +236,11 @@ pub fn parse_object(
                 for _ in 0..count1 {
                     c.confirm_u32(0)?;
                     let build_item_path = c.string()?;
+                    let count_field_off = c.pos;
                     let count2 = c.u32()?;
                     let mut instances = Vec::with_capacity(count2 as usize);
                     for _ in 0..count2 {
+                        let record_off = c.pos;
                         let rotation = [c.f64()?, c.f64()?, c.f64()?, c.f64()?];
                         let position = [c.f64()?, c.f64()?, c.f64()?];
                         for _ in 0..3 {
@@ -314,9 +317,16 @@ pub fn parse_object(
                             data_property,
                             service_provider,
                             player_info_table_index,
+                            record_off,
+                            record_len: (c.pos - record_off) as u32,
                         });
                     }
-                    items.push((build_item_path, instances));
+                    items.push(LightweightGroup {
+                        type_path: build_item_path,
+                        count_field_off,
+                        end_off: c.pos,
+                        instances,
+                    });
                 }
                 actor_specific = ActorSpecific::Lightweight { version: lightweight_version, items };
             } else if CONVEYOR_CHAINS.contains(&tp) {
@@ -336,6 +346,7 @@ pub fn parse_object(
                     chain_actor = parse_object_reference(c)?;
                     let belt = parse_object_reference(c)?;
                     let num_elements = c.u32()?;
+                    let elements_off = c.pos;
                     let mut elements = Vec::with_capacity(num_elements as usize);
                     for _ in 0..num_elements {
                         let mut nine = [[0f64; 3]; 3];
@@ -352,7 +363,7 @@ pub fn parse_object(
                     let lead = c.i32()?;
                     let tail = c.i32()?;
                     c.confirm_u32(idx)?;
-                    belts.push(ChainBelt { belt, elements, a, b, c: c3, lead_item_index: lead, tail_item_index: tail });
+                    belts.push(ChainBelt { belt, elements_off, elements, a, b, c: c3, lead_item_index: lead, tail_item_index: tail });
                 }
                 let cu32 = c.u32()?;
                 let maximum_items = c.i32()?;
@@ -457,4 +468,55 @@ pub fn parse_object(
         properties,
         actor_specific,
     })
+}
+
+/// Advance the cursor over one object record without materializing anything
+/// -- consumes exactly the bytes parse_object would (the object_size field
+/// covers the body; the v53+ trailing version block sits after it). Used by
+/// the lean load path that records spans only; gated by the span-identity
+/// test against the eager parse.
+pub fn skip_object(c: &mut Cursor) -> PResult<()> {
+    let object_game_version = c.u32()?;
+    c.bool_u32("Object.shouldMigrateObjectRefsToPersistentFlag")?;
+    let object_size = c.u32()? as usize;
+    if c.pos + object_size > c.data.len() {
+        return Err(perr!(
+            "Object size {} at offset {} overruns {}-byte data.",
+            object_size,
+            c.pos,
+            c.data.len()
+        ));
+    }
+    c.pos += object_size;
+    if object_game_version >= 53 {
+        let should_serialize = c.bool_u32("Object.shouldSerializePerObjectVersionData")?;
+        if should_serialize {
+            parse_save_object_version_data(c)?;
+        }
+    }
+    Ok(())
+}
+
+impl crate::store::SaveStore {
+    /// Re-parse one object from its recorded byte span. Yields an Object
+    /// identical to the eagerly parsed one (same data buffer, so identical
+    /// StrRef/DataRef offsets) -- this is how queries read objects after
+    /// `drop_object_model`. Cost is microseconds for typical objects.
+    pub fn parse_object_at(&self, li: usize, oi: usize) -> PResult<Object> {
+        let level = &self.levels[li];
+        let (off, len) = level.object_spans[oi];
+        let mut c = Cursor::new(&self.data, off as usize);
+        // Quirk markers were already recorded during the initial parse.
+        let mut scratch_extras = Vec::new();
+        let object = parse_object(
+            &mut c,
+            self.info.save_version,
+            level.object_ue5_version,
+            &level.headers[oi],
+            &self.tables,
+            &mut scratch_extras,
+        )?;
+        debug_assert_eq!(c.pos, off as usize + len as usize, "span reparse length drift");
+        Ok(object)
+    }
 }

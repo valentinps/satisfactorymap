@@ -53,8 +53,34 @@ var ContextMenu = {};
     menu.style.top = Math.max(0, y) + "px";
   }
 
+  // "Paste here" resolves the clicked screen point back to map pixels. The
+  // item is always active: the paste itself resolves the in-tab clipboard OR
+  // a cross-tab blob from the OS clipboard, and reports via the status line
+  // when there's nothing to paste.
+  function addPasteItem(clientX, clientY) {
+    if (!window.EditorTool) {
+      return false;
+    }
+    var latLng = MapApp.map.mouseEventToLatLng({ clientX: clientX, clientY: clientY });
+    addItem("Paste here", function() {
+      EditorTool.pasteAt(latLng.lng, latLng.lat);
+    });
+    return true;
+  }
+
+  // hit may be null: a right-click on empty map opens a paste-only menu --
+  // with a disabled hint when nothing was copied yet, so the gesture is
+  // never silently dead (see selection.js).
   ContextMenu.show = function(clientX, clientY, hit) {
     menu.innerHTML = "";
+    if (!hit) {
+      if (!addPasteItem(clientX, clientY)) {
+        var hint = el("div", "contextMenuItem contextMenuItemDisabled", "Paste here (copy something first)");
+        menu.appendChild(hint);
+      }
+      positionMenu(clientX, clientY);
+      return;
+    }
     var bucket = hit.bucket;
     var info = Filters.contextInfo(bucket);
 
@@ -69,6 +95,29 @@ var ContextMenu = {};
     MapApp.setHighlight(bucket, hit.id);
     if (window.Tooltip) {
       window.Tooltip.hide();
+    }
+
+    // Save-editor actions -- only for objects the edit engine can transform
+    // (see EditorTool.targetsFromHit; null for vehicles/trains/etc).
+    var editTargets = window.EditorTool ? EditorTool.targetsFromHit(hit) : null;
+    var hasEditItems = false;
+    if (editTargets) {
+      addItem("Move this object…", function() {
+        EditorTool.startMove(editTargets);
+      });
+      addItem("Copy this object", function() {
+        EditorTool.copyTargets(editTargets);
+      });
+      addItem("Delete this object", function() {
+        EditorTool.deleteTargets(editTargets);
+      });
+      hasEditItems = true;
+    }
+    if (addPasteItem(clientX, clientY)) {
+      hasEditItems = true;
+    }
+    if (hasEditItems) {
+      menu.appendChild(el("div", "contextMenuDivider"));
     }
 
     addItem("Hide this object", function() {

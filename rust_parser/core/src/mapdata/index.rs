@@ -48,6 +48,7 @@ const PIPE_NETWORK_TYPE_PATH: &str = "/Script/FactoryGame.FGPipeNetwork";
 
 /// One railcar of an owned train consist (the "cars" entries of
 /// _trainConsistsFromMaps' dicts).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TrainCar {
     pub id: String,
     pub type_path: String,
@@ -56,6 +57,7 @@ pub struct TrainCar {
 }
 
 /// One consist of _trainConsistsFromMaps' output, owned.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TrainInfo {
     pub id: String,
     pub label: Option<String>,
@@ -63,6 +65,7 @@ pub struct TrainInfo {
 }
 
 /// lightweightInstancesById value: {"typePath":, "position":}.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct LightweightEntry {
     pub type_path: String,
     pub position: [f64; 3],
@@ -71,6 +74,7 @@ pub struct LightweightEntry {
 /// One row of staticItemLocations (typePath is always None there). position/
 /// worldPosition are kept as ready-made JSON arrays: findItemLocations passes
 /// them through verbatim (Python `dict(staticEntry, count=...)`).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct StaticItemLocation {
     pub instance_name: String,
     pub label: String,
@@ -82,10 +86,14 @@ pub struct StaticItemLocation {
 /// The owned save index. Everything describeInstance/the query functions read
 /// from Python's saveIndex dict lives here; headers/objects lookups resolve
 /// through `by_instance_name` Slots into the SaveStore.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct MapIndex {
     /// saveIndex["headers"]/["objects"]: instanceName -> (level, slot), with
     /// Python dict semantics (last value wins, first position kept). The
     /// store's headers/objects are index-aligned, so one map serves both.
+    /// Skipped in the handoff serialization: header-derived, so from_cbor
+    /// rebuilds it from the (lean) store instead of shipping ~100MB of it.
+    #[serde(skip)]
     pub by_instance_name: IndexMap<Vec<u8>, Slot>,
     /// Every consist _trainConsistsFromMaps yields (collectTrainInfo needs
     /// the full list, orphan single-car entries included).
@@ -112,9 +120,67 @@ impl MapIndex {
         self.by_instance_name.get(name).map(|&(li, oi)| &store.levels[li].headers[oi])
     }
 
-    /// scan.objectsByInstanceName.get(name) -- the Object, or None.
-    pub fn object_by_name<'a>(&self, store: &'a SaveStore, name: &[u8]) -> Option<&'a Object> {
-        self.by_instance_name.get(name).map(|&(li, oi)| &store.levels[li].objects[oi])
+    /// scan.objectsByInstanceName.get(name) -- the Object, or None. Owned:
+    /// re-parsed on demand from its recorded byte span, since the parsed
+    /// model is dropped once the payload/index are built (a single object
+    /// re-parses in microseconds). None also if the reparse fails, which
+    /// would be a bug -- the same bytes parsed cleanly at load.
+    pub fn parse_object_by_name(&self, store: &SaveStore, name: &[u8]) -> Option<Object> {
+        let &(li, oi) = self.by_instance_name.get(name)?;
+        let object = store.parse_object_at(li, oi);
+        debug_assert!(object.is_ok(), "reparse of a known instance failed: {:?}", object.as_ref().err().map(|e| &e.msg));
+        object.ok()
+    }
+
+    /// CBOR-serialize for the lean-worker handoff: the loaded worker ships
+    /// its index to a fresh wasm instance so the index never has to be
+    /// rebuilt (rebuilding needs the full parsed model). Header-derived
+    /// parts are skipped (from_cbor recomputes them). Two passes: a counting
+    /// pass sizes the output exactly, so the buffer is one right-sized
+    /// allocation instead of doubling -- this runs in a worker whose heap
+    /// already sits near the 4GB wasm ceiling. Same-build, same-page-load
+    /// transfers only; no versioning concerns.
+    pub fn to_cbor(&self) -> Result<Vec<u8>, String> {
+        struct Counter(usize);
+        impl ciborium_io::Write for &mut Counter {
+            type Error = core::convert::Infallible;
+            fn write_all(&mut self, data: &[u8]) -> Result<(), Self::Error> {
+                self.0 += data.len();
+                Ok(())
+            }
+            fn flush(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+        }
+        let mut counter = Counter(0);
+        ciborium::into_writer(self, &mut counter).map_err(|e| format!("index size: {e}"))?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(counter.0).map_err(|e| format!("index buffer: {e}"))?;
+        ciborium::into_writer(self, &mut out).map_err(|e| format!("index serialize: {e}"))?;
+        Ok(out)
+    }
+
+    /// Deserialize a handoff index against the (lean) store it describes,
+    /// rebuilding the skipped header-derived maps from the store's headers.
+    pub fn from_cbor(bytes: &[u8], store: &SaveStore) -> Result<MapIndex, String> {
+        let mut index = Self::from_cbor_partial(bytes)?;
+        index.rebuild_header_maps(store);
+        Ok(index)
+    }
+
+    /// First half of from_cbor: everything except the header-derived maps.
+    /// Split out so load_lean can free the CBOR bytes before decompressing
+    /// the body (peak-memory ordering).
+    pub fn from_cbor_partial(bytes: &[u8]) -> Result<MapIndex, String> {
+        ciborium::from_reader(bytes).map_err(|e| format!("index deserialize: {e}"))
+    }
+
+    /// Second half of from_cbor: recompute the serde-skipped maps from the
+    /// (lean) store's headers.
+    pub fn rebuild_header_maps(&mut self, store: &SaveStore) {
+        let scan = SaveScan::new(store); // headers only -- works on a lean store
+        self.by_instance_name =
+            scan.by_instance_name.iter().map(|(k, &v)| (k.to_vec(), v)).collect();
     }
 
     pub fn build(store: &SaveStore) -> MapIndex {
@@ -124,7 +190,6 @@ impl MapIndex {
     /// Build from an existing SaveScan (shared with the payload build --
     /// avoids a second full pass over every object).
     pub fn build_with_scan(scan: &SaveScan) -> MapIndex {
-        let store = scan.store;
         let data = scan.data();
 
         let by_instance_name: IndexMap<Vec<u8>, Slot> =
@@ -144,10 +209,10 @@ impl MapIndex {
         }
         // Lightweight buildables' synthetic "LightweightBuildable:<tp>:<idx>"
         // ids fold in (setdefault + extend).
-        for (path, instances) in buildings::find_lightweight_buildable_groups(&scan) {
-            let type_path = path.to_string(data);
+        for group in buildings::find_lightweight_buildable_groups(&scan) {
+            let type_path = group.type_path.to_string(data);
             let bucket = instance_names_by_type_path.entry(type_path.clone()).or_default();
-            for idx in 0..instances.len() {
+            for idx in 0..group.instances.len() {
                 bucket.push(format!("LightweightBuildable:{}:{}", type_path, idx));
             }
         }
@@ -156,7 +221,7 @@ impl MapIndex {
         let mut station_name_by_station_instance: IndexMap<String, String> = IndexMap::new();
         for (_, obj_slot) in scan.actors_of_type(&[TRAIN_STATION_IDENTIFIER_TYPE_PATH]) {
             let Some(obj_slot) = obj_slot else { continue };
-            let identifier_object = scan.object(obj_slot);
+            let Some(identifier_object) = scan.parse_object(obj_slot) else { continue };
             let station = props::object_ref(&identifier_object.properties, data, b"mStation");
             let station_name = trains_progression::text_property_value(
                 find_prop(&identifier_object.properties, data, b"mStationName"),
@@ -180,7 +245,7 @@ impl MapIndex {
         let mut pipe_network_id_to_members: IndexMap<i32, Vec<String>> = IndexMap::new();
         for (_, obj_slot) in scan.actors_of_type(&[PIPE_NETWORK_TYPE_PATH]) {
             let Some(obj_slot) = obj_slot else { continue };
-            let network_object = scan.object(obj_slot);
+            let Some(network_object) = scan.parse_object(obj_slot) else { continue };
             let fluid_label: Option<String> =
                 props::object_ref(&network_object.properties, data, b"mFluidDescriptor")
                     .and_then(|r| {
@@ -207,7 +272,7 @@ impl MapIndex {
                     continue;
                 }
                 member_names.push(member_reference.path_name.to_string(data));
-                if let Some(member_object) = scan.object_by_name(path) {
+                if let Some(member_object) = scan.parse_object_by_name(path) {
                     // `if memberFluid:` -- truthiness on the float.
                     if let Some(member_fluid) =
                         props::fluid_box(&member_object.properties, data, b"mFluidBox")
@@ -224,7 +289,7 @@ impl MapIndex {
                     connector_key.clear();
                     connector_key.extend_from_slice(path);
                     connector_key.extend_from_slice(connector_suffix.as_bytes());
-                    let Some(connector_object) = scan.object_by_name(&connector_key) else {
+                    let Some(connector_object) = scan.parse_object_by_name(&connector_key) else {
                         continue;
                     };
                     network_id = props::int(&connector_object.properties, data, b"mPipeNetworkID");
@@ -244,9 +309,9 @@ impl MapIndex {
 
         // -- lightweightInstancesById ------------------------------------------
         let mut lightweight_instances_by_id: IndexMap<String, LightweightEntry> = IndexMap::new();
-        for (path, instances) in buildings::find_lightweight_buildable_groups(&scan) {
-            let type_path = path.to_string(data);
-            for (idx, instance) in instances.iter().enumerate() {
+        for group in buildings::find_lightweight_buildable_groups(&scan) {
+            let type_path = group.type_path.to_string(data);
+            for (idx, instance) in group.instances.iter().enumerate() {
                 lightweight_instances_by_id.insert(
                     format!("LightweightBuildable:{}:{}", type_path, idx),
                     LightweightEntry { type_path: type_path.clone(), position: instance.position },
@@ -285,9 +350,7 @@ impl MapIndex {
 
         // -- itemLocationIndex ---------------------------------------------------
         let item_location_index: IndexMap<Vec<u8>, Vec<(Vec<u8>, i64)>> =
-            crate::extract::item_location_index(store, scan.instance_slots())
-                .into_iter()
-                .collect();
+            crate::extract::item_location_index(scan).into_iter().collect();
 
         // -- dimensionalDepotByItem ------------------------------------------------
         // {entry["itemPath"]: entry["count"]} over the depot rows -- a dict

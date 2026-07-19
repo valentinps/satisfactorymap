@@ -17,6 +17,10 @@ var SelectionTool = {};
   var countEl = document.getElementById("selectionCount");
   var objectsBtn = document.getElementById("selectionObjectsBtn");
   var inventoryBtn = document.getElementById("selectionInventoryBtn");
+  var moveBtn = document.getElementById("selectionMoveBtn");
+  var offsetBtn = document.getElementById("selectionOffsetBtn");
+  var copyBtn = document.getElementById("selectionCopyBtn");
+  var deleteBtn = document.getElementById("selectionDeleteBtn");
   var clearBtn = document.getElementById("selectionClearBtn");
 
   var overlay = document.getElementById("selectionModalOverlay");
@@ -37,8 +41,44 @@ var SelectionTool = {};
   }
 
   var selecting = false;
+  var selectingAdditive = false; // Ctrl held at right-drag start: add to selection
   var startClient = null;
-  var lastSelection = null; // { total, byLabel, labelOrder, ids }
+  var lastSelection = null; // aggregates of `selected`: { total, byLabel, labelOrder, ids, editTargets }
+
+  // The persistent selection: "<bucket.key>#<index>" -> record. Box select
+  // replaces it (or extends it with Ctrl); Ctrl+click toggles single
+  // objects; every edit/load clears it via SelectionTool.reset (buckets are
+  // rebuilt then, so records would dangle).
+  var selected = new Map();
+
+  function recordOf(bucket, index, id, x, y) {
+    return { bucket: bucket, index: index, id: id, x: x, y: y };
+  }
+
+  function recordKey(record) {
+    return record.bucket.key + "#" + record.index;
+  }
+
+  // Buckets whose objects the save editor can transform: buildings (normal
+  // actors + lightweight foundations/walls) and belt/pipe segments. Vehicle,
+  // train, creature, and collectable buckets are viewer-only -- their
+  // objects are counted into editTargets.skipped instead, and the Rust edit
+  // engine independently refuses anything unsupported that slips through.
+  function isEditableBucket(bucket) {
+    return bucket.key.indexOf("building:") === 0 || isSelectableLineBucket(bucket);
+  }
+
+  var LIGHTWEIGHT_ID_PREFIX = "LightweightBuildable:";
+
+  // "LightweightBuildable:<typePath>:<idx>" -> {typePath, index} (type paths
+  // never contain ':', so the last colon splits off the index).
+  function parseLightweightId(id) {
+    var sep = id.lastIndexOf(":");
+    return {
+      typePath: id.slice(LIGHTWEIGHT_ID_PREFIX.length, sep),
+      index: parseInt(id.slice(sep + 1), 10),
+    };
+  }
 
   function el(tag, className, text) {
     var e = document.createElement(tag);
@@ -75,29 +115,12 @@ var SelectionTool = {};
     return { x: latLng.lng, y: latLng.lat };
   }
 
-  function computeSelection(minX, maxX, minY, maxY) {
+  // Everything visible inside the box, as records (no aggregation here --
+  // records feed the persistent `selected` set).
+  function collectInBox(minX, maxX, minY, maxY) {
     var altMin = MapApp.altitudeRange ? MapApp.altitudeRange.min : -Infinity;
     var altMax = MapApp.altitudeRange ? MapApp.altitudeRange.max : Infinity;
-    var byLabel = {};
-    var labelOrder = [];
-    var ids = [];
-    var counters = { total: 0 };
-
-    function record(bucket, id) {
-      counters.total++;
-      if (!byLabel.hasOwnProperty(bucket.label)) {
-        byLabel[bucket.label] = 0;
-        labelOrder.push(bucket.label);
-      }
-      byLabel[bucket.label]++;
-      // Lightweight buildables (foundations/walls/...) have synthetic ids and
-      // never hold inventory, so they're left out of the inventory query --
-      // both to keep the POST small on big selections and because the backend
-      // would skip them anyway. They still count above.
-      if (id && id.indexOf("LightweightBuildable:") !== 0) {
-        ids.push(id);
-      }
-    }
+    var records = [];
 
     MapApp.layer.buckets.forEach(function(bucket) {
       if (!bucket.visible) {
@@ -130,7 +153,7 @@ var SelectionTool = {};
             }
           }
           if (hit) {
-            record(bucket, bucket.ids ? bucket.ids[li] : null);
+            records.push(recordOf(bucket, li, bucket.ids ? bucket.ids[li] : null, line[0], line[1]));
           }
         }
         return;
@@ -146,10 +169,325 @@ var SelectionTool = {};
         if (x < minX || x > maxX || y < minY || y > maxY || z < altMin || z > altMax) {
           continue;
         }
-        record(bucket, bucket.ids ? bucket.ids[i / stride] : null);
+        records.push(recordOf(bucket, i / stride, bucket.ids ? bucket.ids[i / stride] : null, x, y));
       }
     });
-    return { total: counters.total, byLabel: byLabel, labelOrder: labelOrder, ids: ids };
+    return records;
+  }
+
+  // Aggregate `selected` into what the panel/modal/editor consume.
+  function aggregate() {
+    var byLabel = {};
+    var labelOrder = [];
+    var ids = [];
+    var total = 0;
+    // What the save editor can act on, plus the map-pixel bbox of the
+    // editable objects (its center anchors ghost placement / rotation).
+    var editTargets = {
+      actorNames: [],
+      lightweight: [],
+      skipped: 0,
+      bbox: { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
+    };
+    selected.forEach(function(r) {
+      total++;
+      if (!byLabel.hasOwnProperty(r.bucket.label)) {
+        byLabel[r.bucket.label] = 0;
+        labelOrder.push(r.bucket.label);
+      }
+      byLabel[r.bucket.label]++;
+      // Lightweight buildables (foundations/walls/...) have synthetic ids and
+      // never hold inventory, so they're left out of the inventory query --
+      // both to keep the POST small on big selections and because the backend
+      // would skip them anyway. They still count above.
+      if (r.id && r.id.indexOf(LIGHTWEIGHT_ID_PREFIX) !== 0) {
+        ids.push(r.id);
+      }
+      if (r.id && isEditableBucket(r.bucket)) {
+        if (r.id.indexOf(LIGHTWEIGHT_ID_PREFIX) === 0) {
+          editTargets.lightweight.push(parseLightweightId(r.id));
+        } else {
+          editTargets.actorNames.push(r.id);
+        }
+        var b = editTargets.bbox;
+        b.minX = Math.min(b.minX, r.x);
+        b.minY = Math.min(b.minY, r.y);
+        b.maxX = Math.max(b.maxX, r.x);
+        b.maxY = Math.max(b.maxY, r.y);
+      } else {
+        editTargets.skipped++;
+      }
+    });
+    return { total: total, byLabel: byLabel, labelOrder: labelOrder, ids: ids, editTargets: editTargets };
+  }
+
+  // ---- Highlight overlay ----------------------------------------------------
+  // A pointer-transparent canvas that lives INSIDE Leaflet's overlay pane
+  // (not over the map container): a drag-pan moves the pane with a CSS
+  // transform, so the highlight moves in perfect lockstep with the base map
+  // and the object layer -- no per-frame redraw, no one-frame-late desync.
+  // The wheel-zoom CSS animation is matched the same way webgl_layer.js's
+  // _onZoomAnim does it: hand the canvas the identical target transform and
+  // let the compositor scale it with everything else, then repaint crisp on
+  // zoomend.
+  //
+  // Selection geometry is cached as MAP-PIXEL-space Path2D objects (one per
+  // bucket), rebuilt only when the selection itself changes. A repaint --
+  // zoomend, a pan that escapes the buffered margin, selection change -- is
+  // then a handful of native fill/stroke calls under a canvas transform
+  // instead of a JS loop over every selected object, which is what made
+  // 100k+ selections crawl.
+
+  var highlightCanvas = null;
+  var highlightCtx = null;
+  var drawQueued = false;
+  var mapEventsAttached = false;
+  var canvasTopLeft = null; // layer point of the canvas's top-left corner
+  var groupCache = null;    // per-bucket geometry cache, see rebuildGroupCache
+  var zoomAnimating = false;
+
+  // Buffered margin per side (fraction of the viewport): pans inside it show
+  // fully-painted highlight with zero work; the canvas re-glues on moveend.
+  // Total pixels are capped so a 4K window doesn't allocate absurd canvas
+  // memory (same idea as map.js's BUFFER_MAX_PIXELS).
+  var HIGHLIGHT_MARGIN = 0.5;
+  var HIGHLIGHT_MAX_PIXELS = 16e6;
+  // Below this on-screen half-extent a footprint is illegible; those records
+  // draw as fixed-size dots instead (built per repaint, viewport-culled).
+  var MIN_HALF_SCREEN_PX = 2.5;
+  var DOT_HALF_SCREEN_PX = 3;
+  // Above this many dots, dedupe them on a dot-sized grid: zoomed way out,
+  // thousands of dots land on the same few pixels anyway.
+  var DOT_DEDUP_THRESHOLD = 20000;
+
+  function ensureHighlightCanvas() {
+    if (!highlightCanvas && window.MapApp && MapApp.map) {
+      highlightCanvas = document.createElement("canvas");
+      highlightCanvas.id = "selectionHighlightCanvas";
+      highlightCanvas.className = "leaflet-zoom-animated";
+      // Explicit z-index: the bucket layer's canvases are unpositioned
+      // siblings in the same pane, and a layer swap (WebGL -> 2D fallback)
+      // re-appends them after this one.
+      highlightCanvas.style.cssText = "position:absolute;z-index:200;pointer-events:none;";
+      MapApp.map.getPanes().overlayPane.appendChild(highlightCanvas);
+      highlightCtx = highlightCanvas.getContext("2d");
+    }
+    if (!mapEventsAttached && window.MapApp && MapApp.map) {
+      // No "move" here on purpose: the pane transform already carries the
+      // canvas during pans. "zoom" covers pinch/flyTo (fractional zoom with
+      // no CSS animation); wheel zoom rides zoomanim/zoomend instead.
+      MapApp.map.on("moveend viewreset resize", requestHighlightDraw);
+      MapApp.map.on("zoomend", onZoomEnd);
+      MapApp.map.on("zoom", onZoomEvent);
+      MapApp.map.on("zoomanim", onZoomAnim);
+      mapEventsAttached = true;
+    }
+  }
+
+  // Wheel zoom: Leaflet CSS-transitions everything carrying
+  // leaflet-zoom-animated over ~250ms and fires no per-frame events. Give
+  // the canvas the same target transform L.ImageOverlay uses so it scales
+  // in sync (slightly stretched until the zoomend repaint, exactly like the
+  // base map image and the GL canvas).
+  function onZoomAnim(e) {
+    if (!highlightCanvas || !canvasTopLeft) {
+      return;
+    }
+    zoomAnimating = true;
+    var map = MapApp.map;
+    var scale = map.getZoomScale(e.zoom);
+    var anchorLatLng = map.layerPointToLatLng(canvasTopLeft);
+    var offset = map._latLngToNewLayerPoint(anchorLatLng, e.zoom, e.center);
+    L.DomUtil.setTransform(highlightCanvas, offset, scale);
+  }
+
+  // Continuous zoom (pinch, flyTo) fires "zoom" per frame with no CSS
+  // animation -- repaint (cheap: cached paths). During an animated wheel
+  // zoom "zoom" fires once with the TARGET zoom while the CSS transition
+  // still runs; repainting then would double-transform, so skip until
+  // zoomend clears the flag.
+  function onZoomEvent() {
+    if (!zoomAnimating) {
+      requestHighlightDraw();
+    }
+  }
+
+  function onZoomEnd() {
+    zoomAnimating = false;
+    requestHighlightDraw();
+  }
+
+  function requestHighlightDraw() {
+    if (drawQueued) {
+      return;
+    }
+    drawQueued = true;
+    requestAnimationFrame(function() {
+      drawQueued = false;
+      drawHighlight();
+    });
+  }
+
+  // Selection changed: drop the cached geometry (rebuilt lazily on the next
+  // repaint).
+  function invalidateHighlightCache() {
+    groupCache = null;
+  }
+
+  // Group the selection per bucket and bake each group's geometry into a
+  // map-pixel-space Path2D: footprint boxes for buildings (yaw ignored --
+  // a "what's selected" cue, not geometry), the full polyline for belt/pipe
+  // segments. Centers are kept alongside for the small-on-screen dot pass.
+  function rebuildGroupCache() {
+    var groups = new Map();
+    selected.forEach(function(r) {
+      var g = groups.get(r.bucket.key);
+      if (!g) {
+        g = {
+          isLine: r.bucket.renderType === "line",
+          half: r.bucket.footprintPixels || null,
+          path: new Path2D(),
+          xs: [],
+          ys: [],
+        };
+        groups.set(r.bucket.key, g);
+      }
+      if (g.isLine) {
+        var line = r.bucket.lines[r.index];
+        if (!line) {
+          return;
+        }
+        var stride = r.bucket.pointStride;
+        g.path.moveTo(line[0], line[1]);
+        for (var vi = stride; vi < line.length; vi += stride) {
+          g.path.lineTo(line[vi], line[vi + 1]);
+        }
+        return;
+      }
+      if (g.half) {
+        g.path.rect(r.x - g.half[0], r.y - g.half[1], g.half[0] * 2, g.half[1] * 2);
+      }
+      g.xs.push(r.x);
+      g.ys.push(r.y);
+    });
+    groupCache = [];
+    groups.forEach(function(g) { groupCache.push(g); });
+  }
+
+  function drawHighlight() {
+    if (!highlightCanvas && selected.size === 0) {
+      return;
+    }
+    if (!window.MapApp || !MapApp.map) {
+      return;
+    }
+    ensureHighlightCanvas();
+    var map = MapApp.map;
+
+    // Size + position: viewport plus margin, glued to layer space so the
+    // pane transform moves it with the map.
+    var size = map.getSize();
+    var factor = Math.min(
+      HIGHLIGHT_MARGIN,
+      Math.max(0, (Math.sqrt(HIGHLIGHT_MAX_PIXELS / Math.max(1, size.x * size.y)) - 1) / 2));
+    var padX = Math.round(size.x * factor);
+    var padY = Math.round(size.y * factor);
+    var w = size.x + padX * 2;
+    var h = size.y + padY * 2;
+    var topLeft = map.containerPointToLayerPoint([0, 0]).subtract(L.point(padX, padY));
+    canvasTopLeft = topLeft;
+    // setPosition rewrites the whole transform, which also clears any
+    // zoom-preview scale left by onZoomAnim.
+    L.DomUtil.setPosition(highlightCanvas, topLeft);
+    if (highlightCanvas.width !== w || highlightCanvas.height !== h) {
+      highlightCanvas.width = w;
+      highlightCanvas.height = h;
+    }
+    var ctx = highlightCtx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (selected.size === 0) {
+      return;
+    }
+    if (!groupCache) {
+      rebuildGroupCache();
+    }
+
+    // Map px -> canvas px is affine under CRS.Simple; derive it from two
+    // unrounded projections ([lat, lng] = [y, x]) and hand it to the canvas,
+    // so the cached map-space paths render directly.
+    var BASE = 4096;
+    var zoom = map.getZoom();
+    var origin = map.getPixelOrigin();
+    var p0 = map.project(L.latLng(0, 0), zoom);
+    var pu = map.project(L.latLng(BASE, BASE), zoom);
+    var sx = (pu.x - p0.x) / BASE;
+    var sy = (pu.y - p0.y) / BASE;
+    var tx = p0.x - origin.x - topLeft.x;
+    var ty = p0.y - origin.y - topLeft.y;
+    var scale = Math.abs(sx); // |sx| == |sy| under CRS.Simple
+
+    // Canvas bounds in map px, for culling the dot pass.
+    var bx1 = (0 - tx) / sx, bx2 = (w - tx) / sx;
+    var by1 = (0 - ty) / sy, by2 = (h - ty) / sy;
+    var minX = Math.min(bx1, bx2), maxX = Math.max(bx1, bx2);
+    var minY = Math.min(by1, by2), maxY = Math.max(by1, by2);
+
+    ctx.setTransform(sx, 0, 0, sy, tx, ty);
+    ctx.fillStyle = "rgba(91, 163, 224, 0.25)";
+    ctx.strokeStyle = "#5ba3e0";
+
+    var dotPath = null;
+    var dotHalf = DOT_HALF_SCREEN_PX / scale;
+    var dotCount = 0;
+    groupCache.forEach(function(g) {
+      if (g.isLine) {
+        return; // Lines stroke last, over the fills.
+      }
+      if (g.half && Math.max(g.half[0], g.half[1]) * scale >= MIN_HALF_SCREEN_PX) {
+        ctx.fill(g.path);
+        ctx.lineWidth = 1.5 / scale;
+        ctx.stroke(g.path);
+        return;
+      }
+      // Too small on screen for its real footprint: fixed-size dots.
+      if (!dotPath) {
+        dotPath = new Path2D();
+      }
+      var seen = null, cell = 0;
+      if (g.xs.length > DOT_DEDUP_THRESHOLD) {
+        seen = new Set();
+        cell = dotHalf;
+      }
+      for (var i = 0; i < g.xs.length; i++) {
+        var x = g.xs[i], y = g.ys[i];
+        if (x < minX || x > maxX || y < minY || y > maxY) {
+          continue;
+        }
+        if (seen) {
+          var key = Math.round(x / cell) * 262144 + Math.round(y / cell);
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+        }
+        dotPath.rect(x - dotHalf, y - dotHalf, dotHalf * 2, dotHalf * 2);
+        dotCount++;
+      }
+    });
+    if (dotPath && dotCount > 0) {
+      // Dots are too small to read at fill-alpha 0.25; draw them solid.
+      ctx.fillStyle = "rgba(91, 163, 224, 0.85)";
+      ctx.fill(dotPath);
+      ctx.fillStyle = "rgba(91, 163, 224, 0.25)";
+    }
+    groupCache.forEach(function(g) {
+      if (g.isLine) {
+        ctx.lineWidth = 3.5 / scale;
+        ctx.stroke(g.path);
+      }
+    });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
   // A plain right-click (no drag) opens the context menu for whatever's
@@ -164,34 +502,101 @@ var SelectionTool = {};
     var toleranceScreenPx = 8;
     var toleranceMapUnits = toleranceScreenPx / Math.pow(2, MapApp.map.getZoom());
     var hit = MapApp.layer.hitTest(latLng.lng, latLng.lat, toleranceMapUnits);
-    if (hit) {
-      ContextMenu.show(clientX, clientY, hit);
-    }
+    // hit may be null: the empty-map menu offers "Paste here" (or a hint
+    // that the clipboard is empty) -- never silently nothing.
+    ContextMenu.show(clientX, clientY, hit);
   }
 
-  function finishSelection(start, end) {
+  // Recompute aggregates from `selected` and sync the panel + highlight.
+  // Only ever called right after `selected` changed, so the baked highlight
+  // geometry is stale by definition.
+  function refreshUI() {
+    var selection = aggregate();
+    lastSelection = selection.total > 0 ? selection : null;
+    invalidateHighlightCache();
+    requestHighlightDraw();
+    if (selection.total === 0) {
+      panel.style.display = "none";
+      return;
+    }
+    countEl.textContent = selection.total.toLocaleString() + " object" + (selection.total === 1 ? "" : "s") + " selected";
+    objectsBtn.disabled = false;
+    inventoryBtn.disabled = selection.ids.length === 0;
+    var editable = selection.editTargets.actorNames.length + selection.editTargets.lightweight.length;
+    moveBtn.disabled = editable === 0;
+    offsetBtn.disabled = editable === 0;
+    copyBtn.disabled = editable === 0;
+    deleteBtn.disabled = editable === 0;
+    moveBtn.title = editable === 0
+      ? "Nothing editable selected"
+      : "Move " + editable.toLocaleString() + " object" + (editable === 1 ? "" : "s")
+        + (selection.editTargets.skipped ? " (" + selection.editTargets.skipped + " not editable, left behind)" : "");
+    offsetBtn.title = moveBtn.title;
+    panel.style.display = "flex";
+  }
+
+  function finishSelection(start, end, additive) {
     if (Math.abs(end.x - start.x) < MIN_DRAG_PX && Math.abs(end.y - start.y) < MIN_DRAG_PX) {
-      clearSelection();
-      maybeShowContextMenu(end.x, end.y);
+      if (!additive) {
+        clearSelection();
+        maybeShowContextMenu(end.x, end.y);
+      }
       return;
     }
     var a = clientToMapXY(start.x, start.y);
     var b = clientToMapXY(end.x, end.y);
-    var selection = computeSelection(
+    var records = collectInBox(
       Math.min(a.x, b.x), Math.max(a.x, b.x), Math.min(a.y, b.y), Math.max(a.y, b.y));
-    lastSelection = selection;
-
-    countEl.textContent = selection.total.toLocaleString() + " object" + (selection.total === 1 ? "" : "s") + " selected";
-    var hasAny = selection.total > 0;
-    objectsBtn.disabled = !hasAny;
-    inventoryBtn.disabled = selection.ids.length === 0;
-    panel.style.display = "flex";
+    if (!additive) {
+      selected.clear();
+    }
+    records.forEach(function(r) {
+      selected.set(recordKey(r), r);
+    });
+    refreshUI();
   }
+
+  // Ctrl+left-click (see map.js's click handler): toggle the object under
+  // the cursor in/out of the selection.
+  SelectionTool.toggleAtEvent = function(e) {
+    if (!MapApp.layer) {
+      return;
+    }
+    var toleranceMapUnits = 8 / Math.pow(2, MapApp.map.getZoom());
+    var hit = MapApp.layer.hitTest(e.latlng.lng, e.latlng.lat, toleranceMapUnits);
+    if (!hit || hit.bucket.excludeFromSelection) {
+      return;
+    }
+    var x, y;
+    if (hit.bucket.renderType === "line") {
+      if (!isSelectableLineBucket(hit.bucket)) {
+        return;
+      }
+      var line = hit.bucket.lines[hit.index];
+      x = line[0];
+      y = line[1];
+    } else {
+      var stride = hit.bucket.pointStride;
+      x = hit.bucket.points[hit.index * stride];
+      y = hit.bucket.points[hit.index * stride + 1];
+    }
+    var r = recordOf(hit.bucket, hit.index, hit.id, x, y);
+    var key = recordKey(r);
+    if (selected.has(key)) {
+      selected.delete(key);
+    } else {
+      selected.set(key, r);
+    }
+    refreshUI();
+  };
 
   function clearSelection() {
     panel.style.display = "none";
     rect.style.display = "none";
     lastSelection = null;
+    selected.clear();
+    invalidateHighlightCache();
+    requestHighlightDraw();
   }
 
   // ---- Pointer handling (right button) ------------------------------------
@@ -207,6 +612,7 @@ var SelectionTool = {};
       return;
     }
     selecting = true;
+    selectingAdditive = e.ctrlKey || e.metaKey; // Ctrl+right-drag extends the selection
     startClient = { x: e.clientX, y: e.clientY };
     positionRect(e.clientX, e.clientY, e.clientX, e.clientY);
     rect.style.display = "block";
@@ -226,7 +632,7 @@ var SelectionTool = {};
     }
     selecting = false;
     rect.style.display = "none";
-    finishSelection(startClient, { x: e.clientX, y: e.clientY });
+    finishSelection(startClient, { x: e.clientX, y: e.clientY }, selectingAdditive);
   });
 
   // ---- Selection modal (List objects / Total inventory) -------------------
@@ -295,7 +701,46 @@ var SelectionTool = {};
       });
   });
 
+  moveBtn.addEventListener("click", function() {
+    if (!lastSelection || moveBtn.disabled) {
+      return;
+    }
+    var targets = lastSelection.editTargets;
+    clearSelection();
+    EditorTool.startMove(targets);
+  });
+
+  offsetBtn.addEventListener("click", function() {
+    if (!lastSelection || offsetBtn.disabled) {
+      return;
+    }
+    var targets = lastSelection.editTargets;
+    clearSelection();
+    EditorTool.openOffsetDialog(targets);
+  });
+
+  copyBtn.addEventListener("click", function() {
+    if (!lastSelection || copyBtn.disabled) {
+      return;
+    }
+    EditorTool.copyTargets(lastSelection.editTargets);
+  });
+
+  deleteBtn.addEventListener("click", function() {
+    if (!lastSelection || deleteBtn.disabled) {
+      return;
+    }
+    var targets = lastSelection.editTargets;
+    clearSelection();
+    EditorTool.deleteTargets(targets);
+  });
+
   clearBtn.addEventListener("click", clearSelection);
+
+  // The current selection's edit targets, for Ctrl+C (see editor.js).
+  SelectionTool.currentEditTargets = function() {
+    return lastSelection ? lastSelection.editTargets : null;
+  };
 
   // Called on every save (re)load (see data.js) -- the previous selection's
   // ids belong to the old save's buckets, so drop it.

@@ -143,6 +143,12 @@ fn build_payload_json_with_scan(
             cb(done, BUILD_STEP_COUNT);
         }
     }
+    // On-demand re-parses can't fail on bytes that already parsed, but once
+    // the pipeline is lean this build validates edited bodies -- fail loud
+    // rather than emit a payload with a silently-skipped object.
+    if let Some(e) = scan.parse_error() {
+        return Err(format!("object re-parse failed during payload build: {e}"));
+    }
     out.push(b'}');
     Ok(out)
 }
@@ -167,6 +173,9 @@ pub fn build_all_json(
         Some(&mut tick),
     )?;
     let map_index = index::MapIndex::build_with_scan(&scan);
+    if let Some(e) = scan.parse_error() {
+        return Err(format!("object re-parse failed during index build: {e}"));
+    }
     tick(BUILD_STEP_COUNT, BUILD_STEP_COUNT);
     Ok((payload, map_index))
 }

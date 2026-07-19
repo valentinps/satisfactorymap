@@ -1,0 +1,133 @@
+//! Fold an ops list over a body: apply one op, re-parse (validation +
+//! refreshed offsets for the next op), repeat. Used both for incremental
+//! edits (one new op against the live store) and undo (full replay from the
+//! pristine body).
+
+use crate::editor::apply::apply_op;
+use crate::editor::export::effective_body;
+use crate::editor::ops::EditOp;
+use crate::error::{perr, PResult};
+use crate::level::{parse_body_bytes, parse_body_bytes_lean};
+use crate::object::ClassTables;
+use crate::save_header::SaveFileInfo;
+use crate::store::SaveStore;
+use flate2::{read::ZlibDecoder, read::ZlibEncoder, Compression};
+use std::io::Read;
+
+/// Replay `ops` in order against `pristine_body` (no quirk pad) and return
+/// the LEAN store of the final state (the payload/index builder re-parses
+/// objects on demand from spans). `progress(done_ops, total_ops)` fires after
+/// each op's re-parse. Planning is model-independent, so the pristine parse
+/// and every re-parse are LEAN (span walks); the full model is never built.
+/// The prior state is dropped before each re-parse so peak memory stays ~one
+/// lean save (load-bearing for 4GB-limited wasm on 600k-object saves).
+pub fn rebuild(
+    pristine_body: Vec<u8>,
+    file_header: &[u8],
+    info: &SaveFileInfo,
+    tables: &ClassTables,
+    ops: &[EditOp],
+    progress: Option<&mut dyn FnMut(u64, u64)>,
+) -> PResult<SaveStore> {
+    if ops.is_empty() {
+        return parse_body_bytes_lean(pristine_body, file_header.to_vec(), info.clone(), tables, None);
+    }
+    let store = parse_body_bytes_lean(
+        pristine_body,
+        file_header.to_vec(),
+        info.clone(),
+        tables,
+        None,
+    )?;
+    fold_ops(store, ops, tables, progress)
+}
+
+/// Apply ops in sequence over an owned store, returning the LEAN store of the
+/// final state. Every re-parse is a lean span walk -- planning is
+/// model-independent and the payload/index builder re-parses objects on
+/// demand, so the full model is never materialized (the point: peak memory
+/// stays ~one lean save under the 4GB wasm ceiling).
+pub fn fold_ops(
+    mut store: SaveStore,
+    ops: &[EditOp],
+    tables: &ClassTables,
+    mut progress: Option<&mut dyn FnMut(u64, u64)>,
+) -> PResult<SaveStore> {
+    let total = ops.len() as u64;
+    for (i, op) in ops.iter().enumerate() {
+        store = step_owned_impl(store, op, tables, true)?;
+        if let Some(cb) = progress.as_deref_mut() {
+            cb(i as u64 + 1, total);
+        }
+    }
+    Ok(store)
+}
+
+/// Apply one op to a live store and return the re-parsed result. Borrows the
+/// store (clones its body) and re-parses EAGERLY, so callers keep the original
+/// for before/after comparison and get a full object model to assert on.
+///
+/// This is the test/oracle edit path -- the editor test suite and
+/// `lazy_objects.rs` use it. Production edits go through `step_owned` /
+/// `fold_ops` (consume the store, patch in place, re-parse lean). Kept as an
+/// independent implementation to validate the lean path against; not dead code.
+pub fn step(store: &SaveStore, op: &EditOp, tables: &ClassTables) -> PResult<SaveStore> {
+    let body = apply_op(store, effective_body(store), op)?;
+    parse_body_bytes(
+        body,
+        store.file_header.clone(),
+        store.info.clone(),
+        tables,
+        None,
+    )
+}
+
+/// step(), but consumes the store: the op is planned (model-independently:
+/// objects re-parse on demand from their spans, so a lean store works), the
+/// parsed structures are dropped, and the plan is applied IN PLACE on the
+/// store's own body buffer before the re-parse. Peak memory stays ~one
+/// parsed save -- there is never a second body copy (load-bearing under the
+/// 4GB wasm ceiling, where a loaded 600k-object save already sits at ~3.6GB).
+pub fn step_owned(store: SaveStore, op: &EditOp, tables: &ClassTables) -> PResult<SaveStore> {
+    step_owned_impl(store, op, tables, false)
+}
+
+fn step_owned_impl(
+    store: SaveStore,
+    op: &EditOp,
+    tables: &ClassTables,
+    lean: bool,
+) -> PResult<SaveStore> {
+    let plan = crate::editor::apply::plan_op(&store, op)?;
+    let padded = store.padded;
+    let SaveStore { data: mut body, file_header, info, .. } = store; // frees all parsed structs
+    if padded {
+        body.truncate(body.len() - 4); // drop the quirk pad; re-parse re-adds it
+    }
+    crate::editor::apply::apply_plan(&mut body, plan)?;
+    if lean {
+        parse_body_bytes_lean(body, file_header, info, tables, None)
+    } else {
+        parse_body_bytes(body, file_header, info, tables, None)
+    }
+}
+
+/// Compress a pristine body for retention (wasm keeps the undo baseline as
+/// ~1/15th-size zlib instead of a full second body). Returns (zlib bytes,
+/// raw length).
+pub fn compress_body(body: &[u8]) -> (Vec<u8>, usize) {
+    let mut enc = ZlibEncoder::new(body, Compression::fast());
+    let mut out = Vec::with_capacity(body.len() / 8);
+    enc.read_to_end(&mut out).expect("in-memory zlib compression cannot fail");
+    (out, body.len())
+}
+
+pub fn decompress_body(compressed: &[u8], raw_len: usize) -> PResult<Vec<u8>> {
+    let mut dec = ZlibDecoder::new(compressed);
+    let mut out = Vec::with_capacity(raw_len);
+    dec.read_to_end(&mut out).map_err(|e| perr!("Pristine body decompression failed: {}", e))?;
+    if out.len() != raw_len {
+        return Err(perr!("Pristine body length mismatch: {} != {}", out.len(), raw_len));
+    }
+    Ok(out)
+}

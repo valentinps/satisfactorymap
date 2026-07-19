@@ -9,7 +9,7 @@ use crate::mapdata::geometry::{project_xy, world_z_to_meters};
 use crate::mapdata::jsonval::jnum;
 use crate::mapdata::names::readable_label;
 use crate::mapdata::props;
-use crate::mapdata::scan::SaveScan;
+use crate::mapdata::scan::{SaveScan, Slot};
 use crate::store::*;
 use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
@@ -86,12 +86,6 @@ pub fn collect_resource_nodes(scan: &SaveScan) -> Value {
     let gd = gamedata::get();
 
     let miner_type_paths: Vec<&str> = gd.type_paths.miners.iter().map(String::as_str).collect();
-    let mut miner_objects: Vec<&Object> = Vec::new();
-    for (_, obj_slot) in scan.actors_of_type(&miner_type_paths) {
-        if let Some(slot) = obj_slot {
-            miner_objects.push(scan.object(slot));
-        }
-    }
 
     let node_type_paths: Vec<&str> = gd
         .type_paths
@@ -103,18 +97,24 @@ pub fn collect_resource_nodes(scan: &SaveScan) -> Value {
     // instanceName -> (position, typePath); Python dict semantics on a
     // duplicate name (last value wins, first position kept) == IndexMap.
     let mut mined_resource_actors: IndexMap<&[u8], ([f32; 3], &[u8])> = IndexMap::new();
-    let mut node_objects_by_instance_name: IndexMap<&[u8], &Object> = IndexMap::new();
+    // instanceName -> node object slot (parsed on demand below; last value
+    // wins, first position kept -- Python dict semantics).
+    let mut node_objects_by_instance_name: IndexMap<&[u8], Slot> = IndexMap::new();
     for (actor_slot, obj_slot) in scan.actors_of_type(&node_type_paths) {
         let actor = scan.actor(actor_slot);
         let name = actor.instance_name.bytes(data);
         mined_resource_actors.insert(name, (actor.position, actor.type_path.bytes(data)));
         if let Some(slot) = obj_slot {
-            node_objects_by_instance_name.insert(name, scan.object(slot));
+            node_objects_by_instance_name.insert(name, slot);
         }
     }
 
+    // Membership only -- resource path names extracted straight into the set,
+    // so no miner object is held past its loop iteration.
     let mut mined_resource_instance_names: HashSet<&[u8]> = HashSet::new();
-    for object in &miner_objects {
+    for (_, obj_slot) in scan.actors_of_type(&miner_type_paths) {
+        let Some(slot) = obj_slot else { continue };
+        let Some(object) = scan.parse_object(slot) else { continue };
         if let Some(r) = props::object_ref(&object.properties, data, b"mExtractableResource") {
             mined_resource_instance_names.insert(r.path_name.bytes(data));
         }
@@ -125,7 +125,8 @@ pub fn collect_resource_nodes(scan: &SaveScan) -> Value {
     // instanceName -> (overrideResourceType, overridePurity).
     let mut overrides_by_instance_name: HashMap<&[u8], (Option<String>, Option<&'static str>)> =
         HashMap::new();
-    for (&name, object) in &node_objects_by_instance_name {
+    for (&name, &slot) in &node_objects_by_instance_name {
+        let Some(object) = scan.parse_object(slot) else { continue };
         let mut override_resource_type: Option<String> = None;
         if let Some(r) = props::object_ref(&object.properties, data, b"mResourceClassOverride") {
             // getattr(..., "pathName", None) truthiness: empty pathName skipped.
@@ -345,12 +346,15 @@ fn crash_site_state<'a>(
     let mut open_with_drive: Vec<&[u8]> = Vec::new();
     // Inventory instance path name -> crash site instance path name.
     let mut crash_site_inventory_path_name: HashMap<Vec<u8>, &[u8]> = HashMap::new();
-    for level in &scan.store.levels {
-        for (header, object) in level.headers.iter().zip(&level.objects) {
+    for (li, level) in scan.store.levels.iter().enumerate() {
+        for (oi, header) in level.headers.iter().enumerate() {
             let instance_name = header.instance_name().bytes(data);
+            // Name-filter on the header FIRST -- only the handful of crash-site
+            // objects are re-parsed, not the whole level.
             if !crash_sites.contains_key(utf8(instance_name)) {
                 continue;
             }
+            let Some(object) = scan.parse_object((li, oi)) else { continue };
             // `hasBeenOpened is not None and hasBeenOpened`.
             if props::boolean(&object.properties, data, b"mHasBeenOpened") != Some(true) {
                 continue;
@@ -378,10 +382,11 @@ fn crash_site_state<'a>(
         }
     }
 
-    for level in &scan.store.levels {
-        for (header, object) in level.headers.iter().zip(&level.objects) {
+    for (li, level) in scan.store.levels.iter().enumerate() {
+        for (oi, header) in level.headers.iter().enumerate() {
             let instance_name = header.instance_name().bytes(data);
             let Some(&site) = crash_site_inventory_path_name.get(instance_name) else { continue };
+            let Some(object) = scan.parse_object((li, oi)) else { continue };
             let Some(stacks) = props::array_structs(&object.properties, data, b"mInventoryStacks")
             else {
                 continue;
@@ -594,7 +599,7 @@ pub fn collect_dropped_items(scan: &SaveScan) -> Value {
 
     for (actor_slot, obj_slot) in scan.actors_of_type(&[ITEM_PICKUP_TYPE_PATH]) {
         let Some(obj_slot) = obj_slot else { continue };
-        let object = scan.object(obj_slot);
+        let Some(object) = scan.parse_object(obj_slot) else { continue };
         // mPickupItems is a StructProperty: Python's pickupItems[0] is the
         // [innerProps, innerPropTypes] pair's props list. (Were it any other
         // shape, Python's getPropertyValue over it would return None for both
