@@ -260,8 +260,11 @@ pub fn parse_object(
                         let record_off = c.pos;
                         let rotation = [c.f64()?, c.f64()?, c.f64()?, c.f64()?];
                         let position = [c.f64()?, c.f64()?, c.f64()?];
+                        // Vanilla always saves unit scale but scaling mods
+                        // write arbitrary values; nothing downstream reads
+                        // the scale (edits splice the record bytes whole).
                         for _ in 0..3 {
-                            c.confirm_f64(1.0)?; // scale
+                            c.f64()?; // scale
                         }
                         let swatch = parse_object_reference(c)?;
                         let material = parse_object_reference(c)?;
