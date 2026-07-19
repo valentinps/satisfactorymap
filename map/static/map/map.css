@@ -115,7 +115,7 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   background: none;
 }
 
-#menuButton, #logoButton, #searchBox, #statusMenuWrap {
+#menuButton, #logoButton, #searchBox, #statusMenuWrap, .topPillButton {
   pointer-events: auto;
 }
 
@@ -433,12 +433,15 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   position: relative;
 }
 
-#statusMenuButton {
+/* Shared pill for the top-right actions (Depot, Progression): same family
+   as the search pill/menu cluster. */
+.topPillButton {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
   height: 42px;
-  padding: 0 12px 0 14px;
+  padding: 0 13px;
   color: var(--text);
   font: inherit;
   font-size: 13px;
@@ -450,10 +453,18 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   cursor: pointer;
 }
 
-#statusMenuButton:hover {
+.topPillButton:hover {
   background: var(--raised-hover);
   border-color: var(--border-hover);
   color: var(--text-bright);
+}
+
+.topPillButton img {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
 }
 
 #statusMenuButton .statusMenuChevron {
@@ -505,12 +516,6 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   height: 24px;
   object-fit: contain;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
-}
-
-.statusMenuDivider {
-  height: 1px;
-  margin: 5px 8px;
-  background: var(--border-popup);
 }
 
 /* The map owns the whole viewport (minus the altitude rail docked right) --

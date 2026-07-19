@@ -49,8 +49,14 @@
        (panels.js drives open/close) instead of a strip of six bare icon
        tiles: the game icons alone were unreadable, the labels do the work.
        Row ids are load-bearing -- progression.js/finditem.js bind by id. -->
+  <!-- Depot is an inventory view, not progression -- its own pill next to
+       the dropdown, same style. -->
+  <button id="depotIconButton" class="topPillButton" title="Dimensional Depot contents">
+    <img src="icons/buildings/Build_CentralStorage_C.png" alt="">
+    <span>Depot</span>
+  </button>
   <div id="statusMenuWrap">
-    <button id="statusMenuButton" title="Progression &amp; Dimensional Depot" aria-expanded="false" aria-haspopup="true">
+    <button id="statusMenuButton" class="topPillButton" title="Progression views" aria-expanded="false" aria-haspopup="true">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16">
         <path d="M4 20V10M12 20V4M20 20v-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
       </svg>
@@ -60,11 +66,6 @@
       </svg>
     </button>
     <div id="statusMenu" style="display:none" role="menu">
-      <button id="depotIconButton" class="statusMenuRow" role="menuitem">
-        <img src="icons/buildings/Build_CentralStorage_C.png" alt="">
-        <span>Dimensional Depot</span>
-      </button>
-      <div class="statusMenuDivider"></div>
       <button id="mamIconButton" class="statusMenuRow" role="menuitem">
         <img src="icons/buildings/Build_Mam_C.png" alt="">
         <span>MAM research</span>
