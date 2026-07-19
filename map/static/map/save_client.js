@@ -258,6 +258,52 @@ const SaveClient = (() => {
       return tauriDispatch(msg).catch(rethrowTauriError);
    }
 
+   // ---- Chunked payload (Tauri) ----------------------------------------------
+   // A payload too big for one IPC response (WebView2 truncates very large
+   // bodies, and V8 caps strings at ~512MB) arrives as a small marker object
+   // listing byte ranges of the payload stashed on the Rust side. Each range
+   // wraps to one parseable JSON object; pull its bytes in slices, parse, and
+   // merge. Normal-size payloads never hit this path.
+   const PAYLOAD_SLICE_BYTES = 96 * 1024 * 1024;
+
+   async function resolveChunkedPayload(parsed) {
+      const spec = parsed && parsed.__chunkedPayload;
+      if (!spec) {
+         return parsed;
+      }
+      const invoke = window.__TAURI__.core.invoke;
+      const out = {};
+      for (const range of spec.ranges) {
+         const start = range[0];
+         const len = range[1];
+         const buf = new Uint8Array(len + 2);
+         buf[0] = 0x7b; // '{'
+         let got = 0;
+         while (got < len) {
+            const n = Math.min(PAYLOAD_SLICE_BYTES, len - got);
+            const part = new Uint8Array(
+               await invoke("payload_slice", { offset: start + got, len: n }),
+            );
+            if (part.length === 0) {
+               throw new Error("Empty payload slice");
+            }
+            buf.set(part, 1 + got);
+            got += part.length;
+         }
+         buf[len + 1] = 0x7d; // '}'
+         Object.assign(out, JSON.parse(new TextDecoder().decode(buf)));
+      }
+      await invoke("payload_done").catch(() => {});
+      return out;
+   }
+
+   // Payload bytes -> payload object, transport-agnostic: the worker path is a
+   // plain parse; the Tauri path may indirect through the chunk protocol.
+   function parsePayloadBytes(payloadBytes) {
+      const parsed = JSON.parse(new TextDecoder().decode(payloadBytes));
+      return IS_TAURI ? resolveChunkedPayload(parsed) : Promise.resolve(parsed);
+   }
+
    function request(msg, transfer) {
       if (IS_TAURI) {
          return tauriRequest(msg);
@@ -283,7 +329,7 @@ const SaveClient = (() => {
          return request({ op: "load", buffer }, [buffer]).then((payloadBytes) => {
             activeProgress = null;
             scheduleLeanHandoff();
-            return JSON.parse(new TextDecoder().decode(payloadBytes));
+            return parsePayloadBytes(payloadBytes);
          }, (error) => {
             activeProgress = null;
             throw error;
@@ -297,7 +343,7 @@ const SaveClient = (() => {
          stateVersion++;
          return request({ op: "load", path }).then((payloadBytes) => {
             activeProgress = null;
-            return JSON.parse(new TextDecoder().decode(payloadBytes));
+            return parsePayloadBytes(payloadBytes);
          }, (error) => {
             activeProgress = null;
             throw error;
@@ -344,7 +390,7 @@ const SaveClient = (() => {
             // swapping to a fresh lean worker after each one keeps repeated
             // edits on 600k-object saves away from the 4GB ceiling.
             scheduleLeanHandoff();
-            return JSON.parse(new TextDecoder().decode(payloadBytes));
+            return parsePayloadBytes(payloadBytes);
          }, (error) => {
             activeProgress = null;
             throw error;
