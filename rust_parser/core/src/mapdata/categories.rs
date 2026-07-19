@@ -14,6 +14,9 @@ pub struct Categories {
     pub classname_to_catsub: IndexMap<String, (String, String)>,
     /// The ordered [{"category", "subcategories"}] tree the frontend renders.
     pub menu_order: Value,
+    /// Short ClassNames dropped from the payload entirely
+    /// (categoryOverrides.json hiddenClasses).
+    pub hidden_classes: Vec<String>,
 }
 
 fn str_map<'v>(value: Option<&'v Value>) -> IndexMap<&'v str, &'v str> {
@@ -42,6 +45,12 @@ pub fn get() -> &'static Categories {
             top_labels.insert(k, v);
         }
 
+        let mut hidden_classes: Vec<String> = Vec::new();
+        if let Some(Value::Array(list)) = overrides.get("hiddenClasses") {
+            hidden_classes
+                .extend(list.iter().filter_map(Value::as_str).map(String::from));
+        }
+
         let mut classname_to_catsub: IndexMap<String, (String, String)> = IndexMap::new();
         // subInternal -> (topInternal, subLabel, best/lowest menuPriority).
         let mut subcategory_info: IndexMap<&str, (&str, &str, f64)> = IndexMap::new();
@@ -60,6 +69,24 @@ pub fn get() -> &'static Categories {
                 _ => {
                     subcategory_info.insert(sub_internal, (top_internal, sub_label, priority));
                 }
+            }
+        }
+
+        // classCategories: per-class [category, subcategory] DISPLAY labels for
+        // buildables that aren't build-menu entries at all (HUB props, ramp
+        // railing variants, ...) -- and it wins over buildingCategories.json
+        // when both exist (the HUB itself moves from Progression to "The HUB").
+        if let Some(Value::Object(map)) = overrides.get("classCategories") {
+            for (class_name, value) in map {
+                let Some(pair) = value.as_array() else { continue };
+                let (Some(cat), Some(sub)) = (
+                    pair.first().and_then(Value::as_str),
+                    pair.get(1).and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                classname_to_catsub
+                    .insert(class_name.clone(), (cat.to_string(), sub.to_string()));
             }
         }
 
@@ -93,8 +120,19 @@ pub fn get() -> &'static Categories {
             }));
         }
 
-        Categories { classname_to_catsub, menu_order: Value::Array(menu_order) }
+        Categories {
+            classname_to_catsub,
+            menu_order: Value::Array(menu_order),
+            hidden_classes,
+        }
     })
+}
+
+/// True for buildables curated out of the map payload entirely
+/// (categoryOverrides.json hiddenClasses -- path nodes, sign poles, ...).
+pub fn is_hidden_class(type_path: &str) -> bool {
+    let class_name = short_class_name(type_path);
+    get().hidden_classes.iter().any(|c| c == class_name)
 }
 
 /// sav_map_data.categorizeTypePath.

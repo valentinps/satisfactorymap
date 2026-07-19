@@ -8,5 +8,52 @@
     "SC_Ramps": "Foundation",
     "SC_Inverted": "Foundation",
     "SC_QuatPipes": "Foundation"
-  }
+  },
+  "_comment2": "The three class-level sections below cover buildables that are NOT in buildingCategories.json at all (they aren't build-menu entries: they come attached to something else, or their descriptor link is broken in Docs.json) and would otherwise land in the catch-all 'Unknown' category as bare red dots. classCategories values are DISPLAY labels [category, subcategory], not Sub_*/SC_* ids -- these classes bypass the internal id tree entirely (a classCategories entry also wins over buildingCategories.json when the class exists there, e.g. the HUB regrouping below). classFootprintsMeters is [widthMeters, depthMeters] (actor-local X/Y spans) for classes with no usable size data in buildings.json; values were measured from comparable buildables' clearance boxes or the wiki. hiddenClasses (short ClassName) are dropped from the map payload entirely: pure clutter with no informational value (path nodes, sign poles, the pipeline flow indicator, the personnel elevator's moving cabin).",
+  "classCategories": {
+    "Build_TradingPost_C": ["Special", "The HUB"],
+    "Build_HubTerminal_C": ["Special", "The HUB"],
+    "Build_WorkBenchIntegrated_C": ["Special", "The HUB"],
+    "Build_StorageIntegrated_C": ["Special", "The HUB"],
+    "Build_GeneratorIntegratedBiomass_C": ["Special", "The HUB"],
+    "BUILD_Potty_mk1_C": ["Special", "The HUB"],
+    "Build_StorageBlueprint_C": ["Organisation", "Storage"],
+    "Build_FenceRamp_8x1_R_C": ["Organisation", "Attachments"],
+    "Build_FenceRamp_8x2_R_C": ["Organisation", "Attachments"],
+    "Build_SM_RailingRamp_8x1_01_C": ["Organisation", "Attachments"],
+    "Build_SM_RailingRamp_8x2_01_C": ["Organisation", "Attachments"],
+    "Build_SM_RailingRamp_8x4_01_C": ["Organisation", "Attachments"],
+    "Build_RailroadSwitchControl_C": ["Logistics", "Trains"],
+    "Build_ConveyorAttachmentSplitterLift_C": ["Logistics", "Conveyor Attachments"],
+    "Build_ConveyorAttachmentMergerLift_C": ["Logistics", "Conveyor Attachments"],
+    "Build_ConveyorAttachmentSplitterSmartLift_C": ["Logistics", "Conveyor Attachments"]
+  },
+  "classFootprintsMeters": {
+    "Build_HubTerminal_C": [5.0, 3.0],
+    "Build_WorkBenchIntegrated_C": [4.0, 6.0],
+    "Build_StorageIntegrated_C": [1.0, 1.6],
+    "Build_GeneratorIntegratedBiomass_C": [4.0, 4.0],
+    "BUILD_Potty_mk1_C": [1.6, 1.6],
+    "Build_StorageBlueprint_C": [1.0, 1.6],
+    "Build_FenceRamp_8x1_R_C": [0.5, 8.0],
+    "Build_FenceRamp_8x2_R_C": [0.5, 8.0],
+    "Build_SM_RailingRamp_8x1_01_C": [0.5, 8.0],
+    "Build_SM_RailingRamp_8x2_01_C": [0.5, 8.0],
+    "Build_SM_RailingRamp_8x4_01_C": [0.5, 8.0],
+    "Build_RailroadSwitchControl_C": [1.5, 1.5],
+    "Build_ConveyorAttachmentSplitterLift_C": [4.0, 4.0],
+    "Build_ConveyorAttachmentMergerLift_C": [4.0, 4.0],
+    "Build_ConveyorAttachmentSplitterSmartLift_C": [4.0, 4.0]
+  },
+  "hiddenClasses": [
+    "Build_VehiclePathNode_Default_C",
+    "Build_VehiclePathNode_DockingStation_C",
+    "Build_SignPole_Small_C",
+    "Build_SignPole_Medium_C",
+    "Build_SignPole_Portrait_C",
+    "Build_SignPole_Large_C",
+    "Build_SignPole_Huge_C",
+    "Build_PipelineFlowIndicator_C",
+    "BP_ElevatorCabin_C"
+  ]
 }
