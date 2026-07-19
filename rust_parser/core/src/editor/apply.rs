@@ -233,7 +233,7 @@ pub(crate) fn fetch(store: &SaveStore, li: usize, oi: usize) -> PResult<Object> 
 
 /// Per-chain-belt patch target: where its world-space spline elements live.
 struct ChainSplines {
-    elements_off: u32,
+    elements_off: usize,
     element_count: usize,
 }
 
@@ -372,7 +372,7 @@ fn plan_move_actors(
         let locations = wire_cached_locations(object, data);
         if !locations.is_empty() {
             let (span_off, span_len) = store.levels[li].object_spans[oi];
-            let span = &data[span_off as usize..(span_off + span_len) as usize];
+            let span = &data[span_off..span_off + span_len as usize];
             for v in locations {
                 let replacement = encode_f64x3(transform_vec3(v, rotate_yaw_deg, pivot, delta));
                 for rel in find_f64x3(span, v) {
@@ -655,8 +655,8 @@ fn plan_duplicate_actors(
     for &(li, oi) in &set {
         let (h_off, h_len) = store.levels[li].header_spans[oi];
         let (b_off, b_len) = store.levels[li].object_spans[oi];
-        let mut header_copy = data[h_off as usize..(h_off + h_len) as usize].to_vec();
-        let mut body_copy = data[b_off as usize..(b_off + b_len) as usize].to_vec();
+        let mut header_copy = data[h_off..h_off + h_len as usize].to_vec();
+        let mut body_copy = data[b_off..b_off + b_len as usize].to_vec();
         rename_matcher.substitute(&mut header_copy);
         rename_matcher.substitute(&mut body_copy);
         tombstone_matcher.substitute(&mut header_copy);
@@ -729,7 +729,7 @@ fn plan_duplicate_lightweight(
     let data: &[u8] = &store.data;
     let (li, oi, _, groups) = lightweight_subsystem(store)?;
 
-    let mut added_per_group: HashMap<u32, i64> = HashMap::new(); // count_field_off -> count
+    let mut added_per_group: HashMap<usize, i64> = HashMap::new(); // count_field_off -> count
     let mut total_added = 0i64;
 
     for item in items {
@@ -915,8 +915,8 @@ fn plan_delete_lightweight(store: &SaveStore, plan: &mut EditPlan, items: &[LwRe
     let data: &[u8] = &store.data;
     let (li, oi, _, groups) = lightweight_subsystem(store)?;
 
-    let mut removed_per_group: HashMap<u32, i64> = HashMap::new();
-    let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new(); // (count_field_off, index)
+    let mut removed_per_group: HashMap<usize, i64> = HashMap::new();
+    let mut seen: BTreeSet<(usize, u32)> = BTreeSet::new(); // (count_field_off, index)
     let mut total_removed = 0i64;
     for item in items {
         let group = groups

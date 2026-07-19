@@ -63,7 +63,14 @@ pub fn fold_ops(
     Ok(store)
 }
 
-/// Apply one op to a live store and return the re-parsed result.
+/// Apply one op to a live store and return the re-parsed result. Borrows the
+/// store (clones its body) and re-parses EAGERLY, so callers keep the original
+/// for before/after comparison and get a full object model to assert on.
+///
+/// This is the test/oracle edit path -- the editor test suite and
+/// `lazy_objects.rs` use it. Production edits go through `step_owned` /
+/// `fold_ops` (consume the store, patch in place, re-parse lean). Kept as an
+/// independent implementation to validate the lean path against; not dead code.
 pub fn step(store: &SaveStore, op: &EditOp, tables: &ClassTables) -> PResult<SaveStore> {
     let body = apply_op(store, effective_body(store), op)?;
     parse_body_bytes(

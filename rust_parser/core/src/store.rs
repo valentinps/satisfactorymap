@@ -29,7 +29,7 @@ pub struct ActorHeader {
     pub scale: [f32; 3],
     pub was_placed_in_level: bool,
     /// Offset in `SaveStore.data` of the 40-byte rotation/position/scale block.
-    pub transform_off: u32,
+    pub transform_off: usize,
 }
 
 #[derive(Debug)]
@@ -213,7 +213,7 @@ pub struct LightweightInstance {
     pub player_info_table_index: Option<PlayerIdx>,
     /// Byte extent of this packed record in `SaveStore.data` (starts at the
     /// rotation doubles, covers everything through the trailer).
-    pub record_off: u32,
+    pub record_off: usize,
     pub record_len: u32,
 }
 
@@ -228,9 +228,9 @@ pub enum PlayerIdx {
 pub struct LightweightGroup {
     pub type_path: StrRef,
     /// Offset in `SaveStore.data` of this group's u32 instance count.
-    pub count_field_off: u32,
+    pub count_field_off: usize,
     /// Offset just past the group's last instance record (insertion point).
-    pub end_off: u32,
+    pub end_off: usize,
     pub instances: Vec<LightweightInstance>,
 }
 
@@ -239,7 +239,7 @@ pub struct ChainBelt {
     pub belt: ObjectRef,
     /// Offset in `SaveStore.data` of the first element double (elements are
     /// contiguous 72-byte 3×3 f64 records, world-space).
-    pub elements_off: u32,
+    pub elements_off: usize,
     /// numElements × 3×3 doubles.
     pub elements: Vec<[[f64; 3]; 3]>,
     pub a: u32,
@@ -304,17 +304,17 @@ pub struct Object {
 #[derive(Debug)]
 pub struct LevelSpans {
     /// The u64 objectHeaderAndCollectableSize field.
-    pub header_size_field_off: u32,
+    pub header_size_field_off: usize,
     /// Just past the last object header (before the persistent flag /
     /// collectables#1, which are inside the measured size region).
-    pub headers_insert_off: u32,
+    pub headers_insert_off: usize,
     /// The u64 allObjectsSize field.
-    pub objects_size_field_off: u32,
+    pub objects_size_field_off: usize,
     /// The u32 objectCount at the start of the object-body blob (the u32
     /// actorAndComponentCount lives at header_size_field_off + 8).
-    pub object_count_field_off: u32,
+    pub object_count_field_off: usize,
     /// Just past the last object body (object_start + all_objects_size).
-    pub bodies_insert_off: u32,
+    pub bodies_insert_off: usize,
 }
 
 #[derive(Debug)]
@@ -336,11 +336,12 @@ pub struct Level {
     pub collectables2: Vec<ObjectRef>,
     pub save_object_version_data: Option<VersionData>,
     /// (off, len) of each header record (including its u32 headerType),
-    /// index-aligned with `headers`.
-    pub header_spans: Vec<(u32, u32)>,
+    /// index-aligned with `headers`. `off` is `usize` (u32 on wasm32) so the
+    /// body can exceed 4GB natively; `len` (one record) stays u32.
+    pub header_spans: Vec<(usize, u32)>,
     /// (off, len) of each object body record (from the u32 gameVersion
     /// through the v53+ trailing version block), index-aligned with `objects`.
-    pub object_spans: Vec<(u32, u32)>,
+    pub object_spans: Vec<(usize, u32)>,
     pub spans: LevelSpans,
 }
 

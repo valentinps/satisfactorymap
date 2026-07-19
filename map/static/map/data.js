@@ -124,13 +124,19 @@
     showProgress: showProgress,
     hideProgress: hideProgress,
     setStatus: setStatus,
-    canReload: function() { return currentFile !== null; },
-    reloadCurrentFile: function() { return loadLocalFile(currentFile); },
+    canReload: function() { return currentFile !== null || currentPath !== null; },
+    reloadCurrentFile: function() {
+      // Desktop (Tauri) reloads by path; the browser re-reads the File.
+      return currentPath !== null ? loadLocalPath(currentPath) : loadLocalFile(currentFile);
+    },
   };
 
   // The last successfully picked File, kept so the editor can recover from
   // a lost worker session (out of memory on huge saves) by re-reading it.
   var currentFile = null;
+  // Desktop (Tauri) counterpart: the last loaded save's native path, for the
+  // same recovery-by-reload flow (there is no File object there).
+  var currentPath = null;
 
   function loadLocalFile(file) {
     if (!file) {
@@ -180,15 +186,102 @@
       });
   }
 
+  // Desktop (Tauri) load: sav_core reads the .sav natively from a path, so a
+  // big save never crosses the IPC boundary as a buffer. Mirrors loadLocalFile
+  // otherwise -- same progress/status UI and recovery bookkeeping.
+  function loadLocalPath(path) {
+    if (!path) {
+      return Promise.resolve();
+    }
+    if (!/\.sav$/i.test(path)) {
+      setStatus("Only .sav save files can be loaded.");
+      return Promise.resolve();
+    }
+    if (loadInFlight) {
+      return Promise.resolve();
+    }
+    loadInFlight = true;
+    var name = path.split(/[\\/]/).pop();
+    uploadDropZone.classList.add("uploading");
+    uploadDropText.textContent = "Loading " + name + "…";
+    var pinnedSelection = Tooltip.getPinnedSelection();
+    showProgress("Reading file", 0);
+
+    return SaveClient.loadSavePath(path, function(phase, current, total) {
+      var percent = total > 0 ? (current / total) * 100 : 0;
+      showProgress(phase, percent);
+    })
+      .then(function(payload) {
+        hideProgress();
+        loadInFlight = false;
+        resetUploadZone();
+        MapApp.currentFile = "tauri:" + path;
+        currentPath = path;
+        currentFile = null;
+        EditorTool.onSaveLoaded(name);
+        applyPayload(payload);
+        if (pinnedSelection) {
+          restorePinnedSelection(pinnedSelection);
+        }
+        setStatus("Loaded: " + payload.sessionName + " (" + payload.saveDatetime + ")");
+      })
+      .catch(function(error) {
+        hideProgress();
+        loadInFlight = false;
+        resetUploadZone();
+        setStatus("Failed to load save: " + (error && error.message || error));
+        throw error;
+      });
+  }
+
+  // Open the native file picker (Tauri dialog plugin) and load the choice.
+  // Prefer the injected global binding (withGlobalTauri); fall back to a raw
+  // invoke of the plugin command if it isn't present.
+  function pickAndLoadTauri() {
+    var options = {
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Satisfactory save", extensions: ["sav"] }],
+    };
+    var tauri = window.__TAURI__;
+    var opened = (tauri.dialog && tauri.dialog.open)
+      ? tauri.dialog.open(options)
+      : tauri.core.invoke("plugin:dialog|open", { options: options });
+    return opened.then(function(selected) {
+      if (!selected) {
+        return;
+      }
+      var path = typeof selected === "string" ? selected : (selected && selected.path);
+      return loadLocalPath(path);
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function() {
     MapApp.init();
     setStatus("No save loaded -- drop a .sav anywhere or click above.");
 
-    uploadDropZone.addEventListener("click", function() { uploadFileInput.click(); });
+    var isTauri = SaveClient.isTauri();
+
+    uploadDropZone.addEventListener("click", function() {
+      // Desktop: native "Open" dialog returning a path. Browser: hidden file input.
+      if (isTauri) { pickAndLoadTauri(); } else { uploadFileInput.click(); }
+    });
     uploadFileInput.addEventListener("change", function() {
       loadLocalFile(uploadFileInput.files[0]);
       uploadFileInput.value = ""; // Re-selecting the same file should fire change again.
     });
+
+    // Desktop file drops: the webview suppresses HTML5 file DnD (dragDropEnabled),
+    // so Tauri delivers dropped paths via its own event instead of the DOM drop
+    // handlers below.
+    if (isTauri && window.__TAURI__.event) {
+      window.__TAURI__.event.listen("tauri://drag-drop", function(e) {
+        var paths = e && e.payload && e.payload.paths;
+        if (paths && paths.length) {
+          loadLocalPath(paths[0]);
+        }
+      });
+    }
     uploadDropZone.addEventListener("dragover", function(e) {
       e.preventDefault();
       uploadDropZone.classList.add("drag-over");

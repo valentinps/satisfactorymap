@@ -35,8 +35,11 @@ Cargo workspace:
   rounding (`py_round`), exact Python `repr(float)` (`display.rs`),
   `rem_euclid` for Python `%`, absence-vs-null-vs-0 distinctions. Do not
   "simplify" these without understanding what they mirror.
-- 4GB decompressed-save cap: `StrRef`/`DataRef` use `u32` offsets, matching
-  wasm32's address space.
+- Decompressed-save size cap is **wasm32-only**: `StrRef`/`DataRef` and the
+  store's span/offset fields use `usize` offsets, which is `u32` on wasm32
+  (the browser build — a 4GB address space it can't exceed anyway) and 64-bit
+  on native (the desktop app), so native has no cap. The guard in
+  `decompress.rs` is `#[cfg(target_pointer_width = "32")]`.
 
 ## Rebuilding
 

@@ -72,11 +72,6 @@ self.onmessage = async (event) => {
          // memory never shrinks, so peak usage must stay bounded at one save.
          if (session) { session.free(); session = null; }
          pristine = null;
-         if (msg.keepModel) {
-            // ?keepModel=1 debug valve: keep the parsed object model
-            // resident (memory A/B against the post-load drop).
-            wasm_bindgen.set_keep_object_model(true);
-         }
          const bytes = new Uint8Array(msg.buffer);
          session = new wasm_bindgen.SaveSession(bytes, (phase, current, total) => {
             self.postMessage({

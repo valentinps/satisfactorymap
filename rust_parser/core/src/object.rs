@@ -236,11 +236,11 @@ pub fn parse_object(
                 for _ in 0..count1 {
                     c.confirm_u32(0)?;
                     let build_item_path = c.string()?;
-                    let count_field_off = c.pos as u32;
+                    let count_field_off = c.pos;
                     let count2 = c.u32()?;
                     let mut instances = Vec::with_capacity(count2 as usize);
                     for _ in 0..count2 {
-                        let record_off = c.pos as u32;
+                        let record_off = c.pos;
                         let rotation = [c.f64()?, c.f64()?, c.f64()?, c.f64()?];
                         let position = [c.f64()?, c.f64()?, c.f64()?];
                         for _ in 0..3 {
@@ -318,13 +318,13 @@ pub fn parse_object(
                             service_provider,
                             player_info_table_index,
                             record_off,
-                            record_len: c.pos as u32 - record_off,
+                            record_len: (c.pos - record_off) as u32,
                         });
                     }
                     items.push(LightweightGroup {
                         type_path: build_item_path,
                         count_field_off,
-                        end_off: c.pos as u32,
+                        end_off: c.pos,
                         instances,
                     });
                 }
@@ -346,7 +346,7 @@ pub fn parse_object(
                     chain_actor = parse_object_reference(c)?;
                     let belt = parse_object_reference(c)?;
                     let num_elements = c.u32()?;
-                    let elements_off = c.pos as u32;
+                    let elements_off = c.pos;
                     let mut elements = Vec::with_capacity(num_elements as usize);
                     for _ in 0..num_elements {
                         let mut nine = [[0f64; 3]; 3];

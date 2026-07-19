@@ -49,6 +49,36 @@ npx wrangler pages deploy dist/
 (Deploys run from a machine with the game data extracted — CI can't
 regenerate it, since it comes from the game's own files.)
 
+## Desktop app (Tauri)
+
+The browser build runs the parser in a WebAssembly worker, hard-capped at 4 GB
+of linear memory (wasm32). Very large saves (roughly 2–4× the current biggest,
+~1.2M+ objects) exceed that and can't be loaded in a browser at all. The
+**desktop app** wraps the *same* `sav_core` engine and the *same* frontend
+(`dist/`) in a native [Tauri v2](https://v2.tauri.app/) window — no wasm, no
+4 GB ceiling. The frontend picks its transport at runtime from
+`window.__TAURI__`, so `dist/` is byte-identical to the browser build; the
+desktop shell just talks to `sav_core` through native commands instead of the
+worker, and loads the `.sav` from a path (native file dialog) rather than
+marshaling it through the wasm boundary.
+
+Prereqs: Rust toolchain, the [Tauri CLI](https://v2.tauri.app/reference/cli/)
+(`cargo install tauri-cli --version '^2'`), and WebView2 (preinstalled on
+Windows 11). Build `dist/` first (`python tools/build_site.py`) — the desktop
+app bundles it.
+
+```bash
+python tools/build_site.py                       # produce dist/ (once, or after frontend/wasm changes)
+cd rust_parser/tauri
+cargo tauri dev                                  # dev loop: launches the window
+cargo tauri build                                # Windows installer (MSI/NSIS), unsigned
+```
+
+`cargo tauri dev` embeds `../../dist` at compile time, so rebuild `dist/` (and
+restart) after changing the frontend. Distribution/signing of the installer is
+out of scope for now. The wasm worker path is untouched — the same `dist/`
+still serves in the browser via `serve_site.py`.
+
 ## Project layout
 
 | Path | Contents |
@@ -57,6 +87,7 @@ regenerate it, since it comes from the game's own files.)
 | `map/static/map/icons/` | *(generated)* item/building icon PNGs |
 | `rust_parser/core/` | `sav_core`: the save parser + map-payload builder (pure Rust, embeds the game-data tables) |
 | `rust_parser/wasm/` | `sav_wasm`: the wasm-bindgen boundary the worker loads |
+| `rust_parser/tauri/` | `sav_tauri`: native desktop shell (Tauri v2) over `sav_core`, mirrors the wasm binding |
 | `game_data/` | extraction scripts + hand-curated game metadata (`categoryLabels.json`, `categoryOverrides.json`, `SCHEMA.md`) |
 | `game_data/sav_data/` | *(committed)* static world tables (resource nodes, slugs, crash sites...) converted from the upstream parser project |
 | `game_data/docs.json` | *(not committed)* the game's own data dump, input to `extract_docs_json.py` |

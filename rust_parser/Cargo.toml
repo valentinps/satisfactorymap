@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "wasm"]
+members = ["core", "wasm", "tauri"]
 
 [workspace.dependencies]
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }

@@ -68,8 +68,8 @@ pub fn extract_clipboard(
             let (h_off, h_len) = store.levels[li].header_spans[oi];
             let (b_off, b_len) = store.levels[li].object_spans[oi];
             actors.push(json!({
-                "h": B64.encode(&data[h_off as usize..(h_off + h_len) as usize]),
-                "b": B64.encode(&data[b_off as usize..(b_off + b_len) as usize]),
+                "h": B64.encode(&data[h_off..h_off + h_len as usize]),
+                "b": B64.encode(&data[b_off..b_off + b_len as usize]),
             }));
             if let Header::Actor(a) = &store.levels[li].headers[oi] {
                 grow(a.position[0] as f64, a.position[1] as f64);
@@ -338,7 +338,7 @@ pub(crate) fn plan_paste_external(
 
     // -- Lightweight records ----------------------------------------------------
     let mut lw_inserts: Vec<(usize, Vec<u8>)> = Vec::new();
-    let mut lw_added_per_group: HashMap<u32, i64> = HashMap::new();
+    let mut lw_added_per_group: HashMap<usize, i64> = HashMap::new();
     let mut lw_total = 0i64;
     let mut lw_subsystem: Option<(usize, usize)> = None;
     if !foreign_lightweight.is_empty() {

@@ -1,0 +1,27 @@
+[package]
+name = "sav_tauri"
+version = "0.1.0"
+edition = "2021"
+description = "Native desktop shell for the Satisfactory save map"
+default-run = "sav_tauri"
+
+# The session orchestration lives in a lib (tauri-free, just sav_core) so it can
+# be exercised by integration tests without a webview; the bin is the thin Tauri
+# command/IPC shell over it.
+[lib]
+name = "sav_tauri_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sav_tauri"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+sav_core = { path = "../core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

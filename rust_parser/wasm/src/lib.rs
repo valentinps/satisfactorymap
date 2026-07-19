@@ -90,7 +90,7 @@ mod wasm_alloc {
 #[global_allocator]
 static ALLOC: wasm_alloc::GrowAhead = wasm_alloc::GrowAhead;
 
-use sav_core::level::{parse_full_save, parse_full_save_lean, ProgressFn};
+use sav_core::level::{parse_full_save_lean, ProgressFn};
 use sav_core::mapdata;
 use sav_core::mapdata::index::MapIndex;
 use sav_core::object::ClassTables;
@@ -101,22 +101,6 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen(start)]
 fn start() {
     console_error_panic_hook::set_once();
-}
-
-/// Debug/regression valve (?keepModel=1): keep the parsed per-object model
-/// resident instead of dropping it after the payload/index build. Queries
-/// re-parse from spans either way -- this only changes what stays allocated.
-static KEEP_MODEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-#[wasm_bindgen]
-pub fn set_keep_object_model(keep: bool) {
-    KEEP_MODEL.store(keep, std::sync::atomic::Ordering::Relaxed);
-}
-
-fn drop_model_unless_kept(store: &mut SaveStore) {
-    if !KEEP_MODEL.load(std::sync::atomic::Ordering::Relaxed) {
-        store.drop_object_model();
-    }
 }
 
 /// Live (allocated, not yet freed) heap bytes. memory.buffer.byteLength
@@ -164,18 +148,17 @@ impl SaveSession {
     }
 
     /// Rebuild index + payload from the new (lean) store and swap it in. The
-    /// builder re-parses objects on demand; drop_model_unless_kept is a no-op
-    /// unless ?keepModel=1 forced an eager store.
+    /// builder re-parses objects on demand from their spans -- the store is
+    /// already model-free, so there is nothing to drop.
     fn finish_edit(
         &mut self,
-        mut new_store: SaveStore,
+        new_store: SaveStore,
         call: &dyn Fn(u8, u64, u64),
     ) -> Result<Vec<u8>, JsError> {
         let mut build_progress = |current: u64, total: u64| call(2, current, total);
         let (payload_json, index) =
             mapdata::build_all_json(&new_store, Some(&mut build_progress))
                 .map_err(|e| JsError::new(&e))?;
-        drop_model_unless_kept(&mut new_store);
         self.store = Some(Arc::new(new_store));
         self.index = Some(index);
         Ok(payload_json)
@@ -202,16 +185,13 @@ impl SaveSession {
         let tables = ClassTables::embedded();
         let mut parse_progress = |phase: u8, current: u64, total: u64| call(phase, current, total);
         let pf: ProgressFn = &mut parse_progress;
-        // Lean by default: the builder re-parses objects on demand from their
+        // Always lean: the builder re-parses objects on demand from their
         // spans, so the full model (~1.5-2GB on a 600k-object save) is never
         // materialized -- peak memory stays ~body + headers + collector
-        // outputs. ?keepModel=1 keeps the eager path for debugging/regression.
-        let mut store = if KEEP_MODEL.load(std::sync::atomic::Ordering::Relaxed) {
-            parse_full_save(&bytes, &tables, Some(pf))
-        } else {
-            parse_full_save_lean(&bytes, &tables, Some(pf))
-        }
-        .map_err(|e| JsError::new(&e.msg))?;
+        // outputs. (The eager parse_full_save + object-model drop remain in
+        // sav_core purely as the differential test oracle; production is lean.)
+        let store = parse_full_save_lean(&bytes, &tables, Some(pf))
+            .map_err(|e| JsError::new(&e.msg))?;
         drop(bytes);
 
         // 17 payload steps + the index build = BUILD_STEP_COUNT ticks, same
@@ -220,10 +200,6 @@ impl SaveSession {
         let (payload_json, index) =
             mapdata::build_all_json(&store, Some(&mut build_progress))
                 .map_err(|e| JsError::new(&e))?;
-
-        // No-op on the lean path (already model-free); under ?keepModel=1 this
-        // is where the eager model is freed after the build consulted it.
-        drop_model_unless_kept(&mut store);
 
         let file_header = store.file_header.clone();
         let info = store.info.clone();

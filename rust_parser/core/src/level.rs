@@ -32,7 +32,7 @@ pub(crate) fn parse_one_header(c: &mut Cursor) -> PResult<Header> {
                     c.data.len()
                 ));
             }
-            let transform_off = c.pos as u32;
+            let transform_off = c.pos;
             let f = |i: usize| -> f32 {
                 f32::from_le_bytes(c.data[c.pos + i * 4..c.pos + i * 4 + 4].try_into().unwrap())
             };
@@ -89,20 +89,20 @@ fn parse_headers_and_level(
     let level_start = c.pos;
     let level_name = if persistent_level_flag { None } else { Some(c.string()?) };
 
-    let header_size_field_off = c.pos as u32;
+    let header_size_field_off = c.pos;
     let object_header_and_collectable1_size = c.u64()? as usize;
     let header_start = c.pos;
     let actor_and_component_count = c.u32()?;
 
     let mut headers: Vec<Header> = Vec::with_capacity(actor_and_component_count as usize);
-    let mut header_spans: Vec<(u32, u32)> =
+    let mut header_spans: Vec<(usize, u32)> =
         Vec::with_capacity(actor_and_component_count as usize);
     let mut last_report = c.pos;
     for _ in 0..actor_and_component_count {
         let header_record_start = c.pos;
         let h = parse_one_header(c)?;
         headers.push(h);
-        header_spans.push((header_record_start as u32, (c.pos - header_record_start) as u32));
+        header_spans.push((header_record_start, (c.pos - header_record_start) as u32));
         if let Some(cb) = progress.as_deref_mut() {
             if c.pos - last_report > 1 << 20 {
                 cb(1, progress_base + (c.pos - level_start) as u64, progress_total);
@@ -111,7 +111,7 @@ fn parse_headers_and_level(
         }
     }
 
-    let headers_insert_off = c.pos as u32;
+    let headers_insert_off = c.pos;
 
     let mut level_persistent_flag = None;
     if persistent_level_flag {
@@ -141,7 +141,7 @@ fn parse_headers_and_level(
     }
 
     // Objects blob (separate cursor; the main cursor jumps over it)
-    let objects_size_field_off = c.pos as u32;
+    let objects_size_field_off = c.pos;
     let all_objects_size = c.u64()? as usize;
     let object_start = c.pos;
     let mut oc = Cursor::new(c.data, object_start);
@@ -151,8 +151,8 @@ fn parse_headers_and_level(
         header_size_field_off,
         headers_insert_off,
         objects_size_field_off,
-        object_count_field_off: object_start as u32,
-        bodies_insert_off: (object_start + all_objects_size) as u32,
+        object_count_field_off: object_start,
+        bodies_insert_off: object_start + all_objects_size,
     };
 
     let level_save_version = c.u32()?;
@@ -189,7 +189,7 @@ fn parse_headers_and_level(
     }
     let mut objects =
         Vec::with_capacity(if lean { 0 } else { actor_and_component_count as usize });
-    let mut object_spans: Vec<(u32, u32)> =
+    let mut object_spans: Vec<(usize, u32)> =
         Vec::with_capacity(actor_and_component_count as usize);
     let mut last_report = oc.pos;
     for idx in 0..actor_and_component_count as usize {
@@ -207,7 +207,7 @@ fn parse_headers_and_level(
             )?;
             objects.push(obj);
         }
-        object_spans.push((object_record_start as u32, (oc.pos - object_record_start) as u32));
+        object_spans.push((object_record_start, (oc.pos - object_record_start) as u32));
         if let Some(cb) = progress.as_deref_mut() {
             if oc.pos - last_report > 1 << 20 {
                 cb(
@@ -244,7 +244,11 @@ fn parse_headers_and_level(
     })
 }
 
-/// Full readFullSaveFile flow. `file_data` is the raw .sav contents.
+/// Full readFullSaveFile flow, EAGERLY building the per-object model. `file_data`
+/// is the raw .sav contents. Production (browser + desktop) loads via
+/// `parse_full_save_lean` and never builds the model; this eager variant is the
+/// differential test oracle (`lazy_objects.rs` checks the lean span-reparse
+/// against it) and the examples. Not a production path.
 pub fn parse_full_save(
     file_data: &[u8],
     tables: &ClassTables,
