@@ -2140,6 +2140,17 @@ var MapApp = {};
       inertia: useWebGL,
     });
     L.control.zoom({ position: "bottomright" }).addTo(map);
+    // Persistent branding/license line (GPL notice -- rehosts must preserve
+    // it, see README "License & trademark"). Same corner as the zoom
+    // control: Leaflet stacks controls in the corner container, so it slots
+    // in under the zoom buttons without any manual offset math.
+    L.control.attribution({ prefix: false })
+      .addAttribution(
+        'Satisfactory Save Map &middot; ' +
+        '<a href="https://satisfactorymap.net/" target="_blank" rel="noopener">satisfactorymap.net</a>' +
+        ' &middot; &copy; 2026 Valentin Planes &middot; ' +
+        '<a href="https://github.com/valentinps/satisfactorymap/blob/main/LICENSE" target="_blank" rel="noopener">GPL-3.0</a>')
+      .addTo(map);
 
     var mapSize = 8192;
     var margin = mapSize * 0.5;
