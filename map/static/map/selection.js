@@ -222,27 +222,99 @@ var SelectionTool = {};
   }
 
   // ---- Highlight overlay ----------------------------------------------------
-  // A pointer-transparent canvas over the map that outlines every selected
-  // object, redrawn on selection changes and map pan/zoom.
+  // A pointer-transparent canvas that lives INSIDE Leaflet's overlay pane
+  // (not over the map container): a drag-pan moves the pane with a CSS
+  // transform, so the highlight moves in perfect lockstep with the base map
+  // and the object layer -- no per-frame redraw, no one-frame-late desync.
+  // The wheel-zoom CSS animation is matched the same way webgl_layer.js's
+  // _onZoomAnim does it: hand the canvas the identical target transform and
+  // let the compositor scale it with everything else, then repaint crisp on
+  // zoomend.
+  //
+  // Selection geometry is cached as MAP-PIXEL-space Path2D objects (one per
+  // bucket), rebuilt only when the selection itself changes. A repaint --
+  // zoomend, a pan that escapes the buffered margin, selection change -- is
+  // then a handful of native fill/stroke calls under a canvas transform
+  // instead of a JS loop over every selected object, which is what made
+  // 100k+ selections crawl.
 
   var highlightCanvas = null;
   var highlightCtx = null;
   var drawQueued = false;
   var mapEventsAttached = false;
+  var canvasTopLeft = null; // layer point of the canvas's top-left corner
+  var groupCache = null;    // per-bucket geometry cache, see rebuildGroupCache
+  var zoomAnimating = false;
+
+  // Buffered margin per side (fraction of the viewport): pans inside it show
+  // fully-painted highlight with zero work; the canvas re-glues on moveend.
+  // Total pixels are capped so a 4K window doesn't allocate absurd canvas
+  // memory (same idea as map.js's BUFFER_MAX_PIXELS).
+  var HIGHLIGHT_MARGIN = 0.5;
+  var HIGHLIGHT_MAX_PIXELS = 16e6;
+  // Below this on-screen half-extent a footprint is illegible; those records
+  // draw as fixed-size dots instead (built per repaint, viewport-culled).
+  var MIN_HALF_SCREEN_PX = 2.5;
+  var DOT_HALF_SCREEN_PX = 3;
+  // Above this many dots, dedupe them on a dot-sized grid: zoomed way out,
+  // thousands of dots land on the same few pixels anyway.
+  var DOT_DEDUP_THRESHOLD = 20000;
 
   function ensureHighlightCanvas() {
-    if (!highlightCanvas) {
+    if (!highlightCanvas && window.MapApp && MapApp.map) {
       highlightCanvas = document.createElement("canvas");
       highlightCanvas.id = "selectionHighlightCanvas";
-      highlightCanvas.style.cssText =
-        "position:absolute;left:0;top:0;z-index:640;pointer-events:none;";
-      mapContainer.appendChild(highlightCanvas);
+      highlightCanvas.className = "leaflet-zoom-animated";
+      // Explicit z-index: the bucket layer's canvases are unpositioned
+      // siblings in the same pane, and a layer swap (WebGL -> 2D fallback)
+      // re-appends them after this one.
+      highlightCanvas.style.cssText = "position:absolute;z-index:200;pointer-events:none;";
+      MapApp.map.getPanes().overlayPane.appendChild(highlightCanvas);
       highlightCtx = highlightCanvas.getContext("2d");
     }
     if (!mapEventsAttached && window.MapApp && MapApp.map) {
-      MapApp.map.on("move zoom zoomend moveend resize", requestHighlightDraw);
+      // No "move" here on purpose: the pane transform already carries the
+      // canvas during pans. "zoom" covers pinch/flyTo (fractional zoom with
+      // no CSS animation); wheel zoom rides zoomanim/zoomend instead.
+      MapApp.map.on("moveend viewreset resize", requestHighlightDraw);
+      MapApp.map.on("zoomend", onZoomEnd);
+      MapApp.map.on("zoom", onZoomEvent);
+      MapApp.map.on("zoomanim", onZoomAnim);
       mapEventsAttached = true;
     }
+  }
+
+  // Wheel zoom: Leaflet CSS-transitions everything carrying
+  // leaflet-zoom-animated over ~250ms and fires no per-frame events. Give
+  // the canvas the same target transform L.ImageOverlay uses so it scales
+  // in sync (slightly stretched until the zoomend repaint, exactly like the
+  // base map image and the GL canvas).
+  function onZoomAnim(e) {
+    if (!highlightCanvas || !canvasTopLeft) {
+      return;
+    }
+    zoomAnimating = true;
+    var map = MapApp.map;
+    var scale = map.getZoomScale(e.zoom);
+    var anchorLatLng = map.layerPointToLatLng(canvasTopLeft);
+    var offset = map._latLngToNewLayerPoint(anchorLatLng, e.zoom, e.center);
+    L.DomUtil.setTransform(highlightCanvas, offset, scale);
+  }
+
+  // Continuous zoom (pinch, flyTo) fires "zoom" per frame with no CSS
+  // animation -- repaint (cheap: cached paths). During an animated wheel
+  // zoom "zoom" fires once with the TARGET zoom while the CSS transition
+  // still runs; repainting then would double-transform, so skip until
+  // zoomend clears the flag.
+  function onZoomEvent() {
+    if (!zoomAnimating) {
+      requestHighlightDraw();
+    }
+  }
+
+  function onZoomEnd() {
+    zoomAnimating = false;
+    requestHighlightDraw();
   }
 
   function requestHighlightDraw() {
@@ -256,68 +328,166 @@ var SelectionTool = {};
     });
   }
 
-  function drawHighlight() {
-    if (!highlightCanvas && selected.size === 0) {
-      return;
-    }
-    ensureHighlightCanvas();
-    var w = mapContainer.clientWidth;
-    var h = mapContainer.clientHeight;
-    if (highlightCanvas.width !== w || highlightCanvas.height !== h) {
-      highlightCanvas.width = w;
-      highlightCanvas.height = h;
-    }
-    var ctx = highlightCtx;
-    ctx.clearRect(0, 0, w, h);
-    if (selected.size === 0 || !window.MapApp || !MapApp.map) {
-      return;
-    }
-    // Map px -> container px is affine under CRS.Simple; derive it from two
-    // reference conversions instead of converting every point through
-    // Leaflet ([lat, lng] = [y, x]). Leaflet rounds container points to
-    // whole pixels, so use a large baseline (a 1px one degenerates to a
-    // scale of 0 when zoomed out).
-    var BASE = 4096;
-    var p0 = MapApp.map.latLngToContainerPoint([0, 0]);
-    var px = MapApp.map.latLngToContainerPoint([0, BASE]);
-    var py = MapApp.map.latLngToContainerPoint([BASE, 0]);
-    var sx = (px.x - p0.x) / BASE;
-    var sy = (py.y - p0.y) / BASE;
+  // Selection changed: drop the cached geometry (rebuilt lazily on the next
+  // repaint).
+  function invalidateHighlightCache() {
+    groupCache = null;
+  }
 
-    ctx.strokeStyle = "#5ba3e0";
-    ctx.fillStyle = "rgba(91, 163, 224, 0.25)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
+  // Group the selection per bucket and bake each group's geometry into a
+  // map-pixel-space Path2D: footprint boxes for buildings (yaw ignored --
+  // a "what's selected" cue, not geometry), the full polyline for belt/pipe
+  // segments. Centers are kept alongside for the small-on-screen dot pass.
+  function rebuildGroupCache() {
+    var groups = new Map();
     selected.forEach(function(r) {
-      if (r.bucket.renderType === "line") {
-        // Belts/pipes: trace the whole selected segment.
+      var g = groups.get(r.bucket.key);
+      if (!g) {
+        g = {
+          isLine: r.bucket.renderType === "line",
+          half: r.bucket.footprintPixels || null,
+          path: new Path2D(),
+          xs: [],
+          ys: [],
+        };
+        groups.set(r.bucket.key, g);
+      }
+      if (g.isLine) {
         var line = r.bucket.lines[r.index];
         if (!line) {
           return;
         }
         var stride = r.bucket.pointStride;
-        ctx.moveTo(p0.x + line[0] * sx, p0.y + line[1] * sy);
+        g.path.moveTo(line[0], line[1]);
         for (var vi = stride; vi < line.length; vi += stride) {
-          ctx.lineTo(p0.x + line[vi] * sx, p0.y + line[vi + 1] * sy);
+          g.path.lineTo(line[vi], line[vi + 1]);
         }
         return;
       }
-      var cx = p0.x + r.x * sx;
-      var cy = p0.y + r.y * sy;
-      if (cx < -50 || cx > w + 50 || cy < -50 || cy > h + 50) {
+      if (g.half) {
+        g.path.rect(r.x - g.half[0], r.y - g.half[1], g.half[0] * 2, g.half[1] * 2);
+      }
+      g.xs.push(r.x);
+      g.ys.push(r.y);
+    });
+    groupCache = [];
+    groups.forEach(function(g) { groupCache.push(g); });
+  }
+
+  function drawHighlight() {
+    if (!highlightCanvas && selected.size === 0) {
+      return;
+    }
+    if (!window.MapApp || !MapApp.map) {
+      return;
+    }
+    ensureHighlightCanvas();
+    var map = MapApp.map;
+
+    // Size + position: viewport plus margin, glued to layer space so the
+    // pane transform moves it with the map.
+    var size = map.getSize();
+    var factor = Math.min(
+      HIGHLIGHT_MARGIN,
+      Math.max(0, (Math.sqrt(HIGHLIGHT_MAX_PIXELS / Math.max(1, size.x * size.y)) - 1) / 2));
+    var padX = Math.round(size.x * factor);
+    var padY = Math.round(size.y * factor);
+    var w = size.x + padX * 2;
+    var h = size.y + padY * 2;
+    var topLeft = map.containerPointToLayerPoint([0, 0]).subtract(L.point(padX, padY));
+    canvasTopLeft = topLeft;
+    // setPosition rewrites the whole transform, which also clears any
+    // zoom-preview scale left by onZoomAnim.
+    L.DomUtil.setPosition(highlightCanvas, topLeft);
+    if (highlightCanvas.width !== w || highlightCanvas.height !== h) {
+      highlightCanvas.width = w;
+      highlightCanvas.height = h;
+    }
+    var ctx = highlightCtx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (selected.size === 0) {
+      return;
+    }
+    if (!groupCache) {
+      rebuildGroupCache();
+    }
+
+    // Map px -> canvas px is affine under CRS.Simple; derive it from two
+    // unrounded projections ([lat, lng] = [y, x]) and hand it to the canvas,
+    // so the cached map-space paths render directly.
+    var BASE = 4096;
+    var zoom = map.getZoom();
+    var origin = map.getPixelOrigin();
+    var p0 = map.project(L.latLng(0, 0), zoom);
+    var pu = map.project(L.latLng(BASE, BASE), zoom);
+    var sx = (pu.x - p0.x) / BASE;
+    var sy = (pu.y - p0.y) / BASE;
+    var tx = p0.x - origin.x - topLeft.x;
+    var ty = p0.y - origin.y - topLeft.y;
+    var scale = Math.abs(sx); // |sx| == |sy| under CRS.Simple
+
+    // Canvas bounds in map px, for culling the dot pass.
+    var bx1 = (0 - tx) / sx, bx2 = (w - tx) / sx;
+    var by1 = (0 - ty) / sy, by2 = (h - ty) / sy;
+    var minX = Math.min(bx1, bx2), maxX = Math.max(bx1, bx2);
+    var minY = Math.min(by1, by2), maxY = Math.max(by1, by2);
+
+    ctx.setTransform(sx, 0, 0, sy, tx, ty);
+    ctx.fillStyle = "rgba(91, 163, 224, 0.25)";
+    ctx.strokeStyle = "#5ba3e0";
+
+    var dotPath = null;
+    var dotHalf = DOT_HALF_SCREEN_PX / scale;
+    var dotCount = 0;
+    groupCache.forEach(function(g) {
+      if (g.isLine) {
+        return; // Lines stroke last, over the fills.
+      }
+      if (g.half && Math.max(g.half[0], g.half[1]) * scale >= MIN_HALF_SCREEN_PX) {
+        ctx.fill(g.path);
+        ctx.lineWidth = 1.5 / scale;
+        ctx.stroke(g.path);
         return;
       }
-      // Buildings: an axis-aligned box at the footprint's extent (yaw
-      // ignored -- this is a "what's selected" cue, not geometry); other
-      // points a small fixed marker.
-      var half = 4;
-      if (r.bucket.footprintPixels) {
-        half = Math.max(3, Math.max(r.bucket.footprintPixels[0], r.bucket.footprintPixels[1]) * Math.abs(sx));
+      // Too small on screen for its real footprint: fixed-size dots.
+      if (!dotPath) {
+        dotPath = new Path2D();
       }
-      ctx.rect(cx - half, cy - half, half * 2, half * 2);
+      var seen = null, cell = 0;
+      if (g.xs.length > DOT_DEDUP_THRESHOLD) {
+        seen = new Set();
+        cell = dotHalf;
+      }
+      for (var i = 0; i < g.xs.length; i++) {
+        var x = g.xs[i], y = g.ys[i];
+        if (x < minX || x > maxX || y < minY || y > maxY) {
+          continue;
+        }
+        if (seen) {
+          var key = Math.round(x / cell) * 262144 + Math.round(y / cell);
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+        }
+        dotPath.rect(x - dotHalf, y - dotHalf, dotHalf * 2, dotHalf * 2);
+        dotCount++;
+      }
     });
-    ctx.fill();
-    ctx.stroke();
+    if (dotPath && dotCount > 0) {
+      // Dots are too small to read at fill-alpha 0.25; draw them solid.
+      ctx.fillStyle = "rgba(91, 163, 224, 0.85)";
+      ctx.fill(dotPath);
+      ctx.fillStyle = "rgba(91, 163, 224, 0.25)";
+    }
+    groupCache.forEach(function(g) {
+      if (g.isLine) {
+        ctx.lineWidth = 3.5 / scale;
+        ctx.stroke(g.path);
+      }
+    });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
   // A plain right-click (no drag) opens the context menu for whatever's
@@ -338,9 +508,12 @@ var SelectionTool = {};
   }
 
   // Recompute aggregates from `selected` and sync the panel + highlight.
+  // Only ever called right after `selected` changed, so the baked highlight
+  // geometry is stale by definition.
   function refreshUI() {
     var selection = aggregate();
     lastSelection = selection.total > 0 ? selection : null;
+    invalidateHighlightCache();
     requestHighlightDraw();
     if (selection.total === 0) {
       panel.style.display = "none";
@@ -422,6 +595,7 @@ var SelectionTool = {};
     rect.style.display = "none";
     lastSelection = null;
     selected.clear();
+    invalidateHighlightCache();
     requestHighlightDraw();
   }
 

@@ -157,15 +157,44 @@ var EditorTool = (function() {
     return ops;
   }
 
+  // Busy-overlay label for an action, from the ops themselves: verb from
+  // the op types (one action never mixes verbs), count from the target
+  // lists. pasteExternal v2 blobs carry their objects compressed, so the
+  // count can be 0 -- the label just drops it then.
+  function describeOps(ops) {
+    var verb = "Applying edit";
+    var count = 0;
+    ops.forEach(function(op) {
+      count += (op.names ? op.names.length : 0) + (op.items ? op.items.length : 0)
+        + (op.actors ? op.actors.length : 0) + (op.lightweight ? op.lightweight.length : 0);
+      if (op.op.indexOf("delete") === 0) {
+        verb = "Deleting";
+      } else if (op.op.indexOf("duplicate") === 0 || op.op === "pasteExternal") {
+        verb = "Pasting";
+      } else if (op.op.indexOf("move") === 0) {
+        verb = "Moving";
+      }
+    });
+    return count > 0
+      ? verb + " " + count.toLocaleString() + " object" + (count === 1 ? "" : "s") + "…"
+      : verb + "…";
+  }
+
+  // One progress callback shape for every applyEdits call: the thin top bar
+  // (legacy) plus the modal busy overlay.
+  function editProgress(phase, current, total) {
+    var percent = total > 0 ? (current / total) * 100 : 0;
+    SaveLoadFlow.showProgress(phase, percent);
+    SaveLoadFlow.busyProgress(phase, percent);
+  }
+
   function applyAction(ops) {
     if (applyInFlight || ops.length === 0) {
       return;
     }
     applyInFlight = true;
-    SaveClient.applyEdits(ops, false, function(phase, current, total) {
-      var percent = total > 0 ? (current / total) * 100 : 0;
-      SaveLoadFlow.showProgress(phase, percent);
-    })
+    SaveLoadFlow.showBusy(describeOps(ops));
+    SaveClient.applyEdits(ops, false, editProgress)
       .then(function(payload) {
         actions.push(ops);
         redoStack = [];
@@ -174,18 +203,16 @@ var EditorTool = (function() {
       .catch(failApply);
   }
 
-  // Replace the whole edit list (undo/redo replay from pristine).
+  // Replace the whole edit list (undo replay from pristine).
   function replayActions(newActions, onSuccess) {
     if (applyInFlight) {
       return;
     }
     applyInFlight = true;
+    SaveLoadFlow.showBusy("Undoing…");
     var flat = [];
     newActions.forEach(function(a) { flat.push.apply(flat, a); });
-    SaveClient.applyEdits(flat, true, function(phase, current, total) {
-      var percent = total > 0 ? (current / total) * 100 : 0;
-      SaveLoadFlow.showProgress(phase, percent);
-    })
+    SaveClient.applyEdits(flat, true, editProgress)
       .then(function(payload) {
         onSuccess();
         finishApply(payload, "Edit undone.");
@@ -196,6 +223,7 @@ var EditorTool = (function() {
   function finishApply(payload, statusText) {
     applyInFlight = false;
     SaveLoadFlow.hideProgress();
+    SaveLoadFlow.hideBusy();
     SaveLoadFlow.applyPayload(payload);
     SaveLoadFlow.setStatus(statusText + " (" + actions.length + " edit" + (actions.length === 1 ? "" : "s") + " pending)");
     updateToolbar();
@@ -208,6 +236,7 @@ var EditorTool = (function() {
     if (!error || !error.sessionLost) {
       applyInFlight = false;
       SaveLoadFlow.hideProgress();
+      SaveLoadFlow.hideBusy();
       SaveLoadFlow.setStatus(message);
       updateToolbar();
       return;
@@ -225,6 +254,7 @@ var EditorTool = (function() {
       recovering = false;
       applyInFlight = false;
       SaveLoadFlow.hideProgress();
+      SaveLoadFlow.hideBusy();
       SaveLoadFlow.setStatus(message + " — please re-load the save file (pending edits were lost).");
       actions = [];
       redoStack = [];
@@ -233,6 +263,7 @@ var EditorTool = (function() {
     }
     recovering = true;
     applyInFlight = false;
+    SaveLoadFlow.showBusy("Recovering — reloading save…");
     SaveLoadFlow.setStatus(message + " — recovering (reloading save)…");
     var backup = actions.slice();
     var savedClipboard = clipboard; // survives the reload: same save, same names
@@ -244,6 +275,7 @@ var EditorTool = (function() {
       })
       .then(function() {
         recovering = false;
+        SaveLoadFlow.hideBusy();
         SaveLoadFlow.setStatus(message + " — recovered; your " + actions.length
           + " earlier edit" + (actions.length === 1 ? " was" : "s were") + " re-applied.");
         updateToolbar();
@@ -252,6 +284,7 @@ var EditorTool = (function() {
         recovering = false;
         applyInFlight = false;
         SaveLoadFlow.hideProgress();
+        SaveLoadFlow.hideBusy();
         SaveLoadFlow.setStatus(message + " — recovery incomplete ("
           + (replayError && replayError.message || replayError)
           + "); " + actions.length + " of " + backup.length + " edits were restored.");
@@ -263,9 +296,8 @@ var EditorTool = (function() {
     if (i >= backup.length) {
       return Promise.resolve();
     }
-    return SaveClient.applyEdits(backup[i], false, function(phase, current, total) {
-      SaveLoadFlow.showProgress(phase, total > 0 ? (current / total) * 100 : 0);
-    }).then(function(payload) {
+    SaveLoadFlow.showBusy("Recovering — re-applying edit " + (i + 1) + " of " + backup.length + "…");
+    return SaveClient.applyEdits(backup[i], false, editProgress).then(function(payload) {
       SaveLoadFlow.hideProgress();
       SaveLoadFlow.applyPayload(payload);
       actions.push(backup[i]);
@@ -318,9 +350,8 @@ var EditorTool = (function() {
     }
     var ops = redoStack[redoStack.length - 1];
     applyInFlight = true;
-    SaveClient.applyEdits(ops, false, function(phase, current, total) {
-      SaveLoadFlow.showProgress(phase, total > 0 ? (current / total) * 100 : 0);
-    })
+    SaveLoadFlow.showBusy("Redoing…");
+    SaveClient.applyEdits(ops, false, editProgress)
       .then(function(payload) {
         redoStack.pop();
         actions.push(ops);
@@ -368,16 +399,22 @@ var EditorTool = (function() {
       + " — Ctrl+V or right-click to paste.");
     // Also put a portable blob (raw object bytes + version metadata) on the
     // OS clipboard so another tab -- even another save -- can paste it.
+    // Extracting 100k+ objects takes a noticeable moment in the worker, so
+    // it runs under the busy overlay -- otherwise a big Copy looks like
+    // nothing happened until the status line quietly changes.
     if (navigator.clipboard && navigator.clipboard.writeText) {
+      SaveLoadFlow.showBusy("Copying " + n.toLocaleString() + " object" + (n === 1 ? "" : "s") + "…");
       SaveClient.extractClipboard(targets.actorNames, targets.lightweight)
         .then(function(json) {
           return navigator.clipboard.writeText(json);
         })
         .then(function() {
+          SaveLoadFlow.hideBusy();
           SaveLoadFlow.setStatus("Copied " + n.toLocaleString() + " object" + (n === 1 ? "" : "s")
             + " — paste with Ctrl+V here or in another tab.");
         })
         .catch(function(error) {
+          SaveLoadFlow.hideBusy();
           console.warn("System-clipboard copy failed (same-tab paste still works):", error);
         });
     }
@@ -617,6 +654,7 @@ var EditorTool = (function() {
     exportInFlight = true;
     downloadBtn.disabled = true;
     downloadBtn.textContent = "Exporting…";
+    SaveLoadFlow.showBusy("Exporting save…");
     SaveClient.exportSave()
       .then(function(bytes) {
         var blob = new Blob([bytes], { type: "application/octet-stream" });
@@ -637,6 +675,7 @@ var EditorTool = (function() {
         exportInFlight = false;
         downloadBtn.disabled = false;
         downloadBtn.textContent = "Download save";
+        SaveLoadFlow.hideBusy();
       });
   }
 

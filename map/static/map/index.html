@@ -253,6 +253,20 @@
   </div>
 </div>
 
+<!-- Full-screen busy overlay for save-editing operations (copy / paste /
+     delete / undo / redo / export -- see SaveLoadFlow.showBusy in data.js).
+     Blocks all input while the WASM worker crunches so it's unmistakable
+     that something is happening. Shown only for operations that take a
+     noticeable moment (a short delay avoids a flash on instant edits). -->
+<div id="busyOverlay" style="display:none">
+  <div id="busyBox">
+    <div id="busySpinner"></div>
+    <div id="busyLabel">Working&hellip;</div>
+    <div id="busyBar"><div id="busyFill"></div></div>
+    <div id="busyPhase"></div>
+  </div>
+</div>
+
 <div id="selectionModalOverlay" style="display:none">
   <div id="selectionModal">
     <div id="selectionModalHeader">

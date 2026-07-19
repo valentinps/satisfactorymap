@@ -28,6 +28,44 @@
     progressFill.style.width = "0%";
   }
 
+  // ---- Busy overlay -------------------------------------------------------
+  // A full-screen modal spinner + progress bar for save-EDIT operations
+  // (copy/paste/delete/undo/redo/export -- editor.js drives it). The thin
+  // top progress bar above was easy to miss on big operations, leaving no
+  // clear sign that anything was happening. Shown after a short delay so
+  // instant edits don't flash it.
+  var busyOverlay = document.getElementById("busyOverlay");
+  var busyLabel = document.getElementById("busyLabel");
+  var busyFill = document.getElementById("busyFill");
+  var busyPhase = document.getElementById("busyPhase");
+  var BUSY_SHOW_DELAY_MS = 150;
+  var busyTimer = null;
+
+  function showBusy(label) {
+    busyLabel.textContent = label || "Working…";
+    busyPhase.textContent = "";
+    busyFill.style.width = "0%";
+    if (busyTimer === null && busyOverlay.style.display === "none") {
+      busyTimer = setTimeout(function() {
+        busyTimer = null;
+        busyOverlay.style.display = "flex";
+      }, BUSY_SHOW_DELAY_MS);
+    }
+  }
+
+  function busyProgress(phase, percent) {
+    busyFill.style.width = Math.max(0, Math.min(100, percent)) + "%";
+    busyPhase.textContent = (phase || "Working") + "… " + Math.round(percent) + "%";
+  }
+
+  function hideBusy() {
+    if (busyTimer !== null) {
+      clearTimeout(busyTimer);
+      busyTimer = null;
+    }
+    busyOverlay.style.display = "none";
+  }
+
   // Load panel: always-on drop zone + hidden file input (the click target).
   var uploadDropZone = document.getElementById("uploadDropZone");
   var uploadDropText = document.getElementById("uploadDropText");
@@ -124,6 +162,9 @@
     showProgress: showProgress,
     hideProgress: hideProgress,
     setStatus: setStatus,
+    showBusy: showBusy,
+    busyProgress: busyProgress,
+    hideBusy: hideBusy,
     canReload: function() { return currentFile !== null || currentPath !== null; },
     reloadCurrentFile: function() {
       // Desktop (Tauri) reloads by path; the browser re-reads the File.
