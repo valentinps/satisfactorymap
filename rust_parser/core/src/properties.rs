@@ -555,7 +555,22 @@ pub fn parse_properties(
                                 ArrayValue::Structs(v)
                             }
                             other => {
-                                return Err(perr!("Unsupported StructProperty structureSubType '{}'", other))
+                                // Unknown (modded) struct element type: keep
+                                // the raw bytes so the save still loads. The
+                                // blob length falls out of the property size
+                                // (== structSize when the old format carries
+                                // one), so this works in both header formats.
+                                let remaining =
+                                    (property_size as usize).checked_sub(c.pos - start).ok_or_else(
+                                        || {
+                                            perr!(
+                                                "Opaque struct array '{}' overruns its property size",
+                                                other
+                                            )
+                                        },
+                                    )?;
+                                let blob = c.data_ref(remaining)?;
+                                ArrayValue::Opaque { blob, array_count }
                             }
                         };
                         if !property_header_flag {
@@ -702,7 +717,9 @@ pub fn parse_properties(
                         current_entity_save_version,
                         object_ue5_version,
                     )?),
-                    other => return Err(perr!("Unsupported structPropertyType '{}'", other)),
+                    // Unknown (modded) struct type: keep the raw bytes so the
+                    // save still loads; property_size spans the whole value.
+                    _ => StructValue::Raw(c.data_ref(property_size as usize)?),
                 };
                 if property_size as usize != c.pos - start {
                     return Err(perr!(
@@ -737,7 +754,7 @@ pub fn parse_properties(
                         "StructProperty" => MapKey::IntVector([c.i32()?, c.i32()?, c.i32()?]),
                         "ObjectProperty" => MapKey::Ref(parse_object_reference(c)?),
                         "IntProperty" => MapKey::I32(c.i32()?),
-                        "NameProperty" | "EnumProperty" => MapKey::Str(c.string()?),
+                        "NameProperty" | "EnumProperty" | "StrProperty" => MapKey::Str(c.string()?),
                         other => return Err(perr!("Unsupported map keyType {}", other)),
                     };
                     let v = match vt_s.as_str() {

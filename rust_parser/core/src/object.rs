@@ -162,11 +162,28 @@ pub fn parse_object(
             if tables.conveyor_belts.iter().any(|b| b == tp) {
                 let count = c.u32()?;
                 let mut items = Vec::with_capacity(count as usize);
+                // Items only sit on belts in saves that predate chain actors
+                // (chain actors own all belt items since 1.0), so this loop is
+                // dormant on current saves. The InventoryItem wire format
+                // changed at save version 44: the old (levelName, pathName)
+                // itemState reference pair became an int32 state flag with an
+                // optional length-prefixed state record (same gate SCIM uses).
+                let v44_item_format = header_save_version >= 44 && object_game_version >= 44;
                 for _ in 0..count {
                     let length = c.u32()?;
                     let name = c.string()?;
-                    c.confirm_string("")?;
-                    c.confirm_string("")?;
+                    if v44_item_format {
+                        let has_state = c.bool_u32("ConveyorBelt.itemHasStateFlag")?;
+                        if has_state {
+                            c.confirm_u32(0)?; // state ObjectReference.Level
+                            let _state_type = c.string()?;
+                            let state_size = c.u32()?;
+                            c.data_ref(state_size as usize)?;
+                        }
+                    } else {
+                        c.confirm_string("")?;
+                        c.confirm_string("")?;
+                    }
                     let position = c.f32()?;
                     items.push((length, name, position));
                 }
