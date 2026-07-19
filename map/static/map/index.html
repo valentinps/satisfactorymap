@@ -17,16 +17,22 @@
 </head>
 <body class="no-category-selected">
 <div id="topBar">
-  <!-- Shows/hides the whole sidebar overlay (see panels.js). -->
-  <button id="menuButton" title="Hide the side panel" aria-expanded="true">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18">
-      <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-    </svg>
-  </button>
-  <button id="logoButton" title="Satisfactory Save Map">
-    <span class="logoKicker">Satisfactory</span>
-    <span class="logoName">Save Map</span>
-  </button>
+  <!-- Hamburger + wordmark share one card that sits flush on the sidebar's
+       top edge while the panel is shown (its visual header); panels.js adds
+       .detached when the panel is hidden and the cluster becomes a free
+       floating card again. -->
+  <div id="brandCluster">
+    <!-- Shows/hides the whole sidebar overlay (see panels.js). -->
+    <button id="menuButton" title="Hide the side panel" aria-expanded="true">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18">
+        <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    </button>
+    <button id="logoButton" title="Satisfactory Save Map">
+      <span class="logoKicker">Satisfactory</span>
+      <span class="logoName">Save Map</span>
+    </button>
+  </div>
   <div id="mainSearchWrap">
     <div id="searchBox">
       <svg id="searchIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18">
@@ -97,11 +103,22 @@
         <input type="file" id="uploadFileInput" accept=".sav" style="display:none">
         <div id="loadStatus"></div>
         <div id="loadProgressBar"><div id="loadProgressFill"></div></div>
-        <div id="totalObjectCount"></div>
-        <button id="downloadSaveBtn" style="display:none" title="Export the current (possibly edited) save as a new .sav file">Download save</button>
+        <!-- Collapsed-by-default disclosure for everything that isn't the
+             load flow itself: the object-count chip is the always-visible
+             summary line, the body holds game settings + save export
+             (filters.js shows the toggle once a save is loaded and wires the
+             expand/collapse). Keeps the footer to three compact rows. -->
+        <button id="saveDetailsToggle" style="display:none" aria-expanded="false" title="Show save details">
+          <div id="totalObjectCount"></div>
+          <svg class="saveDetailsChevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14">
+            <polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <div id="saveDetails" style="display:none">
+          <div id="gameSettingsPanel" style="display:none"></div>
+          <button id="downloadSaveBtn" style="display:none" title="Export the current (possibly edited) save as a new .sav file">Download save</button>
+        </div>
       </div>
-
-      <div id="gameSettingsPanel" style="display:none"></div>
     </div>
   </div>
 

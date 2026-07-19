@@ -116,25 +116,48 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   pointer-events: auto;
 }
 
+/* Hamburger + wordmark as ONE card (see #brandCluster in index.html) --
+   two separate floating buttons read as disconnected little islands.
+   While the sidebar is shown the card sits flush on its top edge (same
+   surface, square bottom corners, no bottom border) so it reads as the
+   panel's header; .detached (panel hidden, see panels.js) restores the
+   free-floating rounded-card look. */
+#brandCluster {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  height: 42px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-popup);
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  box-shadow: var(--float-shadow);
+  overflow: hidden;
+  pointer-events: auto;
+  box-sizing: border-box;
+}
+
+#brandCluster.detached {
+  border-bottom: 1px solid var(--border-popup);
+  border-radius: 12px;
+}
+
 /* Top-left hamburger -- shows/hides the whole sidebar overlay (panels.js). */
 #menuButton {
   flex: none;
-  width: 42px;
-  height: 42px;
+  width: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border-popup);
-  border-radius: 10px;
-  box-shadow: var(--float-shadow);
+  background: none;
+  border: none;
+  border-right: 1px solid var(--border);
   cursor: pointer;
 }
 
 #menuButton:hover {
   background: var(--raised-hover);
-  border-color: var(--border-hover);
   color: var(--text-bright);
 }
 
@@ -142,7 +165,6 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
    findable as "the way to get the panel back". */
 #menuButton.panelHidden {
   background: var(--accent-bg);
-  border-color: var(--accent-border);
   color: var(--accent-soft);
 }
 
@@ -155,18 +177,15 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
    a real button -- it navigates back to mode selection. */
 #logoButton {
   flex: none;
-  height: 42px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
   gap: 1px;
   padding: 0 14px 0 11px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-popup);
+  background: none;
+  border: none;
   border-left: 3px solid var(--brand);
-  border-radius: 10px;
-  box-shadow: var(--float-shadow);
   cursor: pointer;
   box-sizing: border-box;
   text-align: left;
@@ -192,7 +211,6 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
 
 #logoButton:hover {
   background: var(--raised-hover);
-  border-color: var(--border-hover);
   border-left-color: var(--brand-bright);
 }
 
@@ -420,25 +438,27 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
 
 .topIconButton {
   flex: none;
-  width: 38px;
-  height: 34px;
+  width: 44px;
+  height: 38px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #363d49;
-  border: 1px solid #454c5a;
+  /* Deliberately several steps lighter than the chrome: the game-icon PNGs
+     are mostly dark renders and vanished on a dark tile. */
+  background: #5b6577;
+  border: 1px solid #6d7789;
   border-radius: 8px;
   cursor: pointer;
 }
 
 .topIconButton:hover {
-  background: #424a59;
-  border-color: #5a6272;
+  background: #6c7689;
+  border-color: #8892a4;
 }
 
 .topIconButton img {
-  width: 24px;
-  height: 24px;
+  width: 30px;
+  height: 30px;
   object-fit: contain;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
 }
@@ -559,7 +579,10 @@ body.no-category-selected #sidebar {
    opacity pair is the menu button's show/hide slide. */
 #sidebar {
   position: absolute;
-  top: 66px;
+  /* Flush under the brand cluster (top 12px + 42px high, z-index above) so
+     the hamburger+logo card reads as this panel's header -- the cluster's
+     bottom edge overlaps this top border by 1px to hide the seam. */
+  top: 53px;
   left: 12px;
   width: calc(var(--nav-col-width) + var(--detail-col-width));
   bottom: 12px;
@@ -570,7 +593,9 @@ body.no-category-selected #sidebar {
   flex-direction: row;
   overflow: hidden;
   border: 1px solid var(--border-popup);
-  border-radius: 14px;
+  /* Square top-left corner: the brand cluster docks there (straight left
+     edges line up); the other three corners keep the rounded-card look. */
+  border-radius: 0 14px 14px 14px;
   box-shadow: 0 10px 36px rgba(0, 0, 0, 0.5);
   z-index: 40;
   transition: width 0.18s var(--panel-ease),
@@ -775,6 +800,30 @@ body.panelResizing #categoryDetailColumn {
   border-color: var(--border);
 }
 
+/* Disclosure chevron: the visual cue that a nav row opens the subcategory
+   detail column (it reads as a plain toggle row otherwise). Sits after the
+   switch at the far right (order chosen against .toggleSwitch's order:2),
+   brightens on hover, and points back left when open ("click to close"). */
+.categoryNavRow .navChevron {
+  order: 3;
+  flex: none;
+  margin-left: 8px;
+  color: var(--faint);
+  font-size: 15px;
+  line-height: 1;
+  transition: transform 0.15s ease, color 0.15s ease;
+}
+
+.categoryNavRow:hover .navChevron {
+  color: var(--text);
+  transform: translateX(2px);
+}
+
+.categoryNavRow.active .navChevron {
+  color: #8ab4f8;
+  transform: rotate(180deg);
+}
+
 .categoryNavRow.active {
   background: #2a3d54;
   color: #8ab4f8;
@@ -936,15 +985,48 @@ body.panelResizing #categoryDetailColumn {
   cursor: default;
 }
 
+/* The "save details" disclosure row: object-count summary chip on the left,
+   chevron on the right; clicking expands #saveDetails (game settings + the
+   save-export button) -- see filters.js. Replaces the old always-expanded
+   stack that made the footer eat half the sidebar. */
+#saveDetailsToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 2px 0;
+  background: none;
+  border: none;
+  border-top: 1px solid #2c2f37;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+#saveDetailsToggle:hover {
+  color: var(--text);
+}
+
+.saveDetailsChevron {
+  flex: none;
+  transition: transform 0.15s ease;
+}
+
+#saveDetailsToggle.open .saveDetailsChevron {
+  transform: rotate(180deg);
+}
+
+#saveDetails {
+  padding-top: 2px;
+}
+
 /* The one number this whole panel exists to report -- given its own small
    stat-chip treatment (bold accent value + muted label, same pairing as
    .buildingStatValue/.buildingStatLabel in the building modal) instead of a
    single flat gray line, so it actually reads as a result rather than a
    caption. */
 #totalObjectCount {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid #2c2f37;
   min-height: 1.2em;
 }
 
@@ -981,9 +1063,7 @@ body.panelResizing #categoryDetailColumn {
    Randomization) -- see data.js's showGameSettings(). Hidden via inline
    display:none until a save with at least one of these set is loaded. */
 #gameSettingsPanel {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid #444;
+  margin-top: 6px;
   font-size: 12px;
 }
 
@@ -2160,6 +2240,26 @@ body.panelResizing #categoryDetailColumn {
 
 .toggleSwitch input:focus-visible + .toggleSlider {
   box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.6);
+}
+
+/* Mixed state: a group whose children are partly hidden (see
+   refreshGroupCheckboxes in filters.js). Same accent family as "on" but
+   visibly dimmer, knob parked in the middle. */
+.toggleSwitch input:indeterminate + .toggleSlider {
+  background: #3a5070;
+}
+
+.toggleSwitch input:indeterminate + .toggleSlider::before {
+  transform: translateX(5.5px);
+  background: #c8d4e4;
+}
+
+.categoryNavRow .toggleSwitch input:indeterminate + .toggleSlider::before {
+  transform: translateX(9px);
+}
+
+#categoryDetailPane .toggleSwitch input:indeterminate + .toggleSlider::before {
+  transform: translateX(7.5px);
 }
 
 .expandToggle {

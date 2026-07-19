@@ -53,6 +53,12 @@
   menuButton.addEventListener("click", function() {
     var hidden = sidebar.classList.toggle("hidden");
     menuButton.classList.toggle("panelHidden", hidden);
+    // The hamburger+logo card sits flush on the sidebar while it's shown
+    // (its visual header); detached it floats as its own rounded card.
+    var brandCluster = document.getElementById("brandCluster");
+    if (brandCluster) {
+      brandCluster.classList.toggle("detached", hidden);
+    }
     menuButton.title = hidden ? "Show the side panel" : "Hide the side panel";
     menuButton.setAttribute("aria-expanded", String(!hidden));
   });

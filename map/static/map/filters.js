@@ -200,11 +200,41 @@ var Filters = {};
 
   // Bucket keys (e.g. "building:Desc_ConstructorMk1_C", "node:...", "line:belt:Mk.6")
   // are stable identifiers for a *kind* of thing, not a specific save's data --
-  // so a visibility choice made here survives both a same-file auto-refresh
-  // (see data.js's checkForNewerSave) and switching to an entirely different
-  // save. Persists for the life of the page (rebuilt fresh only on reload),
-  // deliberately never cleared by Filters.build itself.
+  // so a visibility choice made here survives a same-file auto-refresh (see
+  // data.js's checkForNewerSave), switching to an entirely different save,
+  // and (via localStorage) closing the tab entirely: the filter you set up
+  // for your factory is still applied next visit. Only explicitly-toggled
+  // keys are stored, so new kinds in a future save default to visible.
+  var VISIBILITY_STORAGE_KEY = "smapSavedVisibility";
   var savedVisibility = {};
+  try {
+    savedVisibility = JSON.parse(localStorage.getItem(VISIBILITY_STORAGE_KEY)) || {};
+  } catch (e) { /* corrupt/blocked storage: start fresh */ }
+  var persistTimer = null;
+  function persistVisibility() {
+    // Debounced: "Uncheck all" writes hundreds of keys in one burst.
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(function() {
+      try {
+        localStorage.setItem(VISIBILITY_STORAGE_KEY, JSON.stringify(savedVisibility));
+      } catch (e) { /* storage full/blocked: filters still work for the session */ }
+    }, 250);
+  }
+
+  // Every group's master checkbox, with the flattened bucket list it covers --
+  // so any visibility change (a leaf toggle, check/uncheck-all, a context-menu
+  // hide) can resync every ancestor's checked/indeterminate state from the
+  // buckets' actual visibility instead of trusting it was kept up to date.
+  // Rebuilt in Filters.build alongside the buckets themselves.
+  var groupCheckboxStates = [];
+  function refreshGroupCheckboxes() {
+    groupCheckboxStates.forEach(function(entry) {
+      var visibleCount = 0;
+      entry.buckets.forEach(function(bucket) { if (bucket.visible) visibleCount++; });
+      entry.checkbox.checked = visibleCount > 0;
+      entry.checkbox.indeterminate = visibleCount > 0 && visibleCount < entry.buckets.length;
+    });
+  }
 
   // bucket.key -> the checkbox/label of the sidebar row ("layer") and the
   // top-level category that own it -- populated by appendLeafRow (every
@@ -373,6 +403,8 @@ var Filters = {};
         bucket.visible = checkbox.checked;
         savedVisibility[bucket.key] = checkbox.checked;
       });
+      persistVisibility();
+      refreshGroupCheckboxes();
       MapApp.layer.requestRedraw();
     });
     rowDiv.appendChild(rowToggle.wrapper);
@@ -426,7 +458,6 @@ var Filters = {};
 
     var parentToggle = makeToggle();
     var parentCheckbox = parentToggle.checkbox;
-    parentCheckbox.checked = true;
     titleRow.appendChild(parentToggle.wrapper);
 
     titleRow.appendChild(makeIcon(renderType, swatchColor, options.iconUrl));
@@ -460,6 +491,18 @@ var Filters = {};
     // children via setCheckedDeep without dispatching events (see above).
     parentCheckbox._childCheckboxes = childCheckboxes;
 
+    // The master checkbox's initial state comes from the buckets' actual
+    // (possibly savedVisibility-restored) state, NOT a hardcoded "checked" --
+    // a hardcoded default desynced the sidebar after a second save load:
+    // every group read as ON while the restored leaf state kept things
+    // hidden. Registered so later toggles keep resyncing it (see
+    // refreshGroupCheckboxes).
+    groupCheckboxStates.push({ checkbox: parentCheckbox, buckets: allBuckets });
+    var visibleCount = 0;
+    allBuckets.forEach(function(bucket) { if (bucket.visible) visibleCount++; });
+    parentCheckbox.checked = allBuckets.length === 0 || visibleCount > 0;
+    parentCheckbox.indeterminate = visibleCount > 0 && visibleCount < allBuckets.length;
+
     function setCollapsed(collapsed) {
       childrenDiv.style.display = collapsed ? "none" : "";
       expandToggle.textContent = collapsed ? "▸" : "▾";
@@ -491,6 +534,8 @@ var Filters = {};
         bucket.visible = checked;
         savedVisibility[bucket.key] = checked;
       });
+      persistVisibility();
+      refreshGroupCheckboxes();
       MapApp.layer.requestRedraw();
     });
 
@@ -607,6 +652,13 @@ var Filters = {};
     var childrenDiv = group.lastElementChild; // Appended second inside renderGroup.
 
     titleRow.classList.add("categoryNavRow");
+    // Disclosure chevron at the far right edge (after the toggle switch):
+    // these rows open the detail column with the category's subcategory
+    // rows, but nothing about a color chip + label + switch said "openable"
+    // -- rows read as pure visibility toggles. Flips to point left when the
+    // category is the selected one ("click again to close"), via
+    // .categoryNavRow.active .navChevron in map.css.
+    titleRow.appendChild(el("span", "navChevron", "›"));
     navList.appendChild(titleRow);
 
     var detailGroup = el("div", "categoryDetailGroup");
@@ -1341,6 +1393,7 @@ var Filters = {};
     bucketLayerLabel = {};
     bucketCategoryCheckbox = {};
     bucketCategoryLabel = {};
+    groupCheckboxStates = [];
     MapApp.layer.clearBuckets();
 
     buildResourceNodeSection(navList, detailPane, payload);
@@ -1363,7 +1416,13 @@ var Filters = {};
     if (totalEl) {
       totalEl.innerHTML = "";
       totalEl.appendChild(el("span", "totalObjectCountValue", computeTotalObjectCount(payload).toLocaleString()));
-      totalEl.appendChild(el("span", "totalObjectCountLabel", " objects loaded"));
+      totalEl.appendChild(el("span", "totalObjectCountLabel", " objects"));
+    }
+    // A save is loaded, so the "save details" disclosure has something to
+    // disclose (game settings, export) -- reveal its summary row.
+    var detailsToggle = document.getElementById("saveDetailsToggle");
+    if (detailsToggle) {
+      detailsToggle.style.display = "flex";
     }
 
     // Fresh buckets from clearBuckets() above have no hiddenIndices yet --
@@ -1391,12 +1450,29 @@ var Filters = {};
     var checkboxes = sidebar.querySelectorAll("input[type=checkbox]");
     for (var i = 0; i < checkboxes.length; i++) {
       checkboxes[i].checked = checked;
+      checkboxes[i].indeterminate = false;
     }
     MapApp.layer.buckets.forEach(function(bucket) {
       bucket.visible = checked;
       savedVisibility[bucket.key] = checked;
     });
+    persistVisibility();
     MapApp.layer.requestRedraw();
+  }
+
+  // "Save details" disclosure in the footer (see index.html): the
+  // object-count chip row expands to game settings + the save-export button.
+  // Collapsed on every load -- the summary count is what's usually wanted.
+  var saveDetailsToggle = document.getElementById("saveDetailsToggle");
+  var saveDetailsBody = document.getElementById("saveDetails");
+  if (saveDetailsToggle && saveDetailsBody) {
+    saveDetailsToggle.addEventListener("click", function() {
+      var open = saveDetailsBody.style.display !== "none";
+      saveDetailsBody.style.display = open ? "none" : "block";
+      saveDetailsToggle.setAttribute("aria-expanded", String(!open));
+      saveDetailsToggle.title = open ? "Show save details" : "Hide save details";
+      saveDetailsToggle.classList.toggle("open", !open);
+    });
   }
 
   var checkAllButton = document.getElementById("checkAllButton");
