@@ -31,15 +31,19 @@ py tools/serve_site.py     # serves dist/ at http://127.0.0.1:8791/
 ```
 
 `tools/serve_site.py` sends the same COOP/COEP headers as production
-(`dist/_headers`); any static file host works for deployment. For Cloudflare
-Pages:
+(`dist/_headers`); any static file host works for deployment.
+
+The production site (satisfactorymap.net) is a Cloudflare Pages project
+connected to this repo: every push to `main` runs the build and deploys
+automatically — no manual deploy step. A one-off manual deploy (e.g. of a
+locally built `dist/` from another branch) also works:
 
 ```bash
 npx wrangler pages deploy dist/
 ```
 
-(Deploys run from a machine with the game data extracted — CI can't
-regenerate it, since it comes from the game's own files.)
+Note the build needs the game-derived data (see above) — a fork deploying
+its own instance has to provide it to whatever builds the site.
 
 ## Desktop app (Tauri)
 
