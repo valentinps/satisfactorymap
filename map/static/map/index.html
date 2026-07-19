@@ -43,29 +43,49 @@
       <div id="searchSuggestions" style="display:none"></div>
     </div>
   </div>
-  <!-- Per-save status buttons: Dimensional Depot contents (finditem.js) and
+  <!-- Per-save status views: Dimensional Depot contents (finditem.js) and
        the progression views -- MAM research, alternate recipes, AWESOME Shop,
-       HUB milestones, Space Elevator (progression.js). All use real game
-       icons extracted by game_data/copy_icons.py. -->
-  <div id="topBarStatusButtons">
-    <button id="depotIconButton" class="topIconButton" title="Dimensional Depot contents">
-      <img src="icons/buildings/Build_CentralStorage_C.png" alt="">
+       HUB milestones, Space Elevator (progression.js). One labeled dropdown
+       (panels.js drives open/close) instead of a strip of six bare icon
+       tiles: the game icons alone were unreadable, the labels do the work.
+       Row ids are load-bearing -- progression.js/finditem.js bind by id. -->
+  <div id="statusMenuWrap">
+    <button id="statusMenuButton" title="Progression &amp; Dimensional Depot" aria-expanded="false" aria-haspopup="true">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16">
+        <path d="M4 20V10M12 20V4M20 20v-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+      </svg>
+      <span>Progression</span>
+      <svg class="statusMenuChevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13">
+        <polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
     </button>
-    <button id="mamIconButton" class="topIconButton" title="MAM research">
-      <img src="icons/buildings/Build_Mam_C.png" alt="">
-    </button>
-    <button id="altRecipesIconButton" class="topIconButton" title="Alternate recipes">
-      <img src="icons/items/HardDrive.png" alt="">
-    </button>
-    <button id="shopIconButton" class="topIconButton" title="AWESOME Shop purchases">
-      <img src="icons/items/AwesomeShop.png" alt="">
-    </button>
-    <button id="hubIconButton" class="topIconButton" title="HUB milestones">
-      <img src="icons/items/Hub.png" alt="">
-    </button>
-    <button id="spaceElevatorIconButton" class="topIconButton" title="Space Elevator status">
-      <img src="icons/buildings/Build_SpaceElevator_C.png" alt="">
-    </button>
+    <div id="statusMenu" style="display:none" role="menu">
+      <button id="depotIconButton" class="statusMenuRow" role="menuitem">
+        <img src="icons/buildings/Build_CentralStorage_C.png" alt="">
+        <span>Dimensional Depot</span>
+      </button>
+      <div class="statusMenuDivider"></div>
+      <button id="mamIconButton" class="statusMenuRow" role="menuitem">
+        <img src="icons/buildings/Build_Mam_C.png" alt="">
+        <span>MAM research</span>
+      </button>
+      <button id="altRecipesIconButton" class="statusMenuRow" role="menuitem">
+        <img src="icons/items/HardDrive.png" alt="">
+        <span>Alternate recipes</span>
+      </button>
+      <button id="shopIconButton" class="statusMenuRow" role="menuitem">
+        <img src="icons/items/AwesomeShop.png" alt="">
+        <span>AWESOME Shop</span>
+      </button>
+      <button id="hubIconButton" class="statusMenuRow" role="menuitem">
+        <img src="icons/items/Hub.png" alt="">
+        <span>HUB milestones</span>
+      </button>
+      <button id="spaceElevatorIconButton" class="statusMenuRow" role="menuitem">
+        <img src="icons/buildings/Build_SpaceElevator_C.png" alt="">
+        <span>Space Elevator</span>
+      </button>
+    </div>
   </div>
 </div>
 

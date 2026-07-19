@@ -63,6 +63,39 @@
     menuButton.setAttribute("aria-expanded", String(!hidden));
   });
 
+  // ---- "Progression" dropdown (top right) ---------------------------------
+  // Open/close chrome only -- the rows' own click handlers live in
+  // progression.js/finditem.js, bound by id. A row click bubbles here and
+  // closes the menu so the opened modal isn't sitting under it.
+  var statusMenuButton = document.getElementById("statusMenuButton");
+  var statusMenu = document.getElementById("statusMenu");
+  if (statusMenuButton && statusMenu) {
+    function setStatusMenuOpen(open) {
+      statusMenu.style.display = open ? "block" : "none";
+      statusMenuButton.classList.toggle("open", open);
+      statusMenuButton.setAttribute("aria-expanded", String(open));
+    }
+    statusMenuButton.addEventListener("click", function() {
+      setStatusMenuOpen(statusMenu.style.display === "none");
+    });
+    statusMenu.addEventListener("click", function(e) {
+      if (e.target.closest(".statusMenuRow")) {
+        setStatusMenuOpen(false);
+      }
+    });
+    document.addEventListener("click", function(e) {
+      if (statusMenu.style.display !== "none" &&
+          !e.target.closest("#statusMenuWrap")) {
+        setStatusMenuOpen(false);
+      }
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.key === "Escape" && statusMenu.style.display !== "none") {
+        setStatusMenuOpen(false);
+      }
+    });
+  }
+
   // ---- Drag-to-resize handles ----------------------------------------------
 
   // measureEl (not the CSS variable) provides the drag's starting width --

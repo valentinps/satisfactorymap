@@ -105,14 +105,17 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 12px 14px 0 14px;
+  /* Left padding matches #sidebar's left:12px exactly -- the brand cluster
+     docks onto the sidebar, so even a 2px offset between their left edges
+     read as a misalignment. */
+  padding: 12px 14px 0 12px;
   padding-right: calc(var(--altitude-width) + 12px);
   z-index: 60; /* Above the sidebar overlay (40) so the suggestions dropdown paints over it. */
   pointer-events: none;
   background: none;
 }
 
-#menuButton, #logoButton, #searchBox, .topIconButton {
+#menuButton, #logoButton, #searchBox, #statusMenuWrap {
   pointer-events: auto;
 }
 
@@ -420,47 +423,94 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
 }
 
 /* The per-save status buttons (Dimensional Depot + the progression views --
-   see index.html's #topBarStatusButtons), grouped into one floating pill at
-   the top right. Each button gets its own lighter tile inside the pill --
-   the game-icon PNGs are mostly dark, so sitting them directly on the dark
-   chrome made them near-invisible. */
-#topBarStatusButtons {
+   see index.html's #statusMenuWrap): one labeled dark button, same family
+   as the search pill, opening a popover of labeled rows -- six bare icon
+   tiles were unreadable no matter what tile shade sat behind the mostly-
+   dark game icons; a text label next to each icon is what actually fixes
+   it. panels.js drives open/close. */
+#statusMenuWrap {
   flex: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-popup);
-  border-radius: 12px;
-  box-shadow: var(--float-shadow);
+  position: relative;
 }
 
-.topIconButton {
-  flex: none;
-  width: 44px;
-  height: 38px;
+#statusMenuButton {
   display: flex;
   align-items: center;
-  justify-content: center;
-  /* Deliberately several steps lighter than the chrome: the game-icon PNGs
-     are mostly dark renders and vanished on a dark tile. */
-  background: #5b6577;
-  border: 1px solid #6d7789;
-  border-radius: 8px;
+  gap: 8px;
+  height: 42px;
+  padding: 0 12px 0 14px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--surface-2);
+  border: 1px solid var(--border-popup);
+  border-radius: 10px;
+  box-shadow: var(--float-shadow);
   cursor: pointer;
 }
 
-.topIconButton:hover {
-  background: #6c7689;
-  border-color: #8892a4;
+#statusMenuButton:hover {
+  background: var(--raised-hover);
+  border-color: var(--border-hover);
+  color: var(--text-bright);
 }
 
-.topIconButton img {
-  width: 30px;
-  height: 30px;
+#statusMenuButton .statusMenuChevron {
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+#statusMenuButton.open .statusMenuChevron {
+  transform: rotate(180deg);
+}
+
+#statusMenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 210px;
+  padding: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-popup);
+  border-radius: 10px;
+  box-shadow: var(--float-shadow);
+  z-index: 70;
+}
+
+.statusMenuRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.statusMenuRow:hover {
+  background: var(--raised-hover);
+  color: var(--text-bright);
+}
+
+.statusMenuRow img {
+  flex: none;
+  width: 24px;
+  height: 24px;
   object-fit: contain;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+.statusMenuDivider {
+  height: 1px;
+  margin: 5px 8px;
+  background: var(--border-popup);
 }
 
 /* The map owns the whole viewport (minus the altitude rail docked right) --
