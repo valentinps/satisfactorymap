@@ -520,20 +520,20 @@ body.no-category-selected #sidebar {
   color: var(--faint);
 }
 
-/* Branding/license line (map.js adds it as a Leaflet attribution control;
-   Leaflet slots bottom-corner controls above earlier ones, so it sits just
-   above the zoom buttons, flush against the altitude rail). Leaflet's
-   default is a white strip; restyle to a quiet dark pill so it reads as
-   part of the chrome. The doubled .leaflet-container selector outweighs
-   Leaflet's own background rule. */
+/* Branding/license line (map.js adds it as a Leaflet attribution control
+   BEFORE the zoom control, so it sits below the +/- buttons, flush in the
+   bottom-right corner against the altitude rail). Leaflet's default is a
+   white strip; restyle to a quiet dark pill so it reads as part of the
+   chrome. The doubled .leaflet-container selector outweighs Leaflet's own
+   background rule. */
 .leaflet-container .leaflet-control-attribution {
   background: rgba(19, 21, 25, 0.72);
   color: var(--faint);
   font-family: var(--font);
   font-size: 10.5px;
   padding: 2px 9px;
-  margin-bottom: 4px;
-  border-radius: 6px 0 0 6px;
+  margin: 0;
+  border-radius: 6px 0 0 0;
   white-space: nowrap;
 }
 
