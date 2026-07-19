@@ -40,9 +40,19 @@ almost two minutes on the incumbent web map, a measured **13× difference**
 Browsers cap WebAssembly at 4 GB of memory, which the very largest
 mega-factory saves can exceed. The desktop app (Tauri, Windows) wraps the
 same engine and the same interface with no memory ceiling — and it's the
-fastest way to open saves straight from your save folder. Releases page
-coming with the first tagged build; until then it builds from source in a
-few minutes (see [CONTRIBUTING.md](CONTRIBUTING.md#desktop-app-tauri)).
+fastest way to open saves straight from your save folder. Download the
+installer from the
+[Releases page](https://github.com/valentinps/satisfactorymap/releases),
+or build it from source in a few minutes
+(see [CONTRIBUTING.md](CONTRIBUTING.md#desktop-app-tauri)).
+
+**Why does Windows warn when installing?** The installer is not
+code-signed — signing certificates cost hundreds of euros per year, which
+isn't sensible for a free tool yet. Windows shows its standard "unknown
+publisher" SmartScreen prompt for any unsigned installer; "More info →
+Run anyway" proceeds. The app is open source, the installer is built from
+this repository, and every release lists SHA-256 checksums so you can
+verify what you downloaded.
 
 ## Building from source
 
