@@ -39,6 +39,30 @@ var Tooltip = {};
   var lastClientX = 0;
   var lastClientY = 0;
 
+  // Map-space anchor under the tooltip's cursor point, refreshed on every
+  // position() -- so panning can carry the tooltip along with the object it
+  // describes instead of leaving it orphaned at its old screen spot.
+  // Zooming rescales everything beneath it mid-animation, so there it
+  // simply hides (pinned or not). Bound lazily since MapApp.map doesn't
+  // exist yet when this file loads.
+  var anchorLatLng = null;
+  var mapEventsBound = false;
+  function bindMapEvents() {
+    if (mapEventsBound || !window.MapApp || !MapApp.map) {
+      return;
+    }
+    mapEventsBound = true;
+    MapApp.map.on("zoomstart", function() { Tooltip.hide(); });
+    MapApp.map.on("move", function() {
+      if (!anchorLatLng || !tooltipEl || tooltipEl.style.display === "none") {
+        return;
+      }
+      var point = MapApp.map.latLngToContainerPoint(anchorLatLng);
+      var rect = MapApp.map.getContainer().getBoundingClientRect();
+      position(rect.left + point.x, rect.top + point.y);
+    });
+  }
+
   function ensureElement() {
     if (!tooltipEl) {
       tooltipEl = document.createElement("div");
@@ -51,6 +75,12 @@ var Tooltip = {};
   function position(clientX, clientY) {
     lastClientX = clientX;
     lastClientY = clientY;
+    if (window.MapApp && MapApp.map) {
+      bindMapEvents();
+      var mapRect = MapApp.map.getContainer().getBoundingClientRect();
+      anchorLatLng = MapApp.map.containerPointToLatLng(
+        [clientX - mapRect.left, clientY - mapRect.top]);
+    }
     var element = ensureElement();
     var offset = 14;
     var x = clientX + offset;
@@ -528,6 +558,7 @@ var Tooltip = {};
     pinned = false;
     pinnedBucketKey = null;
     pinnedId = null;
+    anchorLatLng = null;
     if (pendingTimer) {
       clearTimeout(pendingTimer);
       pendingTimer = null;

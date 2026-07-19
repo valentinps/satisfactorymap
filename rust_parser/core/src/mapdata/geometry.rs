@@ -358,6 +358,20 @@ fn tables() -> &'static FootprintTables {
                 footprints_meters.insert(class_name.clone(), footprint);
             }
         }
+        // categoryOverrides.json classFootprintsMeters: curated sizes for
+        // classes with no usable size data in buildings.json (HUB props,
+        // lift-mounted splitters, ...). Applied last so a curated value wins.
+        if let Some(Value::Object(map)) = data.category_overrides.get("classFootprintsMeters") {
+            for (class_name, value) in map {
+                let Some(pair) = value.as_array() else { continue };
+                if let (Some(w), Some(d)) = (
+                    pair.first().and_then(Value::as_f64),
+                    pair.get(1).and_then(Value::as_f64),
+                ) {
+                    footprints_meters.insert(class_name.clone(), (w, d));
+                }
+            }
+        }
 
         // _loadAdaptiveBeamSpecs: adaptiveLength with truthy DefaultLength
         // AND MaxLength, plus truthy clearance.

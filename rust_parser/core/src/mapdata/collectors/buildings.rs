@@ -3,7 +3,7 @@
 //! _lightweightBeamLengthCm, _newBuildingBucket, _appendBuildingInstance,
 //! collectBuildings).
 
-use crate::mapdata::categories::{categorize_subcategory, categorize_type_path};
+use crate::mapdata::categories::{categorize_subcategory, categorize_type_path, is_hidden_class};
 use crate::mapdata::consts::*;
 use crate::mapdata::geometry::{
     footprint_for_instance, footprint_pixels, project_xy, world_z_to_meters,
@@ -126,9 +126,12 @@ pub fn collect_buildings(scan: &SaveScan) -> Value {
         // The bucket's key bytes come from its first actor; use that actor's
         // StrRef so wide (UTF-16) type paths decode exactly like Python str.
         let type_path = scan.actor(seq_headers[0].1).type_path.to_string(data);
+        // The HUB (Build_TradingPost) is deliberately NOT excluded here: it
+        // renders as a real 14x26m building (Special -> "The HUB", clearance
+        // data from buildings.json) alongside collect_hub's icon pin.
         if line_rendered.contains(type_path.as_str())
             || EXCLUDED_BUILDING_TYPE_PATHS.contains(&type_path.as_str())
-            || type_path == HUB_TYPE_PATH
+            || is_hidden_class(&type_path)
         {
             continue;
         }
@@ -161,6 +164,7 @@ pub fn collect_buildings(scan: &SaveScan) -> Value {
         let type_path = group.type_path.to_string(data);
         if line_rendered.contains(type_path.as_str())
             || EXCLUDED_BUILDING_TYPE_PATHS.contains(&type_path.as_str())
+            || is_hidden_class(&type_path)
         {
             continue;
         }

@@ -414,11 +414,22 @@ var FindItem = {};
   // highlight kinds (item search's synthetic bucket, building search's
   // isolate-in-place -- see showBuildingHighlight) since only one is ever
   // active at a time.
+  // Extra synthetic buckets created alongside the main highlight: the item
+  // search's per-type building boxes and the building search's lens pins
+  // (see showHighlight/showBuildingHighlight). Tracked by key so
+  // clearHighlight can drop them all through the layer's own removal.
+  var extraHighlightKeys = [];
+  function removeExtraHighlightBuckets() {
+    extraHighlightKeys.forEach(function(key) { MapApp.layer.removeBucketByKey(key); });
+    extraHighlightKeys = [];
+  }
+
   function clearHighlight() {
     if (!highlighting) {
       return;
     }
     highlighting = false;
+    removeExtraHighlightBuckets();
     if (lastKind === "item") {
       // Must go through the layer's own removal (not a bare `buckets =
       // buckets.filter(...)` reassignment) so the _sortedBuckets draw cache
@@ -516,6 +527,50 @@ var FindItem = {};
       iconOpacity: 1,
     });
 
+    // The lens pins alone were hard to relate back to actual structures at a
+    // distance -- so every located instance that lives in a real building
+    // bucket also gets its bounding box drawn (same silhouette the normal
+    // map view shows), in the highlight color, beneath the pins (icons paint
+    // in a later pass, so the pin keeps hover priority). One synthetic box
+    // bucket per source bucket, since the footprint is a per-type property.
+    var boxSpecs = [];
+    MapApp.layer.buckets.forEach(function(src) {
+      if (src.renderType !== "rect" || !src.ids || !src.footprintPixels) {
+        return;
+      }
+      var boxPoints = [], boxIds = [];
+      for (var i = 0; i < src.ids.length; i++) {
+        if (byInstance.hasOwnProperty(src.ids[i])) {
+          boxPoints.push(src.points[i * 4], src.points[i * 4 + 1],
+                         src.points[i * 4 + 2], src.points[i * 4 + 3]);
+          boxIds.push(src.ids[i]);
+        }
+      }
+      if (boxPoints.length > 0) {
+        boxSpecs.push({ src: src, points: boxPoints, ids: boxIds });
+      }
+    });
+    boxSpecs.forEach(function(spec) {
+      var key = HIGHLIGHT_BUCKET_KEY + ":box:" + spec.src.key;
+      var bucket = MapApp.layer.addBucket({
+        key: key,
+        label: spec.src.label,
+        color: HIGHLIGHT_COLOR,
+        visible: true,
+        renderType: "rect",
+        pointStride: 4,
+        points: new Float32Array(spec.points),
+        ids: spec.ids,
+        tooltipKind: "server",
+        footprintPixels: spec.src.footprintPixels,
+        maxFootprintRadius: spec.src.maxFootprintRadius,
+      });
+      // The pins are the countable search results; these boxes are the same
+      // objects drawn a second way -- selection must not count them twice.
+      bucket.excludeFromSelection = true;
+      extraHighlightKeys.push(key);
+    });
+
     highlighting = true;
     modalHighlightToggle.textContent = "Show all layers again";
     MapApp.layer.requestRedraw();
@@ -531,6 +586,11 @@ var FindItem = {};
   // building a synthetic one-off bucket the way item search does. Also
   // forces the building's own sidebar checkbox to reflect "shown" so the two
   // controls don't end up disagreeing once the isolate is cleared.
+  // Above how many instances the building isolate skips its lens pins: past
+  // this the pins are pure noise (imagine one per foundation), and the boxes
+  // alone already carry the "where" at that density.
+  var BUILDING_PIN_LIMIT = 1500;
+
   function showBuildingHighlight(entry) {
     savedVisibility = {};
     MapApp.layer.buckets.forEach(function(b) {
@@ -538,6 +598,43 @@ var FindItem = {};
       b.visible = false;
     });
     entry.row.buckets.forEach(function(b) { b.visible = true; });
+    // The isolated buildings' boxes are hard to spot at map-wide zoom, so
+    // each instance also gets the same lens pin the item search uses --
+    // sharing the box buckets' [x, y, yaw, z] stride-4 points (icon
+    // consumers read x/y and z at stride-1, same trick as the vehicles' pin
+    // buckets), and their ids so hovering a pin serves the building's own
+    // rich tooltip. Icons paint above the boxes, so pins keep hover priority.
+    var pinPoints = [], pinIds = [];
+    entry.row.buckets.forEach(function(b) {
+      if (!b.ids) {
+        return;
+      }
+      for (var i = 0; i < b.ids.length; i++) {
+        pinPoints.push(b.points[i * 4], b.points[i * 4 + 1],
+                       b.points[i * 4 + 2], b.points[i * 4 + 3]);
+        pinIds.push(b.ids[i]);
+      }
+    });
+    if (pinPoints.length > 0 && pinIds.length <= BUILDING_PIN_LIMIT) {
+      var pinKey = HIGHLIGHT_BUCKET_KEY + ":pins";
+      var pinBucket = MapApp.layer.addBucket({
+        key: pinKey,
+        label: entry.row.label,
+        color: HIGHLIGHT_COLOR,
+        visible: true,
+        renderType: "icon",
+        pointStride: 4,
+        points: new Float32Array(pinPoints),
+        ids: pinIds,
+        tooltipKind: "server",
+        iconUrl: HIGHLIGHT_ICON_URL,
+        iconOpacity: 1,
+      });
+      // The visible box buckets are the real objects -- the pins are just
+      // markers over them, so selection must not count them twice.
+      pinBucket.excludeFromSelection = true;
+      extraHighlightKeys.push(pinKey);
+    }
     if (entry.row.checkbox) {
       entry.row.checkbox.checked = true;
     }

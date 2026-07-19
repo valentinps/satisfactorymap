@@ -2139,6 +2139,18 @@ var MapApp = {};
       // immediately instead of after an extra coast-to-stop delay.
       inertia: useWebGL,
     });
+    // Persistent branding/license line (GPL notice -- rehosts must preserve
+    // it, see README "License & trademark"). Same corner as the zoom
+    // control; Leaflet stacks bottom-corner controls newest-on-top, so
+    // adding it BEFORE the zoom control keeps it below the +/- buttons,
+    // flush in the corner.
+    L.control.attribution({ prefix: false })
+      .addAttribution(
+        'Satisfactory Save Map &middot; ' +
+        '<a href="https://satisfactorymap.net/" target="_blank" rel="noopener">satisfactorymap.net</a>' +
+        ' &middot; &copy; 2026 valentinps &middot; ' +
+        '<a href="https://github.com/valentinps/satisfactorymap/blob/main/LICENSE" target="_blank" rel="noopener">GPL-3.0</a>')
+      .addTo(map);
     L.control.zoom({ position: "bottomright" }).addTo(map);
 
     var mapSize = 8192;
