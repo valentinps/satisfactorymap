@@ -1,192 +1,73 @@
 # Satisfactory Save Map
 
-Interactive web-based map viewer for [Satisfactory](https://www.satisfactorygame.com/)
-save files — fully client-side. The save is parsed **in your browser** by a
-Rust parser compiled to WebAssembly; nothing is uploaded anywhere.
+**Drop your save file, see your whole factory in seconds — right in the
+browser, without uploading anything anywhere.**
 
-Open the site, drop a `.sav` on the page (or click the picker), and the map
-loads: buildings by build-menu category, belts/pipes/railroads/power lines as
-curves, resource nodes with purity, collectables, vehicles, trains, players,
-progression (MAM/alternate recipes/AWESOME Shop/HUB milestones/Space
-Elevator), item search across every inventory, rectangle-selection inventory
-totals, and rich per-building tooltips (recipe, power, clock speed,
-inventories, belt/pipe bottlenecks).
+**▶ [satisfactorymap.net](https://satisfactorymap.net/)** — no install, no
+account. Or get the [desktop app](#desktop-app) for saves too big for any
+browser.
 
-## Building the site
+![The map with a 633,000-object mega-factory loaded](docs/screenshot.png)
 
-Requires a Rust toolchain ([rustup](https://rustup.rs/); on Windows also the
-Visual Studio Build Tools "Desktop development with C++" workload),
-[wasm-pack](https://rustwasm.github.io/wasm-pack/) (`cargo install
-wasm-pack`), and Python 3.10+ for the build script.
+Your save is parsed **on your own machine** by a Rust parser compiled to
+WebAssembly. Nothing is uploaded, so there is nothing to wait for: a
+**600,000-object endgame save loads in ~8 seconds** — the same save takes
+almost two minutes on the incumbent web map, a measured **13× difference**
+([methodology & reproducible script](docs/BENCHMARK.md)).
 
-The repo does not ship the game-derived data (item/building JSONs, icons, the
-map image) — it's extracted from the game's own files and too
-large/derivative to version. Get it one of two ways:
+## What you get
 
-- **Quick setup — download the pre-extracted archive**:
-  [game_data.zip on Google Drive](https://drive.google.com/file/d/16JshnM65xrTpwxwbYs2iHmoog2AKDGZN/view?usp=sharing),
-  then unpack it —
-  ```bash
-  py game_data/package_game_data.py unpack path/to/game_data.zip
-  ```
-- **You have the game installed**: follow the "Generating ..." sections below.
+- **The whole factory, mapped** — buildings by build-menu category,
+  belts/pipes/railways/power lines as curves, resource nodes with purity,
+  vehicles, trains, players, collectables and crash sites.
+- **Find anything** — search across every inventory in the save ("where did
+  I leave my hard drives?"), per-building tooltips with recipe, power,
+  clock speed and belt/pipe **bottleneck detection**.
+- **Progression at a glance** — MAM research, alternate recipes, AWESOME
+  Shop, HUB milestones, Space Elevator status.
+- **Select & total** — rectangle-select any part of the factory and get its
+  combined inventory and object list.
+- **Edit your save** — move, copy/paste, rotate or delete whole factory
+  sections (with undo), then download the edited `.sav` and load it in the
+  game.
+- **Private by construction** — fully client-side; the save never leaves
+  your machine. Works offline once loaded.
 
-Then:
+![Factory detail: production rows, belts and a rail roundabout](docs/screenshot_detail.png)
 
-```bash
-py tools/build_site.py     # assembles the deployable static site into dist/
-py tools/serve_site.py     # serves dist/ at http://127.0.0.1:8791/
-```
+## Desktop app
 
-`tools/serve_site.py` sends the same COOP/COEP headers as production
-(`dist/_headers`); any static file host works for deployment. For Cloudflare
-Pages:
+Browsers cap WebAssembly at 4 GB of memory, which the very largest
+mega-factory saves can exceed. The desktop app (Tauri, Windows) wraps the
+same engine and the same interface with no memory ceiling — and it's the
+fastest way to open saves straight from your save folder. Releases page
+coming with the first tagged build; until then it builds from source in a
+few minutes (see [CONTRIBUTING.md](CONTRIBUTING.md#desktop-app-tauri)).
 
-```bash
-npx wrangler pages deploy dist/
-```
+## Building from source
 
-(Deploys run from a machine with the game data extracted — CI can't
-regenerate it, since it comes from the game's own files.)
+Everything — site, parser, desktop app, data extraction — is covered in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Desktop app (Tauri)
-
-The browser build runs the parser in a WebAssembly worker, hard-capped at 4 GB
-of linear memory (wasm32). Very large saves (roughly 2–4× the current biggest,
-~1.2M+ objects) exceed that and can't be loaded in a browser at all. The
-**desktop app** wraps the *same* `sav_core` engine and the *same* frontend
-(`dist/`) in a native [Tauri v2](https://v2.tauri.app/) window — no wasm, no
-4 GB ceiling. The frontend picks its transport at runtime from
-`window.__TAURI__`, so `dist/` is byte-identical to the browser build; the
-desktop shell just talks to `sav_core` through native commands instead of the
-worker, and loads the `.sav` from a path (native file dialog) rather than
-marshaling it through the wasm boundary.
-
-Prereqs: Rust toolchain, the [Tauri CLI](https://v2.tauri.app/reference/cli/)
-(`cargo install tauri-cli --version '^2'`), and WebView2 (preinstalled on
-Windows 11). Build `dist/` first (`python tools/build_site.py`) — the desktop
-app bundles it.
-
-```bash
-python tools/build_site.py                       # produce dist/ (once, or after frontend/wasm changes)
-cd rust_parser/tauri
-cargo tauri dev                                  # dev loop: launches the window
-cargo tauri build                                # Windows installer (MSI/NSIS), unsigned
-```
-
-`cargo tauri dev` embeds `../../dist` at compile time, so rebuild `dist/` (and
-restart) after changing the frontend. Distribution/signing of the installer is
-out of scope for now. The wasm worker path is untouched — the same `dist/`
-still serves in the browser via `serve_site.py`.
-
-## Project layout
-
-| Path | Contents |
-| --- | --- |
-| `map/static/map/` | the web frontend (vanilla JS + Leaflet + WebGL layer, `worker.js`/`save_client.js` host the WASM parser) |
-| `map/static/map/icons/` | *(generated)* item/building icon PNGs |
-| `rust_parser/core/` | `sav_core`: the save parser + map-payload builder (pure Rust, embeds the game-data tables) |
-| `rust_parser/wasm/` | `sav_wasm`: the wasm-bindgen boundary the worker loads |
-| `rust_parser/tauri/` | `sav_tauri`: native desktop shell (Tauri v2) over `sav_core`, mirrors the wasm binding |
-| `game_data/` | extraction scripts + hand-curated game metadata (`categoryLabels.json`, `categoryOverrides.json`, `SCHEMA.md`) |
-| `game_data/sav_data/` | *(committed)* static world tables (resource nodes, slugs, crash sites...) converted from the upstream parser project |
-| `game_data/docs.json` | *(not committed)* the game's own data dump, input to `extract_docs_json.py` |
-| `game_data/generated/` | *(generated)* item/building/recipe/schematic JSONs + `map_highres.png` |
-| `tools/` | `build_site.py` / `serve_site.py` |
-| `dist/` | *(generated)* the assembled static site |
-
-Everything marked *(generated)* is git-ignored and produced by the steps
-below — or restored from an archive via `package_game_data.py unpack`.
-
-Note: `sav_core` embeds `game_data/generated/*.json` and the icon manifest at
-compile time, so building the Rust crates also requires the game data to be
-extracted first.
-
-## Generating game data
-
-Buildings render as boxes sized from `game_data/generated/buildings.json` (see
-`game_data/SCHEMA.md`), extracted from the game's own data dump.
-Buildings missing size data there (a small number of logic-only buildables)
-fall back to a plain circle marker on the map.
-
-Get the dump from your game install at
-`Satisfactory\CommunityResources\Docs\en-US.json`, copy it to
-`game_data/docs.json`, then regenerate the JSONs under `game_data/generated/`
-(also whenever the game updates):
-
-```bash
-py game_data/extract_docs_json.py
-```
-
-`gamePhases.json` (Space Elevator phase costs) is not part of that dump — it
-comes from the same FModel extraction as the icons below (optional; there's a
-built-in fallback table):
-
-```bash
-py game_data/extract_game_phases.py path/to/extraction/Content
-```
-
-## Generating the map image
-
-`game_data/generated/map_highres.png` is fused from the game's own 4-corner
-sliced map render, taken from a full game asset extraction (e.g. via
-[FModel](https://fmodel.app/)):
-
-```bash
-py game_data/extract_map_image.py path/to/extraction/Content
-```
-
-The path argument is the extraction's `Content` folder, same as
-`copy_icons.py`. The tiles live at
-`FactoryGame/Interface/UI/Assets/MapTest/SlicedMap/Map_X-Y.png` within it;
-the script stitches the four of them together.
-
-## Generating icons
-
-Item/building icons under `map/static/map/icons/` are copied out of a full
-game asset extraction (e.g. via [FModel](https://fmodel.app/)) keyed by
-`ClassName`, using the generated JSON above to know which PNGs are needed:
-
-```bash
-py game_data/copy_icons.py path/to/extraction/Content
-```
-
-The path argument is the extraction's `Content` folder. This only copies the
-handful of PNGs actually referenced by `items.json`/`resources.json`/
-`buildings.json` (a few hundred files), not the full extraction dump (tens of
-thousands of unrelated assets), so the extraction itself can be deleted
-afterwards. Run `game_data/extract_docs_json.py` first if
-`game_data/generated/` is missing/stale — `copy_icons.py` reads the icon
-paths from there.
-
-## Sharing the generated data
-
-Once you've generated everything, bundle it for someone who doesn't have the
-game files:
-
-```bash
-py game_data/package_game_data.py pack          # writes game_data.zip in the repo root
-```
-
-The archive contains `game_data/generated/` (JSONs + map image) and
-`map/static/map/icons/`. The recipient clones the repo and runs:
-
-```bash
-py game_data/package_game_data.py unpack game_data.zip
-```
-
-## Save-format lineage
+## Credits & save-format lineage
 
 The Rust parser is a port of
-[GreyHak/sat_sav_parse](https://github.com/GreyHak/sat_sav_parse) (previously
-included as a git submodule) and of this repo's Python map-data builder; both
-ports were validated field-by-field against the Python reference with
-bit-exact differential gates before the Python side was removed. The static
-world tables in `game_data/sav_data/` were converted from that project by
-`game_data/extract_sav_data_tables.py` — regenerating them after a game
-update means temporarily re-adding the submodule (see that script's
-docstring).
+[GreyHak/sat_sav_parse](https://github.com/GreyHak/sat_sav_parse), validated
+field-by-field against the Python reference with bit-exact differential
+gates. The static world tables in `game_data/sav_data/` were converted from
+that project. This project wouldn't exist without GreyHak's format work.
 
-The full server-based history (Flask app, SFTP save sync, the Python
-reference implementation, and the parity tooling) lives in this branch's git
-history and on the `main` branch.
+## License & trademark
+
+The code is licensed under [GPL-3.0](LICENSE). The **Satisfactory Save Map**
+name, logo, and the `satisfactorymap.net` domain are *not* covered by that
+license: forks and rehosts are welcome under the GPL, but must use their own
+name and domain, and must preserve the copyright and license notices
+(including the in-app footer). The canonical instance is
+[satisfactorymap.net](https://satisfactorymap.net/).
+
+Satisfactory is a trademark of Coffee Stain Studios. The game-derived data
+(icons, map image, item/building tables) belongs to Coffee Stain Studios and
+is not distributed in this repository — see
+[CONTRIBUTING.md](CONTRIBUTING.md). This project is not affiliated with or
+endorsed by Coffee Stain Studios.
