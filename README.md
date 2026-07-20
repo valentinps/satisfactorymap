@@ -69,12 +69,15 @@ that project. This project wouldn't exist without GreyHak's format work.
 
 ## License & trademark
 
-The code is licensed under [GPL-3.0](LICENSE). The **Satisfactory Save Map**
-name, logo, and the `satisfactorymap.net` domain are *not* covered by that
-license: forks and rehosts are welcome under the GPL, but must use their own
-name and domain, and must preserve the copyright and license notices
-(including the in-app footer). The canonical instance is
-[satisfactorymap.net](https://satisfactorymap.net/).
+The code is licensed under [AGPL-3.0](LICENSE) — the parser port with
+GreyHak's written permission, since the upstream it derives from is
+GPL-3.0-only (scope recorded in [NOTICES.md](NOTICES.md)). The
+**Satisfactory Save Map** name, logo, and the `satisfactorymap.net` domain
+are *not* covered by that license: forks and rehosts are welcome under the
+AGPL, but must use their own name and domain, must preserve the copyright
+and license notices (including the in-app footer), and — being AGPL — must
+publish their source, including when only serving the app. The canonical
+instance is [satisfactorymap.net](https://satisfactorymap.net/).
 
 Satisfactory is a trademark of Coffee Stain Studios. The game-derived data
 (icons, map image, item/building tables) belongs to Coffee Stain Studios and
