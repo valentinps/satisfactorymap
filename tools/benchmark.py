@@ -105,6 +105,160 @@ def time_scim(pw, url, save, timeout_s):
     return result
 
 
+# ---- Interaction (frame-time) benchmark -------------------------------------
+# Same idea as the load benchmark but for the whole session after it: with
+# every layer visible, drive an identical scripted mouse interaction (four
+# drag-pans, four wheel zoom-ins, four zoom-outs) on both tools and record
+# requestAnimationFrame gaps -- the user-felt frame time. Runs HEADED:
+# headless compositing is not representative for framerate.
+
+FRAME_RECORDER_START = """() => {
+  window.__ft = []; window.__ftStop = false;
+  let last = performance.now();
+  const loop = t => {
+    window.__ft.push(t - last); last = t;
+    if (!window.__ftStop) requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+}"""
+
+
+def zoom_fully_out(page, cx, cy):
+    """Camera normalization, NOT recorded: SCIM loads already zoomed into
+    the player position (a world view with everything visible is exactly
+    what a DOM renderer can't afford), while this tool fits the whole map.
+    Walking both fully out puts them in the same camera state -- ours just
+    clamps at min zoom. Generous pacing: on SCIM each step out can take
+    many seconds as more of the factory enters view."""
+    for _ in range(8):
+        page.mouse.move(cx, cy)
+        page.mouse.wheel(0, 400)
+        page.wait_for_timeout(1500)
+    page.wait_for_timeout(3000)
+
+
+def drive_pans(page, cx, cy):
+    """Four drag-pans at the current (overview) zoom -- the 'all objects in
+    view' case, and the half both tools are guaranteed to experience with an
+    identical camera."""
+    for dx, dy in [(320, 0), (-320, 0), (0, 220), (0, -220)]:
+        page.mouse.move(cx, cy)
+        page.mouse.down()
+        for i in range(8):
+            page.mouse.move(cx + dx * (i + 1) / 8, cy + dy * (i + 1) / 8)
+            page.wait_for_timeout(40)
+        page.mouse.up()
+        page.wait_for_timeout(800)
+
+
+def drive_zooms(page, cx, cy):
+    """A shallow zoom cycle: two wheel ticks in, two out. Deliberately
+    shallow -- wheel sensitivity differs per site, and deep zoom broke
+    SCIM outright in testing."""
+    for direction in (-1, -1, 1, 1):
+        page.mouse.move(cx, cy)
+        page.mouse.wheel(0, 400 * direction)
+        page.wait_for_timeout(1200)
+
+
+def harvest_frames(page):
+    """Fetch and reset the recorder between phases."""
+    return page.evaluate(
+        "() => { const f = window.__ft; window.__ft = []; return f; }")
+
+
+STALL_THRESHOLD_MS = 100.0
+
+
+def frame_stats(frames):
+    # The median is a TRAP here: rAF ticks at monitor rate whenever the app
+    # is idle (including the scripted waits between gestures), so idle
+    # frames dominate the count and the median reads "smooth" even when
+    # every gesture triggers a multi-second freeze. The story lives in the
+    # stalls: frames over STALL_THRESHOLD_MS -- how many, how long in
+    # total, and the single worst.
+    frames = frames[5:]  # recorder warm-up
+    if not frames:
+        return None
+    stalls = [f for f in frames if f > STALL_THRESHOLD_MS]
+    return {
+        "frames": len(frames),
+        "median_ms": round(statistics.median(frames), 1),
+        "worst_ms": round(max(frames), 1),
+        "stalls_over_100ms": len(stalls),
+        "stall_total_ms": round(sum(stalls), 1),
+        "raw_ms": [round(f, 1) for f in frames],
+    }
+
+
+def measure_phases(page):
+    """Pans first and harvested first, so the overview numbers are banked
+    even if the (riskier) zoom phase wedges the tab. Any phase failing --
+    including a main thread so blocked the harvest itself times out --
+    records an error for that phase instead of losing the run."""
+    result = {}
+    zoom_fully_out(page, 1000, 450)
+    page.evaluate(FRAME_RECORDER_START)
+    try:
+        drive_pans(page, 1000, 450)
+        result["pan"] = frame_stats(harvest_frames(page))
+    except Exception as exc:
+        result["pan"] = {"error": f"{type(exc).__name__}: {str(exc).splitlines()[0][:160]}"}
+        return result
+    try:
+        drive_zooms(page, 1000, 450)
+        result["zoom"] = frame_stats(harvest_frames(page))
+    except Exception as exc:
+        result["zoom"] = {"error": f"{type(exc).__name__}: {str(exc).splitlines()[0][:160]}"}
+    return result
+
+
+def frames_our_tool(pw, url, save, timeout_s):
+    browser = pw.chromium.launch(channel="chrome", headless=False)
+    page = browser.new_page(viewport={"width": 1600, "height": 900})
+    page.set_default_timeout(300000)  # a wedged tab should error, not hang
+    try:
+        page.goto(url, wait_until="load", timeout=120000)
+        page.wait_for_selector("#uploadFileInput", state="attached",
+                               timeout=60000)
+        # A previous visit's persisted filter selection could hide layers --
+        # this run is "everything shown".
+        page.evaluate("() => localStorage.clear()")
+        page.reload(wait_until="load")
+        page.wait_for_selector("#uploadFileInput", state="attached",
+                               timeout=60000)
+        page.wait_for_timeout(2000)
+        page.set_input_files("#uploadFileInput", save)
+        page.wait_for_function(OUR_READY, timeout=timeout_s * 1000)
+        page.wait_for_timeout(3000)
+        return measure_phases(page)
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {str(exc).splitlines()[0][:200]}"}
+    finally:
+        browser.close()
+
+
+def frames_scim(pw, url, save, timeout_s):
+    browser = pw.chromium.launch(channel="chrome", headless=False)
+    page = browser.new_page(viewport={"width": 1600, "height": 900})
+    page.set_default_timeout(300000)
+    try:
+        page.goto(url, wait_until="load", timeout=120000)
+        page.wait_for_selector("#saveGameFileInput", state="attached",
+                               timeout=60000)
+        page.wait_for_timeout(2000)
+        page.set_input_files("#saveGameFileInput", save)
+        page.wait_for_function(SCIM_LOADER, timeout=60000)
+        page.wait_for_function(f"!({SCIM_LOADER})()",
+                               timeout=timeout_s * 1000, polling=250)
+        page.wait_for_timeout(3000)
+        return measure_phases(page)
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {str(exc).splitlines()[0][:200]}"}
+    finally:
+        browser.close()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("save", help="path to the .sav to benchmark with")
@@ -115,6 +269,9 @@ def main():
     ap.add_argument("--skip-scim", action="store_true")
     ap.add_argument("--timeout", type=int, default=1800,
                     help="per-run save-load timeout, seconds")
+    ap.add_argument("--frames", action="store_true",
+                    help="measure interaction frame times instead of load "
+                         "time (headed Chrome, one run per tool)")
     args = ap.parse_args()
 
     save = os.path.abspath(args.save)
@@ -127,6 +284,32 @@ def main():
     }
     print(f"save: {report['save']['name']} ({report['save']['size_mb']} MB)")
     print(f"hardware: {report['hardware']}")
+
+    if args.frames:
+        with sync_playwright() as pw:
+            r = frames_our_tool(pw, args.our_url, save, args.timeout)
+            report["frames_ours"] = r
+            print(f"  ours  frames: {r}")
+            if not args.skip_scim:
+                r = frames_scim(pw, args.scim_url, save, args.timeout)
+                report["frames_scim"] = r
+                print(f"  scim  frames: {r}")
+        fo, fs = report.get("frames_ours") or {}, report.get("frames_scim") or {}
+        for phase in ("pan", "zoom"):
+            po, ps = fo.get(phase) or {}, fs.get(phase) or {}
+            if "worst_ms" in po and "worst_ms" in ps:
+                multiple = round(ps["worst_ms"] / po["worst_ms"], 1)
+                report[f"worst_frame_multiple_{phase}"] = multiple
+                print(f"\n{phase}: worst frame ours {po['worst_ms']}ms "
+                      f"(stalls: {po['stalls_over_100ms']}), SCIM "
+                      f"{ps['worst_ms']}ms (stalls: {ps['stalls_over_100ms']},"
+                      f" {ps['stall_total_ms']}ms frozen total) "
+                      f"-> {multiple}x")
+        out = os.path.join(os.path.dirname(save), "benchmark_frames.json")
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2)
+        print(f"full report: {out}")
+        return
 
     with sync_playwright() as pw:
         for i in range(args.runs):

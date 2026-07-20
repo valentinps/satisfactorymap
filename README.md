@@ -12,7 +12,10 @@ browser.
 Your save is parsed **on your own machine** by a Rust parser compiled to
 WebAssembly. Nothing is uploaded, so there is nothing to wait for: a
 **600,000-object endgame save loads in ~8 seconds** — the same save takes
-almost two minutes on the incumbent web map, a measured **13× difference**
+almost two minutes on the incumbent web map, a measured **13× difference**.
+And it stays fast after loading: panning the full-factory overview, this
+map **never dropped a frame** (worst: 24 ms) where the incumbent froze for
+up to **15 seconds at a time** — WebGL rendering instead of DOM markers
 ([methodology & reproducible script](docs/BENCHMARK.md)).
 
 ## What you get
