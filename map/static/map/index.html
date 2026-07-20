@@ -114,6 +114,16 @@
             <path d="M8 3v5h8V3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
           </svg>
           <span>Save File</span>
+          <!-- Quiet pointer to the native app, placed where someone
+               wrestling a big save is already looking. Hidden inside the
+               desktop app itself (panels.js checks window.__TAURI__). -->
+          <a id="desktopAppLink" href="https://github.com/valentinps/satisfactorymap/releases/latest" target="_blank" rel="noopener" title="Download the desktop app — same map, no browser memory limit">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11">
+              <path d="M12 3v11m0 0 4-4m-4 4-4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <span>Desktop app</span>
+          </a>
         </div>
         <!-- The save never leaves the browser: it's parsed locally by the
              WASM parser in worker.js (see save_client.js/data.js). -->

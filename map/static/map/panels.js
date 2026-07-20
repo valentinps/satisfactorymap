@@ -63,6 +63,12 @@
     menuButton.setAttribute("aria-expanded", String(!hidden));
   });
 
+  // Inside the desktop app the "download the desktop app" link is noise.
+  var desktopAppLink = document.getElementById("desktopAppLink");
+  if (desktopAppLink && window.__TAURI__) {
+    desktopAppLink.style.display = "none";
+  }
+
   // ---- "Progression" dropdown (top right) ---------------------------------
   // Open/close chrome only -- the rows' own click handlers live in
   // progression.js/finditem.js, bound by id. A row click bubbles here and
