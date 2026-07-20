@@ -9,14 +9,13 @@
     "SC_Inverted": "Foundation",
     "SC_QuatPipes": "Foundation"
   },
-  "_comment2": "The three class-level sections below cover buildables that are NOT in buildingCategories.json at all (they aren't build-menu entries: they come attached to something else, or their descriptor link is broken in Docs.json) and would otherwise land in the catch-all 'Unknown' category as bare red dots. classCategories values are DISPLAY labels [category, subcategory], not Sub_*/SC_* ids -- these classes bypass the internal id tree entirely (a classCategories entry also wins over buildingCategories.json when the class exists there, e.g. the HUB regrouping below). classFootprintsMeters is [widthMeters, depthMeters] (actor-local X/Y spans) for classes with no usable size data in buildings.json; values were measured from comparable buildables' clearance boxes or the wiki. hiddenClasses (short ClassName) are dropped from the map payload entirely: pure clutter with no informational value (path nodes, sign poles, the pipeline flow indicator, the personnel elevator's moving cabin).",
+  "_comment2": "The three class-level sections below cover buildables that are NOT in buildingCategories.json at all (they aren't build-menu entries: they come attached to something else, or their descriptor link is broken in Docs.json) and would otherwise land in the catch-all 'Unknown' category as bare red dots. classCategories values are DISPLAY labels [category, subcategory], not Sub_*/SC_* ids -- these classes bypass the internal id tree entirely (a classCategories entry also wins over buildingCategories.json when the class exists there, e.g. the HUB regrouping below). classFootprintsMeters is [widthMeters, depthMeters] (actor-local X/Y spans) for classes with no usable size data in buildings.json; values were measured from comparable buildables' clearance boxes or the wiki. hiddenClasses (short ClassName) are dropped from the map payload entirely: pure clutter with no informational value (path nodes, sign poles, the pipeline flow indicator, the personnel elevator's moving cabin, and BUILD_Potty_mk1_C -- the toilet actor is only ever spawned BY something the player placed: the HUB's built-in one, the SPWN's attached one, and on old experimental-branch saves glitched stacks of session-respawned duplicates with no surviving parent actor at all. The HUB and SPWN buildings themselves are what the map shows).",
   "classCategories": {
     "Build_TradingPost_C": ["Special", "The HUB"],
     "Build_HubTerminal_C": ["Special", "The HUB"],
     "Build_WorkBenchIntegrated_C": ["Special", "The HUB"],
     "Build_StorageIntegrated_C": ["Special", "The HUB"],
     "Build_GeneratorIntegratedBiomass_C": ["Special", "The HUB"],
-    "BUILD_Potty_mk1_C": ["Special", "The HUB"],
     "Build_StorageBlueprint_C": ["Organisation", "Storage"],
     "Build_FenceRamp_8x1_R_C": ["Organisation", "Attachments"],
     "Build_FenceRamp_8x2_R_C": ["Organisation", "Attachments"],
@@ -33,7 +32,6 @@
     "Build_WorkBenchIntegrated_C": [4.0, 6.0],
     "Build_StorageIntegrated_C": [1.0, 1.6],
     "Build_GeneratorIntegratedBiomass_C": [4.0, 4.0],
-    "BUILD_Potty_mk1_C": [1.6, 1.6],
     "Build_StorageBlueprint_C": [1.0, 1.6],
     "Build_FenceRamp_8x1_R_C": [0.5, 8.0],
     "Build_FenceRamp_8x2_R_C": [0.5, 8.0],
@@ -46,6 +44,7 @@
     "Build_ConveyorAttachmentSplitterSmartLift_C": [4.0, 4.0]
   },
   "hiddenClasses": [
+    "BUILD_Potty_mk1_C",
     "Build_VehiclePathNode_Default_C",
     "Build_VehiclePathNode_DockingStation_C",
     "Build_SignPole_Small_C",
