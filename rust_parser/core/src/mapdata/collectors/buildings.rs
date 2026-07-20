@@ -6,7 +6,7 @@
 use crate::mapdata::categories::{categorize_subcategory, categorize_type_path, is_hidden_class};
 use crate::mapdata::consts::*;
 use crate::mapdata::geometry::{
-    footprint_for_instance, footprint_pixels, project_xy, world_z_to_meters,
+    footprint_for_instance, footprint_pixels, project_xy, short_class_name, world_z_to_meters,
 };
 use crate::mapdata::jsonval::{jnum, py_hypot};
 use crate::mapdata::names::readable_label;
@@ -113,6 +113,22 @@ fn append_building_instance(
     bucket.ids.push(Value::String(instance_id));
 }
 
+/// Every placed SPWN (Build_PortalPotty_C) spawns its own BUILD_Potty_mk1_C
+/// toilet actor at the machine, and the save records no parent link on it --
+/// so proximity is the discriminator. Toilets within this radius of a SPWN
+/// are dropped from the payload (the SPWN's own marker is the thing the
+/// player placed and recognizes); the HUB's built-in toilet, nowhere near a
+/// SPWN, stays in the "The HUB" group.
+const SPWN_CLASS: &str = "Build_PortalPotty_C";
+const SPWN_TOILET_CLASS: &str = "BUILD_Potty_mk1_C";
+const SPWN_TOILET_RADIUS_CM: f64 = 1000.0;
+
+fn near_any(positions: &[[f64; 2]], x: f64, y: f64, radius_cm: f64) -> bool {
+    positions
+        .iter()
+        .any(|p| (p[0] - x).powi(2) + (p[1] - y).powi(2) <= radius_cm * radius_cm)
+}
+
 /// collectBuildings -- payload["buildingCategories"].
 pub fn collect_buildings(scan: &SaveScan) -> Value {
     let data = scan.data();
@@ -121,6 +137,18 @@ pub fn collect_buildings(scan: &SaveScan) -> Value {
     // semantics): category/typePath order follows each typePath's FIRST
     // instance, bucket contents follow per-typePath save order.
     let mut category_buckets: IndexMap<&'static str, IndexMap<String, Bucket>> = IndexMap::new();
+
+    // Pre-pass: SPWN world positions, for the toilet merge above.
+    let mut spwn_positions: Vec<[f64; 2]> = Vec::new();
+    for (_, seq_headers) in &scan.actor_seqs_by_type_path {
+        let type_path = scan.actor(seq_headers[0].1).type_path.to_string(data);
+        if short_class_name(&type_path) == SPWN_CLASS {
+            for &(_, slot) in seq_headers {
+                let p = scan.actor(slot).position;
+                spwn_positions.push([p[0] as f64, p[1] as f64]);
+            }
+        }
+    }
 
     for (_, seq_headers) in &scan.actor_seqs_by_type_path {
         // The bucket's key bytes come from its first actor; use that actor's
@@ -141,13 +169,31 @@ pub fn collect_buildings(scan: &SaveScan) -> Value {
         if !(type_path.contains("/Buildable/") || type_path.contains("/Build_")) {
             continue;
         }
+        // SPWN toilet merge (see SPWN_TOILET_RADIUS_CM above): filtered
+        // BEFORE bucket creation so a save where every toilet belongs to a
+        // SPWN doesn't leave an empty zero-count sidebar row behind.
+        let is_spwn_toilet = short_class_name(&type_path) == SPWN_TOILET_CLASS;
+        let kept_slots: Vec<_> = seq_headers
+            .iter()
+            .map(|&(_, slot)| slot)
+            .filter(|&slot| {
+                if !is_spwn_toilet {
+                    return true;
+                }
+                let p = scan.actor(slot).position;
+                !near_any(&spwn_positions, p[0] as f64, p[1] as f64, SPWN_TOILET_RADIUS_CM)
+            })
+            .collect();
+        if kept_slots.is_empty() {
+            continue;
+        }
         let category = categorize_type_path(&type_path);
         let bucket = category_buckets
             .entry(category)
             .or_default()
             .entry(type_path.clone())
             .or_insert_with(|| new_building_bucket(&type_path));
-        for &(_, slot) in seq_headers {
+        for slot in kept_slots {
             let actor = scan.actor(slot);
             append_building_instance(
                 bucket,
