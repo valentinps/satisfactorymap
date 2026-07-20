@@ -168,6 +168,9 @@ pub enum MapVal {
     U8(u8),
     F64(f64),
     Ref(ObjectRef),
+    /// StrProperty/NameProperty/EnumProperty values (modded saves --
+    /// e.g. string-to-string config maps).
+    Str(StrRef),
 }
 
 #[derive(Debug)]

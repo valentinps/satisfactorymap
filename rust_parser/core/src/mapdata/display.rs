@@ -370,6 +370,7 @@ fn write_value(out: &mut String, data: &[u8], v: &PropertyValue) {
                 }
                 MapVal::F64(x) => out.push_str(&py_float_repr(*x)),
                 MapVal::Ref(r) => write_object_ref(out, data, r),
+                MapVal::Str(s) => write_quoted(out, data, *s),
             }
             out.push(']');
         }),

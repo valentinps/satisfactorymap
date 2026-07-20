@@ -768,6 +768,11 @@ pub fn parse_properties(
                         "ByteProperty" => MapVal::U8(c.u8()?),
                         "DoubleProperty" => MapVal::F64(c.f64()?),
                         "ObjectProperty" => MapVal::Ref(parse_object_reference(c)?),
+                        // Same wire format for all three: one length-prefixed
+                        // string (seen in modded saves' config maps).
+                        "StrProperty" | "NameProperty" | "EnumProperty" => {
+                            MapVal::Str(c.string()?)
+                        }
                         other => return Err(perr!("Unsupported map valueType {}", other)),
                     };
                     entries.push((k, v));
