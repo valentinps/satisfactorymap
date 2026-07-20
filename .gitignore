@@ -45,3 +45,4 @@ rust_parser/target/
 # Assembled static site (tools/build_site.py output)
 dist/
 LAUNCH.md
+.wrangler
