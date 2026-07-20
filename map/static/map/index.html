@@ -135,6 +135,32 @@
           <span id="uploadDropText">Drop a .sav here or click to browse</span>
         </div>
         <input type="file" id="uploadFileInput" accept=".sav" style="display:none">
+        <!-- Desktop only (data.js shows this inside the Tauri shell): pull
+             the newest save straight off a dedicated server through the
+             official server HTTPS API -- the same one the in-game Server
+             Manager uses. The request runs natively in Rust (self-signed
+             TLS + no CORS make it impossible from a browser page). -->
+        <div id="serverFetchPanel" style="display:none">
+          <button id="serverFetchToggle" aria-expanded="false" title="Download the newest save from a dedicated server">
+            <span class="serverFetchTitle">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13">
+                <rect x="4" y="4" width="16" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                <rect x="4" y="13" width="16" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                <circle cx="8" cy="7.5" r="1" fill="currentColor"/>
+                <circle cx="8" cy="16.5" r="1" fill="currentColor"/>
+              </svg>
+              <span>From dedicated server</span>
+            </span>
+            <svg class="saveDetailsChevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14">
+              <polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <div id="serverFetchForm" style="display:none">
+            <input id="serverFetchHost" type="text" placeholder="Server address (host or host:port)" spellcheck="false" autocomplete="off">
+            <input id="serverFetchPassword" type="password" placeholder="Admin password" autocomplete="off">
+            <button id="serverFetchButton" title="Log in, find the newest save on the server and load it">Fetch latest save</button>
+          </div>
+        </div>
         <div id="loadStatus"></div>
         <div id="loadProgressBar"><div id="loadProgressFill"></div></div>
         <!-- Collapsed-by-default disclosure for everything that isn't the

@@ -10,10 +10,11 @@
 //! through `serde_json`; the `.sav` is loaded from a path, not shipped as bytes.
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+use sav_tauri_lib::server_api;
 use sav_tauri_lib::session::AppSession;
 use std::sync::Mutex;
 use tauri::ipc::{Channel, Response};
-use tauri::State;
+use tauri::{Manager, State};
 
 struct AppState {
     session: Mutex<Option<AppSession>>,
@@ -282,6 +283,64 @@ async fn payload_done(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Result of `server_fetch_latest`: where the downloaded .sav landed (the
+/// frontend feeds it to the normal path-based `load`) plus display info.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerFetchResult {
+    path: String,
+    save_name: String,
+    session_name: String,
+    save_date_time: String,
+}
+
+/// Download the newest save from a dedicated server through the official
+/// HTTPS API (PasswordLogin -> EnumerateSessions -> DownloadSaveGame, see
+/// `server_api`) into the app-data `server-saves/` folder. Stage labels for
+/// the status line ride the channel. Runs on a blocking thread: the API
+/// client is synchronous so the lib stays runtime-free.
+#[tauri::command]
+async fn server_fetch_latest(
+    host: String,
+    password: String,
+    on_progress: Channel<String>,
+    app: tauri::AppHandle,
+) -> Result<ServerFetchResult, String> {
+    let fetched = tauri::async_runtime::spawn_blocking(move || {
+        server_api::fetch_latest(&host, &password, &|stage| {
+            let _ = on_progress.send(stage);
+        })
+    })
+    .await
+    .map_err(|e| format!("Server fetch task failed: {e}"))??;
+
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("No app data dir: {e}"))?
+        .join("server-saves");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create {}: {}", dir.display(), e))?;
+    // The server-side save name becomes the file name; strip characters
+    // Windows forbids in file names.
+    let stem: String = fetched
+        .header
+        .save_name
+        .chars()
+        .map(|c| if r#"<>:"/\|?*"#.contains(c) { '_' } else { c })
+        .collect();
+    let stem = if stem.trim().is_empty() { "server_save".to_string() } else { stem };
+    let path = dir.join(format!("{stem}.sav"));
+    std::fs::write(&path, &fetched.bytes)
+        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+    Ok(ServerFetchResult {
+        path: path.to_string_lossy().into_owned(),
+        save_name: fetched.header.save_name,
+        session_name: fetched.header.session_name,
+        save_date_time: fetched.header.save_date_time,
+    })
+}
+
 #[cfg(test)]
 mod chunk_tests {
     use super::*;
@@ -346,6 +405,7 @@ fn main() {
             reset,
             payload_slice,
             payload_done,
+            server_fetch_latest,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

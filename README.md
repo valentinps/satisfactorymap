@@ -43,7 +43,11 @@ up to **15 seconds at a time** — WebGL rendering instead of DOM markers
 Browsers cap WebAssembly at 4 GB of memory, which the very largest
 mega-factory saves can exceed. The desktop app (Tauri, Windows) wraps the
 same engine and the same interface with no memory ceiling — and it's the
-fastest way to open saves straight from your save folder. Download the
+fastest way to open saves straight from your save folder. It can also pull
+the newest save **straight off a dedicated server** (the official server
+HTTPS API — the same one the in-game Server Manager uses): enter the
+server's address and admin password in the Save File panel and hit *Fetch
+latest save*. Download the
 installer from the
 [Releases page](https://github.com/valentinps/satisfactorymap/releases),
 or build it from source in a few minutes

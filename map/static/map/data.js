@@ -297,6 +297,84 @@
     });
   }
 
+  // ---- Desktop only: fetch the newest save from a dedicated server ---------
+  // Small disclosure form under the drop zone (hidden in the browser build).
+  // The native side does the whole exchange against the official dedicated-
+  // server HTTPS API (server_fetch_latest command: login -> enumerate ->
+  // download into the app-data dir) and hands back a path that loads through
+  // the normal loadLocalPath flow. Address and password persist in
+  // localStorage -- the app is single-user and local, same trust level as a
+  // config file next to it.
+  var SERVER_HOST_KEY = "smap.serverFetchHost";
+  var SERVER_PASS_KEY = "smap.serverFetchPassword";
+
+  function setupServerFetch() {
+    var panel = document.getElementById("serverFetchPanel");
+    var toggle = document.getElementById("serverFetchToggle");
+    var form = document.getElementById("serverFetchForm");
+    var hostInput = document.getElementById("serverFetchHost");
+    var passInput = document.getElementById("serverFetchPassword");
+    var button = document.getElementById("serverFetchButton");
+    panel.style.display = "block";
+    try {
+      hostInput.value = window.localStorage.getItem(SERVER_HOST_KEY) || "";
+      passInput.value = window.localStorage.getItem(SERVER_PASS_KEY) || "";
+    } catch (e) { /* storage blocked: the fields just start empty */ }
+
+    toggle.addEventListener("click", function() {
+      var open = form.style.display === "none";
+      form.style.display = open ? "flex" : "none";
+      toggle.classList.toggle("open", open);
+      toggle.setAttribute("aria-expanded", String(open));
+      if (open) {
+        (hostInput.value ? button : hostInput).focus();
+      }
+    });
+
+    function fetchLatest() {
+      var host = hostInput.value.trim();
+      if (!host) {
+        setStatus("Enter the server's address first.");
+        hostInput.focus();
+        return;
+      }
+      if (loadInFlight || button.disabled) {
+        return;
+      }
+      try {
+        window.localStorage.setItem(SERVER_HOST_KEY, host);
+        window.localStorage.setItem(SERVER_PASS_KEY, passInput.value);
+      } catch (e) { /* not persisting is fine */ }
+      button.disabled = true;
+      setStatus("Connecting to " + host + "…");
+      var channel = new window.__TAURI__.core.Channel();
+      channel.onmessage = function(stage) {
+        setStatus(String(stage));
+      };
+      window.__TAURI__.core.invoke("server_fetch_latest", {
+        host: host,
+        password: passInput.value,
+        onProgress: channel,
+      }).then(function(result) {
+        button.disabled = false;
+        // The .sav is on disk now; from here it's a normal path-based load.
+        return loadLocalPath(result.path);
+      }, function(error) {
+        button.disabled = false;
+        setStatus("Server fetch failed: " + String((error && error.message) || error));
+      });
+    }
+
+    button.addEventListener("click", fetchLatest);
+    [hostInput, passInput].forEach(function(input) {
+      input.addEventListener("keydown", function(e) {
+        if (e.key === "Enter") {
+          fetchLatest();
+        }
+      });
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function() {
     MapApp.init();
     setStatus("No save loaded -- drop a .sav anywhere or click above.");
@@ -315,6 +393,9 @@
     // Desktop file drops: the webview suppresses HTML5 file DnD (dragDropEnabled),
     // so Tauri delivers dropped paths via its own event instead of the DOM drop
     // handlers below.
+    if (isTauri) {
+      setupServerFetch();
+    }
     if (isTauri && window.__TAURI__.event) {
       window.__TAURI__.event.listen("tauri://drag-drop", function(e) {
         var paths = e && e.payload && e.payload.paths;

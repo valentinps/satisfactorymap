@@ -1024,6 +1024,86 @@ body.panelResizing #categoryDetailColumn {
   pointer-events: none;
 }
 
+/* Desktop-only "pull the newest save off a dedicated server" disclosure
+   (data.js shows it inside the Tauri shell) -- same quiet toggle voice as
+   #saveDetailsToggle below, form fields in the panel's input style. */
+#serverFetchToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 2px 0;
+  background: none;
+  border: none;
+  border-top: 1px solid #2c2f37;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#serverFetchToggle:hover {
+  color: var(--text);
+}
+
+#serverFetchToggle.open .saveDetailsChevron {
+  transform: rotate(180deg);
+}
+
+.serverFetchTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#serverFetchForm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+#serverFetchForm input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+#serverFetchForm input:focus {
+  outline: none;
+  border-color: var(--border-hover);
+}
+
+#serverFetchButton {
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#serverFetchButton:hover {
+  color: var(--text);
+  border-color: var(--border-hover);
+  background: var(--raised);
+}
+
+#serverFetchButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 #loadStatus {
   margin-top: 8px;
   color: #999;

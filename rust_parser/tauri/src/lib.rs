@@ -3,4 +3,5 @@
 //! thin Tauri command + IPC layer over this; keeping it in a lib lets the
 //! orchestration be integration-tested without spinning up a webview.
 
+pub mod server_api;
 pub mod session;
