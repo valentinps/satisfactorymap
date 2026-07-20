@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Satisfactory Save Map logo: FICSIT-orange rounded square, white map
+       pin, dark chrome center. Mirrors the Pillow-generated raster set
+       (favicon.ico / favicon-32.png / apple-touch-icon.png / docs/logo-1024.png). -->
+  <rect width="1024" height="1024" rx="184" fill="#f2913d"/>
+  <polygon points="353.2,546.6 670.8,546.6 512,850" fill="#fff"/>
+  <circle cx="512" cy="420" r="230.4" fill="#fff"/>
+  <circle cx="512" cy="420" r="96.8" fill="#1a1d22"/>
+</svg>

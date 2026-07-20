@@ -32,7 +32,7 @@
     "Build_WorkBenchIntegrated_C": [4.0, 6.0],
     "Build_StorageIntegrated_C": [1.0, 1.6],
     "Build_GeneratorIntegratedBiomass_C": [4.0, 4.0],
-    "Build_StorageBlueprint_C": [1.0, 1.6],
+    "Build_StorageBlueprint_C": [1.6, 1.0],
     "Build_FenceRamp_8x1_R_C": [0.5, 8.0],
     "Build_FenceRamp_8x2_R_C": [0.5, 8.0],
     "Build_SM_RailingRamp_8x1_01_C": [0.5, 8.0],
