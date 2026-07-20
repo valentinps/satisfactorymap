@@ -1081,6 +1081,23 @@ body.panelResizing #categoryDetailColumn {
   border-color: var(--border-hover);
 }
 
+#serverFetchRemember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+#serverFetchRemember input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
 #serverFetchButton {
   padding: 7px 8px;
   font: inherit;

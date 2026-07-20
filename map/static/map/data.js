@@ -302,9 +302,9 @@
   // The native side does the whole exchange against the official dedicated-
   // server HTTPS API (server_fetch_latest command: login -> enumerate ->
   // download into the app-data dir) and hands back a path that loads through
-  // the normal loadLocalPath flow. Address and password persist in
-  // localStorage -- the app is single-user and local, same trust level as a
-  // config file next to it.
+  // the normal loadLocalPath flow. The address always persists in
+  // localStorage; the password only when "Remember password" is ticked
+  // (stored unencrypted -- the label's tooltip says so).
   var SERVER_HOST_KEY = "smap.serverFetchHost";
   var SERVER_PASS_KEY = "smap.serverFetchPassword";
 
@@ -314,12 +314,28 @@
     var form = document.getElementById("serverFetchForm");
     var hostInput = document.getElementById("serverFetchHost");
     var passInput = document.getElementById("serverFetchPassword");
+    var rememberBox = document.getElementById("serverFetchRememberBox");
     var button = document.getElementById("serverFetchButton");
     panel.style.display = "block";
     try {
       hostInput.value = window.localStorage.getItem(SERVER_HOST_KEY) || "";
-      passInput.value = window.localStorage.getItem(SERVER_PASS_KEY) || "";
+      var storedPass = window.localStorage.getItem(SERVER_PASS_KEY);
+      if (storedPass !== null) {
+        // A stored password IS the remember choice -- no separate flag.
+        passInput.value = storedPass;
+        rememberBox.checked = true;
+      }
     } catch (e) { /* storage blocked: the fields just start empty */ }
+
+    // Unticking forgets immediately -- don't make the user fetch to be
+    // sure the password is gone from disk.
+    rememberBox.addEventListener("change", function() {
+      if (!rememberBox.checked) {
+        try {
+          window.localStorage.removeItem(SERVER_PASS_KEY);
+        } catch (e) { /* nothing stored anyway */ }
+      }
+    });
 
     toggle.addEventListener("click", function() {
       var open = form.style.display === "none";
@@ -343,7 +359,11 @@
       }
       try {
         window.localStorage.setItem(SERVER_HOST_KEY, host);
-        window.localStorage.setItem(SERVER_PASS_KEY, passInput.value);
+        if (rememberBox.checked) {
+          window.localStorage.setItem(SERVER_PASS_KEY, passInput.value);
+        } else {
+          window.localStorage.removeItem(SERVER_PASS_KEY);
+        }
       } catch (e) { /* not persisting is fine */ }
       button.disabled = true;
       setStatus("Connecting to " + host + "…");
