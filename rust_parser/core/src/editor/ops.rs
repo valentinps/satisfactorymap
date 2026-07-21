@@ -102,6 +102,24 @@ pub struct ForeignPayload {
     pub actors: Vec<ForeignActor>,
     #[serde(default)]
     pub lightweight: Vec<ForeignLightweight>,
+    /// Copied-set refs to world-static actors (resource nodes, fracking
+    /// cores/satellites, geysers) in the SOURCE save: path -> what it was
+    /// there. The paste keeps such a ref (instead of tombstoning it) when the
+    /// target save has the same actor with the same resource, so a miner
+    /// pasted at its original coordinates lands on its node and works.
+    #[serde(default)]
+    pub ext_refs: std::collections::HashMap<String, ExtRef>,
+}
+
+/// What a world-static external ref pointed at in the source save.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ExtRef {
+    /// The actor's type path (e.g. ...BP_ResourceNode.BP_ResourceNode_C).
+    pub cls: String,
+    /// Resolved resource type (mResourceClassOverride short name if the save
+    /// randomizes nodes, else the static table's desc class). Empty when
+    /// undeterminable -- such refs are never relinked.
+    pub res: String,
 }
 
 /// One copied actor/component: base64 of its header record and object

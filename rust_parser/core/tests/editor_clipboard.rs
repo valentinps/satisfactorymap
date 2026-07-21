@@ -219,6 +219,134 @@ fn paste_100k_objects_scale() {
     println!("total {:?}", t0.elapsed());
 }
 
+// First actor with `prefix` whose object carries an mExtractableResource
+// ref: (instance name, node path).
+fn find_miner_on_node(store: &SaveStore, prefix: &str) -> (String, String) {
+    for (li, level) in store.levels.iter().enumerate() {
+        for (oi, header) in level.headers.iter().enumerate() {
+            if let Header::Actor(a) = header {
+                if !a.type_path.to_string(&store.data).starts_with(prefix) {
+                    continue;
+                }
+                let object = store.parse_object_at(li, oi).unwrap();
+                if let Some(r) = sav_core::mapdata::props::object_ref(
+                    &object.properties,
+                    &store.data,
+                    b"mExtractableResource",
+                ) {
+                    return (
+                        a.instance_name.to_string(&store.data),
+                        r.path_name.to_string(&store.data),
+                    );
+                }
+            }
+        }
+    }
+    panic!("no {prefix} actor with a node ref in the test save");
+}
+
+// A pasted extractor's mExtractableResource after `op` runs against `target`:
+// (ref path of the newly created miner-type actor, its instance count delta).
+fn pasted_miner_node_ref(
+    target: &SaveStore,
+    target2: &SaveStore,
+    prefix: &str,
+) -> Option<String> {
+    let scan_before = SaveScan::new(target);
+    for (li, level) in target2.levels.iter().enumerate() {
+        for (oi, header) in level.headers.iter().enumerate() {
+            if let Header::Actor(a) = header {
+                if a.type_path.to_string(&target2.data).starts_with(prefix)
+                    && !scan_before
+                        .by_instance_name
+                        .contains_key(a.instance_name.bytes(&target2.data))
+                {
+                    let object = target2.parse_object_at(li, oi).unwrap();
+                    return sav_core::mapdata::props::object_ref(
+                        &object.properties,
+                        &target2.data,
+                        b"mExtractableResource",
+                    )
+                    .map(|r| r.path_name.to_string(&target2.data));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Cross-save miner paste keeps its resource-node ref: node actors are
+/// level-placed with identical names in every save of the map, and both
+/// saves agree on the node's resource, so the blob's extRefs entry passes
+/// the relink gate instead of being tombstoned.
+#[test]
+fn pasted_miner_relinks_to_the_same_node() {
+    let source = load("All_autosave_0.sav");
+    let target = load("All_autosave_1.sav");
+    let tables = ClassTables::embedded();
+    // Matches MinerMK1/MinerMk2/MinerMk3 paths, not other buildings.
+    let prefix = "/Game/FactoryGame/Buildable/Factory/MinerM";
+    let (name, node_path) = find_miner_on_node(&source, prefix);
+
+    let blob_json = extract_clipboard(&source, &[name], &[]).unwrap();
+    let blob: serde_json::Value = serde_json::from_str(&blob_json).unwrap();
+    let payload = sav_core::editor::clipboard::inflate_payload(
+        blob["z"].as_str().unwrap(),
+        blob["zLen"].as_u64().unwrap(),
+    )
+    .unwrap();
+    let ext = payload.ext_refs.get(&node_path).expect("extRefs records the node");
+    assert!(ext.cls.contains("BP_ResourceNode") || ext.cls.contains("BP_Fracking"), "{}", ext.cls);
+    assert!(!ext.res.is_empty(), "resource resolved from override or static table");
+    assert_eq!(blob["count"], json!(1));
+
+    let op = op_from_blob(&blob_json, [800.0, 0.0, 0.0]);
+    let target2 = session::step(&target, &op, &tables).unwrap();
+    let pasted_ref = pasted_miner_node_ref(&target, &target2, prefix).expect("pasted miner found");
+    assert_eq!(pasted_ref, node_path, "node ref relinked, not tombstoned");
+
+    // The edited target still round-trips.
+    let exported = export_sav(&target2.file_header, effective_body(&target2));
+    parse_full_save(&exported, &tables, None).unwrap();
+}
+
+/// The relink gate severs the ref when the recorded resource does not match
+/// what the target save's node yields (the randomized-nodes scenario):
+/// tamper the blob's extRefs entry and check the pasted miner's node ref is
+/// a tombstone, not the real node.
+#[test]
+fn miner_ref_is_severed_when_node_resource_differs() {
+    let source = load("All_autosave_0.sav");
+    let target = load("All_autosave_1.sav");
+    let tables = ClassTables::embedded();
+    let prefix = "/Game/FactoryGame/Buildable/Factory/MinerM";
+    let (name, node_path) = find_miner_on_node(&source, prefix);
+
+    let blob_json = extract_clipboard(&source, &[name], &[]).unwrap();
+    let mut blob: serde_json::Value = serde_json::from_str(&blob_json).unwrap();
+    let mut payload = sav_core::editor::clipboard::inflate_payload(
+        blob["z"].as_str().unwrap(),
+        blob["zLen"].as_u64().unwrap(),
+    )
+    .unwrap();
+    payload.ext_refs.get_mut(&node_path).expect("recorded").res = "Desc_SomethingElse_C".into();
+    let raw = serde_json::to_vec(&payload).unwrap();
+    let (compressed, raw_len) = sav_core::editor::session::compress_body(&raw);
+    blob["z"] = json!(base64_std(&compressed));
+    blob["zLen"] = json!(raw_len as u64);
+
+    let op = op_from_blob(&blob.to_string(), [800.0, 0.0, 0.0]);
+    let target2 = session::step(&target, &op, &tables).unwrap();
+    let pasted_ref = pasted_miner_node_ref(&target, &target2, prefix).expect("pasted miner found");
+    assert_ne!(pasted_ref, node_path, "mismatched resource must not relink");
+    assert_eq!(pasted_ref.len(), node_path.len(), "tombstone is same-length");
+}
+
+fn base64_std(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 #[test]
 fn paste_refuses_version_mismatch() {
     let source = load("All_autosave_0.sav");

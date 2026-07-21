@@ -48,11 +48,20 @@ var EditorTool = (function() {
   var currentFileName = null;
 
   var downloadBtn, toolbar, editCountEl, undoBtn, redoBtn;
-  var ghost, hintBar;
+  var hintBar;
+  // Ghost = an L.rectangle in Leaflet's overlay pane rather than a
+  // container-positioned div: the pane transform carries it through pans AND
+  // the wheel-zoom CSS animation, so it never desyncs mid-animation.
+  var ghostRect = null;
   var offsetOverlay, offsetDx, offsetDy, offsetDz, offsetRot, offsetApply, offsetCancel;
+  var pastePanel, pastePanelTitle, pastePosOriginal, pastePosCustom;
+  var pasteX, pasteY, pasteZ, pasteDx, pasteDy, pasteDz, pasteRot, pasteResult;
+  var pastePanelApplyBtn, pastePanelCancelBtn;
 
-  // Active ghost placement, or null: { mode: "move"|"paste", targets,
-  // anchor: {x, y} (map px), bbox: {minX..maxY} (map px), rotSteps }
+  // Active ghost placement, or null: { mode: "move"|"paste"|"external",
+  // targets, anchor: {x, y} (map px), bbox: {minX..maxY} (map px), rotSteps }.
+  // Paste modes add the paste-panel state: anchorWorld {x,y} (cm, where the
+  // copy came from), posMode "original"|"custom", customWorld {x,y} (cm).
   var placement = null;
   var offsetTargets = null; // targets of the open offset dialog
   var clipboard = null;     // editTargets captured by Copy
@@ -91,11 +100,23 @@ var EditorTool = (function() {
       x = hit.bucket.points[hit.index * stride];
       y = hit.bucket.points[hit.index * stride + 1];
     }
+    // Altitude (meters) from the bucket's stride-1 slot, same convention as
+    // selection.js's aggregate -- feeds the paste panel's Z field.
+    var stride = hit.bucket.pointStride;
+    var z;
+    if (hit.bucket.renderType === "line") {
+      var ln = hit.bucket.lines[hit.index];
+      z = ln ? ln[stride - 1] : undefined;
+    } else {
+      z = hit.bucket.points[hit.index * stride + stride - 1];
+    }
+    var hasZ = typeof z === "number";
     var targets = {
       actorNames: [],
       lightweight: [],
       skipped: 0,
-      bbox: { minX: x, minY: y, maxX: x, maxY: y },
+      bbox: { minX: x, minY: y, maxX: x, maxY: y,
+              minZ: hasZ ? z : Infinity, maxZ: hasZ ? z : -Infinity },
     };
     if (hit.id.indexOf(LIGHTWEIGHT_ID_PREFIX) === 0) {
       targets.lightweight.push(parseLightweightId(hit.id));
@@ -165,8 +186,11 @@ var EditorTool = (function() {
     var verb = "Applying edit";
     var count = 0;
     ops.forEach(function(op) {
-      count += (op.names ? op.names.length : 0) + (op.items ? op.items.length : 0)
+      var c = (op.names ? op.names.length : 0) + (op.items ? op.items.length : 0)
         + (op.actors ? op.actors.length : 0) + (op.lightweight ? op.lightweight.length : 0);
+      // pasteExternal ops carry their objects compressed (or native-side);
+      // their explicit count fills the label in.
+      count += c > 0 ? c : (op.count || 0);
       if (op.op.indexOf("delete") === 0) {
         verb = "Deleting";
       } else if (op.op.indexOf("duplicate") === 0 || op.op === "pasteExternal") {
@@ -363,7 +387,9 @@ var EditorTool = (function() {
   // ---- Ghost placement ------------------------------------------------------------
 
   function startPlacement(mode, targets) {
-    if (!targets || (targets.actorNames.length + targets.lightweight.length) === 0 || applyInFlight) {
+    var external = mode === "external";
+    if (!targets || applyInFlight
+        || (!external && (targets.actorNames.length + targets.lightweight.length) === 0)) {
       return;
     }
     cancelPlacement();
@@ -377,12 +403,47 @@ var EditorTool = (function() {
       cursor: null,
     };
     document.getElementById("map").style.cursor = "crosshair";
-    hintBar.textContent = (mode === "move" ? "Click to place" : "Click to paste")
-      + " · R rotate 90° · Esc cancel";
-    hintBar.style.display = "block";
-    ghost.style.display = "block";
+    ghostRect = L.rectangle(
+      [[placement.anchor.y - 4, placement.anchor.x - 4], [placement.anchor.y + 4, placement.anchor.x + 4]],
+      { color: "#ffb454", weight: 2, dashArray: "6 4", fillColor: "#ffb454",
+        fillOpacity: 0.12, interactive: false },
+    ).addTo(MapApp.map);
     MapApp.map.on("click", onPlacementClick);
-    MapApp.map.on("mousemove", onPlacementMouseMove);
+    if (mode === "move") {
+      hintBar.textContent = "Click to place · R rotate 90° · Esc cancel";
+      hintBar.style.display = "block";
+      MapApp.map.on("mousemove", onPlacementMouseMove);
+      return;
+    }
+    // Paste modes: the ghost is parked at the panel's effective position
+    // (original location at first), not chasing the cursor; a map click just
+    // fills the custom position, the panel's Paste button commits.
+    // anchorWorld.z is the selection's altitude center in cm, or null when
+    // unknown (old external blobs) -- the Z field disables then.
+    var anchorWorld;
+    if (external) {
+      anchorWorld = {
+        x: targets.external.anchor[0],
+        y: targets.external.anchor[1],
+        z: typeof targets.external.anchorZ === "number" ? targets.external.anchorZ : null,
+      };
+    } else {
+      var aw = mapPxToWorldXY(placement.anchor.x, placement.anchor.y);
+      var zKnown = isFinite(b.minZ) && isFinite(b.maxZ);
+      anchorWorld = {
+        x: aw[0],
+        y: aw[1],
+        // bbox z is altitude METERS (bucket convention); world cm is x100.
+        z: zKnown ? ((b.minZ + b.maxZ) / 2) * 100 : null,
+      };
+    }
+    placement.anchorWorld = anchorWorld;
+    placement.posMode = "original";
+    placement.customWorld = { x: anchorWorld.x, y: anchorWorld.y, z: anchorWorld.z };
+    hintBar.textContent = "Click the map to pick a position · Enter or Paste applies · R rotate 90° · Esc cancel";
+    hintBar.style.display = "block";
+    openPastePanel();
+    positionGhost();
   }
 
   function startMove(targets) {
@@ -406,6 +467,11 @@ var EditorTool = (function() {
       SaveLoadFlow.showBusy("Copying " + n.toLocaleString() + " object" + (n === 1 ? "" : "s") + "…");
       SaveClient.extractClipboard(targets.actorNames, targets.lightweight)
         .then(function(json) {
+          // Same 200MB ceiling resolvePaste enforces: writing a blob the
+          // paste side would refuse anyway just moves the confusion later.
+          if (json.length > 200e6) {
+            throw new Error("too many objects for the browser clipboard — use the desktop app");
+          }
           return navigator.clipboard.writeText(json);
         })
         .then(function() {
@@ -416,6 +482,9 @@ var EditorTool = (function() {
         .catch(function(error) {
           SaveLoadFlow.hideBusy();
           console.warn("System-clipboard copy failed (same-tab paste still works):", error);
+          SaveLoadFlow.setStatus("Copied " + n.toLocaleString() + " object" + (n === 1 ? "" : "s")
+            + " — cross-tab copy failed (" + ((error && error.message) || error)
+            + "); paste works in this tab only.");
         });
     }
   }
@@ -439,7 +508,15 @@ var EditorTool = (function() {
       } catch (error) {
         return null;
       }
-      if (!blob || (blob.smapPaste !== 1 && blob.smapPaste !== 2) || !blob.anchor || !blob.bboxWorld) {
+      if (!blob || (blob.smapPaste !== 1 && blob.smapPaste !== 2 && blob.smapPaste !== 3)
+          || !blob.anchor || !blob.bboxWorld) {
+        return null;
+      }
+      // smapPaste 3 is a desktop-app pointer: the object bytes live in the
+      // desktop process, not on the OS clipboard, so only it can paste them.
+      if (blob.smapPaste === 3 && !window.__TAURI__) {
+        SaveLoadFlow.setStatus("These objects were copied in the desktop app — paste them there"
+          + " (too many to travel through the browser clipboard).");
         return null;
       }
       return { mode: "external", blob: blob };
@@ -482,22 +559,32 @@ var EditorTool = (function() {
     startPlacement("external", targets);
   }
 
-  function buildExternalOps(blob, targetWorld, rotDeg) {
-    return [{
+  function buildExternalOps(blob, targetWorld, rotDeg, dz) {
+    var op = {
       op: "pasteExternal",
-      saveVersion: blob.saveVersion,
-      objectVersion: blob.objectVersion,
-      lightweightVersion: blob.lightweightVersion,
-      // v2 blobs carry the payload zlib-compressed; v1 fields pass through.
-      z: blob.z,
-      zLen: blob.zLen,
-      actors: blob.actors || [],
-      lightweight: blob.lightweight || [],
       anchor: blob.anchor,
-      delta: [targetWorld[0] - blob.anchor[0], targetWorld[1] - blob.anchor[1], 0],
+      delta: [targetWorld[0] - blob.anchor[0], targetWorld[1] - blob.anchor[1], dz || 0],
       rotateYawDeg: rotDeg,
       seed: Math.floor(Math.random() * 0x1fffffffffffff),
-    }];
+      // Object count for busy/undo labels (the payload itself is opaque
+      // here); the edit engine ignores it.
+      count: blob.count,
+    };
+    if (blob.slot != null) {
+      // Desktop pointer blob: the actual bytes never left the native side;
+      // the Rust command layer splices slot N's stored blob into this op.
+      op.slot = blob.slot;
+    } else {
+      op.saveVersion = blob.saveVersion;
+      op.objectVersion = blob.objectVersion;
+      op.lightweightVersion = blob.lightweightVersion;
+      // v2 blobs carry the payload zlib-compressed; v1 fields pass through.
+      op.z = blob.z;
+      op.zLen = blob.zLen;
+      op.actors = blob.actors || [];
+      op.lightweight = blob.lightweight || [];
+    }
+    return [op];
   }
 
   // Delete applies immediately -- undo (full replay from pristine) is the
@@ -543,8 +630,12 @@ var EditorTool = (function() {
       return;
     }
     placement = null;
-    ghost.style.display = "none";
+    if (ghostRect) {
+      MapApp.map.removeLayer(ghostRect);
+      ghostRect = null;
+    }
     hintBar.style.display = "none";
+    closePastePanel();
     document.getElementById("map").style.cursor = "";
     MapApp.map.off("click", onPlacementClick);
     MapApp.map.off("mousemove", onPlacementMouseMove);
@@ -558,26 +649,35 @@ var EditorTool = (function() {
     positionGhost();
   }
 
+  // Where the ghost's center sits right now: the cursor while moving, the
+  // panel's effective paste position (base + offsets) while pasting.
+  function ghostCenterLatLng() {
+    if (placement.mode === "move") {
+      return placement.cursor;
+    }
+    var w = effectivePasteWorld();
+    var px = worldToMapPx(w.x, w.y);
+    return { lat: px[1], lng: px[0] };
+  }
+
   function positionGhost() {
-    if (!placement || !placement.cursor) {
+    if (!placement || !ghostRect) {
       return;
     }
-    // Ghost = the selection bbox centered on the cursor (the anchor is the
-    // bbox center). Odd 90-degree steps swap the box's width/height.
+    var c = ghostCenterLatLng();
+    if (!c) {
+      return;
+    }
+    // Ghost = the selection bbox centered on the anchor point. Odd 90-degree
+    // steps swap the box's width/height. Bounds are in map px ([lat, lng] =
+    // [y, x]); Leaflet keeps the rectangle glued through pan/zoom itself.
     var b = placement.bbox;
     var halfW = Math.max((b.maxX - b.minX) / 2, 4);
     var halfH = Math.max((b.maxY - b.minY) / 2, 4);
     if (placement.rotSteps % 2 === 1) {
       var t = halfW; halfW = halfH; halfH = t;
     }
-    var c = placement.cursor;
-    // Map px -> screen px via Leaflet ([lat, lng] = [y, x]).
-    var p1 = MapApp.map.latLngToContainerPoint([c.lat - halfH, c.lng - halfW]);
-    var p2 = MapApp.map.latLngToContainerPoint([c.lat + halfH, c.lng + halfW]);
-    ghost.style.left = Math.min(p1.x, p2.x) + "px";
-    ghost.style.top = Math.min(p1.y, p2.y) + "px";
-    ghost.style.width = Math.abs(p2.x - p1.x) + "px";
-    ghost.style.height = Math.abs(p2.y - p1.y) + "px";
+    ghostRect.setBounds([[c.lat - halfH, c.lng - halfW], [c.lat + halfH, c.lng + halfW]]);
   }
 
   function onPlacementClick(e) {
@@ -585,17 +685,161 @@ var EditorTool = (function() {
       return;
     }
     var p = placement;
+    if (p.mode !== "move") {
+      // Paste modes: a click picks the XY; altitude keeps whatever the Z
+      // field holds; the panel's Paste commits.
+      var w = mapPxToWorldXY(e.latlng.lng, e.latlng.lat);
+      p.posMode = "custom";
+      p.customWorld = { x: w[0], y: w[1], z: p.customWorld.z };
+      pastePosCustom.checked = true;
+      setPasteXYFields(p.customWorld);
+      positionGhost();
+      refreshPasteResult();
+      return;
+    }
     var rotDeg = (p.rotSteps * 90) % 360;
+    var dPxX = e.latlng.lng - p.anchor.x;
+    var dPxY = e.latlng.lat - p.anchor.y;
+    var deltaXY = mapDeltaToWorld(dPxX, dPxY);
+    var pivot = mapPxToWorldXY(p.anchor.x, p.anchor.y);
+    var ops = buildMoveOps(p.targets, [deltaXY[0], deltaXY[1], 0], rotDeg, pivot);
+    cancelPlacement();
+    applyAction(ops);
+  }
+
+  // ---- Paste panel ------------------------------------------------------------------
+
+  // The paste position before offsets, in world cm.
+  function pasteBaseWorld() {
+    var p = placement;
+    return p.posMode === "original" ? p.anchorWorld : p.customWorld;
+  }
+
+  // Base + offsets, in world cm (the point the selection's center lands on).
+  function effectivePasteWorld() {
+    var base = pasteBaseWorld();
+    var dx = (parseFloat(pasteDx.value) || 0) * 100;
+    var dy = (parseFloat(pasteDy.value) || 0) * 100;
+    return { x: base.x + dx, y: base.y + dy };
+  }
+
+  function setPasteXYFields(world) {
+    pasteX.value = (world.x / 100).toFixed(1);
+    pasteY.value = (world.y / 100).toFixed(1);
+    // Z stays editable only when the selection's altitude is known (old
+    // external blobs don't carry it); the Up/Down offset always works.
+    if (world.z != null) {
+      pasteZ.disabled = false;
+      pasteZ.value = (world.z / 100).toFixed(1);
+    } else {
+      pasteZ.disabled = true;
+      pasteZ.value = "";
+    }
+  }
+
+  // The altitude delta (cm) the current panel state produces: absolute-Z
+  // move (custom mode with a known base) plus the Up/Down offset.
+  function pasteZDeltaCm() {
+    var p = placement;
+    var dz = (parseFloat(pasteDz.value) || 0) * 100;
+    if (p.posMode === "custom" && p.customWorld.z != null && p.anchorWorld.z != null) {
+      dz += p.customWorld.z - p.anchorWorld.z;
+    }
+    return dz;
+  }
+
+  function refreshPasteResult() {
+    if (!placement || placement.mode === "move") {
+      return;
+    }
+    var w = effectivePasteWorld();
+    var text = "Center lands at " + Math.round(w.x / 100) + ", " + Math.round(w.y / 100);
+    var zDelta = pasteZDeltaCm();
+    if (placement.anchorWorld.z != null) {
+      text += " · alt " + Math.round((placement.anchorWorld.z + zDelta) / 100) + " m";
+    } else if (zDelta) {
+      text += " · " + (zDelta > 0 ? "+" : "") + Math.round(zDelta) / 100 + " m height";
+    }
+    pasteResult.textContent = text;
+  }
+
+  function openPastePanel() {
+    var p = placement;
+    var n = p.mode === "external"
+      ? (p.targets.external.count || 0)
+      : p.targets.actorNames.length + p.targets.lightweight.length;
+    pastePanelTitle.textContent = n > 0
+      ? "Paste " + n.toLocaleString() + " object" + (n === 1 ? "" : "s")
+      : "Paste";
+    pastePosOriginal.checked = true;
+    pasteDx.value = "0";
+    pasteDy.value = "0";
+    pasteDz.value = "0";
+    pasteRot.value = "0";
+    setPasteXYFields(p.anchorWorld);
+    refreshPasteResult();
+    pastePanel.style.display = "block";
+  }
+
+  function closePastePanel() {
+    pastePanel.style.display = "none";
+  }
+
+  // Typing X/Y switches to a custom position; the radio switch back to
+  // "original" restores the copied coordinates.
+  function onPasteXYInput() {
+    var p = placement;
+    if (!p || p.mode === "move") {
+      return;
+    }
+    p.posMode = "custom";
+    pastePosCustom.checked = true;
+    p.customWorld = {
+      x: (parseFloat(pasteX.value) || 0) * 100,
+      y: (parseFloat(pasteY.value) || 0) * 100,
+      z: !pasteZ.disabled && pasteZ.value !== "" ? (parseFloat(pasteZ.value) || 0) * 100 : null,
+    };
+    positionGhost();
+    refreshPasteResult();
+  }
+
+  function onPastePosModeChange() {
+    var p = placement;
+    if (!p || p.mode === "move") {
+      return;
+    }
+    p.posMode = pastePosOriginal.checked ? "original" : "custom";
+    if (p.posMode === "original") {
+      setPasteXYFields(p.anchorWorld);
+    }
+    positionGhost();
+    refreshPasteResult();
+  }
+
+  function onPasteAdjustInput() {
+    var p = placement;
+    if (!p || p.mode === "move") {
+      return;
+    }
+    p.rotSteps = ((parseInt(pasteRot.value, 10) || 0) / 90) % 4;
+    positionGhost();
+    refreshPasteResult();
+  }
+
+  function applyPastePanel() {
+    var p = placement;
+    if (!p || p.mode === "move" || applyInFlight) {
+      return;
+    }
+    var w = effectivePasteWorld();
+    var dz = pasteZDeltaCm();
+    var rotDeg = (parseInt(pasteRot.value, 10) || 0) % 360;
     var ops;
     if (p.mode === "external") {
-      ops = buildExternalOps(p.targets.external, mapPxToWorldXY(e.latlng.lng, e.latlng.lat), rotDeg);
+      ops = buildExternalOps(p.targets.external, [w.x, w.y], rotDeg, dz);
     } else {
-      var dPxX = e.latlng.lng - p.anchor.x;
-      var dPxY = e.latlng.lat - p.anchor.y;
-      var deltaXY = mapDeltaToWorld(dPxX, dPxY);
-      var pivot = mapPxToWorldXY(p.anchor.x, p.anchor.y);
-      var build = p.mode === "paste" ? buildDuplicateOps : buildMoveOps;
-      ops = build(p.targets, [deltaXY[0], deltaXY[1], 0], rotDeg, pivot);
+      var delta = [w.x - p.anchorWorld.x, w.y - p.anchorWorld.y, dz];
+      ops = buildDuplicateOps(p.targets, delta, rotDeg, [p.anchorWorld.x, p.anchorWorld.y]);
     }
     cancelPlacement();
     applyAction(ops);
@@ -687,7 +931,6 @@ var EditorTool = (function() {
     editCountEl = document.getElementById("editorEditCount");
     undoBtn = document.getElementById("editorUndoBtn");
     redoBtn = document.getElementById("editorRedoBtn");
-    ghost = document.getElementById("editorGhost");
     hintBar = document.getElementById("editorHint");
     offsetOverlay = document.getElementById("offsetDialogOverlay");
     offsetDx = document.getElementById("offsetDx");
@@ -696,16 +939,43 @@ var EditorTool = (function() {
     offsetRot = document.getElementById("offsetRot");
     offsetApply = document.getElementById("offsetApplyBtn");
     offsetCancel = document.getElementById("offsetCancelBtn");
-
-    // The ghost is positioned in map-container coordinates
-    // (latLngToContainerPoint), so it must live inside the map container.
-    document.getElementById("map").appendChild(ghost);
+    pastePanel = document.getElementById("pastePanel");
+    pastePanelTitle = document.getElementById("pastePanelTitle");
+    pastePosOriginal = document.getElementById("pastePosOriginal");
+    pastePosCustom = document.getElementById("pastePosCustom");
+    pasteX = document.getElementById("pasteX");
+    pasteY = document.getElementById("pasteY");
+    pasteZ = document.getElementById("pasteZ");
+    pasteDx = document.getElementById("pasteDx");
+    pasteDy = document.getElementById("pasteDy");
+    pasteDz = document.getElementById("pasteDz");
+    pasteRot = document.getElementById("pasteRot");
+    pasteResult = document.getElementById("pasteResult");
+    pastePanelApplyBtn = document.getElementById("pastePanelApplyBtn");
+    pastePanelCancelBtn = document.getElementById("pastePanelCancelBtn");
 
     downloadBtn.addEventListener("click", exportSave);
     undoBtn.addEventListener("click", undo);
     redoBtn.addEventListener("click", redo);
     offsetApply.addEventListener("click", applyOffsetDialog);
     offsetCancel.addEventListener("click", closeOffsetDialog);
+    pastePanelApplyBtn.addEventListener("click", applyPastePanel);
+    pastePanelCancelBtn.addEventListener("click", cancelPlacement);
+    pastePosOriginal.addEventListener("change", onPastePosModeChange);
+    pastePosCustom.addEventListener("change", onPastePosModeChange);
+    pasteX.addEventListener("input", onPasteXYInput);
+    pasteY.addEventListener("input", onPasteXYInput);
+    pasteZ.addEventListener("input", onPasteXYInput);
+    pasteDx.addEventListener("input", onPasteAdjustInput);
+    pasteDy.addEventListener("input", onPasteAdjustInput);
+    pasteDz.addEventListener("input", onPasteAdjustInput);
+    pasteRot.addEventListener("change", onPasteAdjustInput);
+    pastePanel.addEventListener("keydown", function(e) {
+      if (e.key === "Enter") {
+        applyPastePanel();
+        e.preventDefault();
+      }
+    });
     offsetOverlay.addEventListener("click", function(e) {
       if (e.target === offsetOverlay) {
         closeOffsetDialog();
@@ -718,19 +988,23 @@ var EditorTool = (function() {
     });
 
     document.addEventListener("keydown", function(e) {
+      var inInput = e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
       if (e.key === "Escape") {
         cancelPlacement();
         closeOffsetDialog();
         return;
       }
-      if (placement && (e.key === "r" || e.key === "R")) {
+      if (placement && !inInput && (e.key === "r" || e.key === "R")) {
         placement.rotSteps = (placement.rotSteps + 1) % 4;
+        if (placement.mode !== "move") {
+          pasteRot.value = String((placement.rotSteps * 90) % 360);
+          refreshPasteResult();
+        }
         positionGhost();
         e.preventDefault();
         return;
       }
       // Ctrl+Z / Ctrl+Y / Ctrl+V outside of text inputs.
-      var inInput = e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
       if (!inInput && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
         undo();
         e.preventDefault();

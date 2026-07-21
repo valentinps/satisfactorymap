@@ -10,11 +10,13 @@ use crate::editor::apply::{
     patch_add_u32, patch_add_u64, rotate_quat_yaw, transform_xy, transform_vec3, write_f32,
     write_f64, EditPlan,
 };
-use crate::editor::ops::{ForeignActor, ForeignLightweight, ForeignPayload, LwRef};
+use crate::editor::ops::{ExtRef, ForeignActor, ForeignLightweight, ForeignPayload, LwRef};
 use crate::editor::session::{compress_body, decompress_body};
 use crate::editor::rename;
 use crate::error::{perr, PResult};
+use crate::gamedata;
 use crate::level::parse_one_header;
+use crate::mapdata::props;
 use crate::mapdata::scan::SaveScan;
 use crate::object::parse_object;
 use crate::reader::Cursor;
@@ -22,7 +24,7 @@ use crate::store::*;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Parse the frontend's lightweight-ref list (the wasm crate has no
 /// serde_json of its own).
@@ -37,24 +39,95 @@ pub fn inflate_payload(z: &str, z_len: u64) -> PResult<ForeignPayload> {
     serde_json::from_slice(&raw).map_err(|e| perr!("Bad clipboard payload: {}", e))
 }
 
+/// The resource a world-static node actor yields in `store`: the per-node
+/// game-mode override (randomized-nodes sessions write mResourceClassOverride)
+/// when present, else the static table's desc class. None when neither is
+/// known -- callers treat that as "cannot verify, don't relink".
+fn node_resource_type(store: &SaveStore, li: usize, oi: usize) -> Option<String> {
+    let data: &[u8] = &store.data;
+    if let Ok(object) = store.parse_object_at(li, oi) {
+        if let Some(r) = props::object_ref(&object.properties, data, b"mResourceClassOverride") {
+            let path = r.path_name.bytes(data);
+            if !path.is_empty() {
+                return Some(props::lossy(props::short_name(path)));
+            }
+        }
+    }
+    let name = store.levels[li].headers[oi].instance_name().bytes(data);
+    let entry = gamedata::get().resource_purity.get(std::str::from_utf8(name).ok()?)?;
+    Some(entry.0.clone())
+}
+
+/// Relink gate: the TARGET save has the same-named actor, of the same class,
+/// yielding the same resource the blob recorded from the source save. Any
+/// uncertainty (unknown actor, class mismatch, undeterminable resource on
+/// either side) fails the gate and the ref is tombstoned as before.
+fn relink_target_matches(
+    store: &SaveStore,
+    scan: &SaveScan,
+    path: &[u8],
+    er: &ExtRef,
+) -> bool {
+    if er.res.is_empty() {
+        return false;
+    }
+    let Some(&(li, oi)) = scan.by_instance_name.get(path) else {
+        return false;
+    };
+    let Header::Actor(a) = &store.levels[li].headers[oi] else {
+        return false;
+    };
+    if a.type_path.bytes(&store.data) != er.cls.as_bytes() {
+        return false;
+    }
+    node_resource_type(store, li, oi).as_deref() == Some(er.res.as_str())
+}
+
+/// True when `type_path` is a world-static resource actor (resource node,
+/// fracking core/satellite, geyser) -- the only refs a paste may relink.
+fn is_world_static_class(type_path: &[u8]) -> bool {
+    gamedata::get()
+        .type_paths
+        .mined_resources
+        .iter()
+        .any(|p| p.as_bytes() == type_path)
+}
+
 /// Serialize the expanded selection (actors + their components + fully
 /// internal wires, plus lightweight records) into the clipboard blob JSON.
-pub fn extract_clipboard(
+/// Returns the (possibly huge) blob plus a small metadata JSON -- everything
+/// the paste UI needs (anchor/bbox/count) without holding the blob itself.
+pub fn extract_clipboard_with_meta(
     store: &SaveStore,
     names: &[String],
     items: &[LwRef],
-) -> PResult<String> {
+) -> PResult<(String, String)> {
     let data: &[u8] = &store.data;
     let scan = SaveScan::new(store);
+    let gd = gamedata::get();
 
     let mut actors: Vec<serde_json::Value> = Vec::new();
     let mut bbox = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-    let mut grow = |x: f64, y: f64| {
+    // Z range travels too (blob "anchorZ") so the paste panel can offer an
+    // absolute-altitude field for cross-save pastes.
+    let mut zbox = [f64::INFINITY, f64::NEG_INFINITY];
+    let mut grow = |x: f64, y: f64, z: f64| {
         bbox[0] = bbox[0].min(x);
         bbox[1] = bbox[1].min(y);
         bbox[2] = bbox[2].max(x);
         bbox[3] = bbox[3].max(y);
+        zbox[0] = zbox[0].min(z);
+        zbox[1] = zbox[1].max(z);
     };
+
+    // Refs from copied extractor-type actors to world-static resource actors
+    // (nodes/cores/satellites/geysers): recorded with the resource they carry
+    // in THIS save so the paste can relink them in a byte-compatible target
+    // when -- and only when -- the target's same-named actor yields the same
+    // resource (randomized-node sessions differ per save).
+    let mut ext_refs: HashMap<String, ExtRef> = HashMap::new();
+    let extractor_classes: Vec<&[u8]> =
+        gd.type_paths.miners.iter().map(|p| p.as_bytes()).collect();
 
     let mut object_version: Option<i32> = None;
     if !names.is_empty() {
@@ -72,7 +145,32 @@ pub fn extract_clipboard(
                 "b": B64.encode(&data[b_off..b_off + b_len as usize]),
             }));
             if let Header::Actor(a) = &store.levels[li].headers[oi] {
-                grow(a.position[0] as f64, a.position[1] as f64);
+                grow(a.position[0] as f64, a.position[1] as f64, a.position[2] as f64);
+                // Only extractor-type buildings reference world-static
+                // resource actors, so everything else skips the re-parse.
+                if extractor_classes.contains(&a.type_path.bytes(data)) {
+                    let object = store.parse_object_at(li, oi)?;
+                    rename::visit_object_refs(&object, &mut |r: &ObjectRef| {
+                        let path = r.path_name.bytes(data);
+                        if path.is_empty() || path.starts_with(b"/") {
+                            return;
+                        }
+                        let Ok(path_str) = std::str::from_utf8(path) else { return };
+                        if ext_refs.contains_key(path_str) {
+                            return;
+                        }
+                        let Some(&(nli, noi)) = scan.by_instance_name.get(path) else { return };
+                        let Header::Actor(node) = &store.levels[nli].headers[noi] else { return };
+                        let cls = node.type_path.bytes(data);
+                        if !is_world_static_class(cls) {
+                            return;
+                        }
+                        ext_refs.insert(path_str.to_string(), ExtRef {
+                            cls: props::lossy(cls),
+                            res: node_resource_type(store, nli, noi).unwrap_or_default(),
+                        });
+                    });
+                }
             }
         }
     }
@@ -95,7 +193,7 @@ pub fn extract_clipboard(
                 "typePath": item.type_path,
                 "r": B64.encode(&lightweight_record_bytes(data, instance)?),
             }));
-            grow(instance.position[0], instance.position[1]);
+            grow(instance.position[0], instance.position[1], instance.position[2]);
         }
     }
 
@@ -112,22 +210,50 @@ pub fn extract_clipboard(
     });
 
     let anchor = [(bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0];
+    let anchor_z = (zbox[0] + zbox[1]) / 2.0;
+    let count = (names.len() + items.len()) as u64;
     // The payload is zlib-compressed: raw save bytes shrink ~6-10x, which is
     // what keeps six-figure copies inside OS-clipboard and JS-string limits.
-    let payload = json!({ "actors": actors, "lightweight": lightweight }).to_string();
+    let payload =
+        json!({ "actors": actors, "lightweight": lightweight, "extRefs": ext_refs }).to_string();
     let (compressed, raw_len) = compress_body(payload.as_bytes());
     drop(payload);
-    Ok(json!({
+    let blob = json!({
         "smapPaste": 2,
         "saveVersion": store.info.save_version,
         "objectVersion": object_version,
         "lightweightVersion": lightweight_version,
         "anchor": anchor,
+        "anchorZ": anchor_z,
         "bboxWorld": bbox,
+        "count": count,
         "zLen": raw_len as u64,
         "z": B64.encode(&compressed),
     })
-    .to_string())
+    .to_string();
+    // Everything the paste UI needs to plan a paste of this blob without
+    // holding the blob itself (the desktop shell keeps big blobs native-side
+    // and hands the frontend only this + a slot id).
+    let meta = json!({
+        "smapPaste": 3,
+        "anchor": anchor,
+        "anchorZ": anchor_z,
+        "bboxWorld": bbox,
+        "count": count,
+        "bytes": blob.len() as u64,
+    })
+    .to_string();
+    Ok((blob, meta))
+}
+
+/// `extract_clipboard_with_meta` without the metadata -- the browser/wasm
+/// path, where the whole blob goes onto the OS clipboard directly.
+pub fn extract_clipboard(
+    store: &SaveStore,
+    names: &[String],
+    items: &[LwRef],
+) -> PResult<String> {
+    Ok(extract_clipboard_with_meta(store, names, items)?.0)
 }
 
 /// One decoded foreign actor: header/body blobs plus the parsed model over a
@@ -200,11 +326,15 @@ pub(crate) fn plan_paste_external(
         (None, None) => None,
         _ => return Err(perr!("Bad clipboard data: z/zLen must come together")),
     };
-    let (foreign_actors, foreign_lightweight): (&[ForeignActor], &[ForeignLightweight]) =
-        match &inflated {
-            Some(p) => (&p.actors, &p.lightweight),
-            None => (foreign_actors, foreign_lightweight),
-        };
+    let no_ext_refs: HashMap<String, ExtRef> = HashMap::new();
+    let (foreign_actors, foreign_lightweight, ext_refs): (
+        &[ForeignActor],
+        &[ForeignLightweight],
+        &HashMap<String, ExtRef>,
+    ) = match &inflated {
+        Some(p) => (&p.actors, &p.lightweight, &p.ext_refs),
+        None => (foreign_actors, foreign_lightweight, &no_ext_refs),
+    };
 
     let data: &[u8] = &store.data;
     if save_version != store.info.save_version {
@@ -256,8 +386,15 @@ pub(crate) fn plan_paste_external(
         // with unrelated objects. Neutralize every numbered instance ref
         // (class/static paths start with '/' and are save-independent;
         // digitless instance refs are shared singletons that exist here too).
+        // Exception: refs the blob recorded as world-static resource actors
+        // (extRefs) survive when this save has the same-named actor with the
+        // same class AND resource -- level-placed node names are identical
+        // across saves of the map, so a miner pasted at its original spot
+        // stays attached to its node. The resource gate matters because
+        // randomized-node sessions reassign resources per save.
         let mut rng = rename::Rng(seed ^ 0x746f6d6273746f6e);
         let mut tombstones: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut relinked: HashSet<Vec<u8>> = HashSet::new();
         for f in &foreigns {
             let mut err: Option<crate::error::PError> = None;
             rename::visit_object_refs(&f.object, &mut |r: &ObjectRef| {
@@ -268,8 +405,15 @@ pub(crate) fn plan_paste_external(
                 if path.starts_with(b"/")
                     || rename_matcher.contains_any(path)
                     || tombstones.contains_key(path)
+                    || relinked.contains(path)
                 {
                     return;
+                }
+                if let Some(er) = std::str::from_utf8(path).ok().and_then(|p| ext_refs.get(p)) {
+                    if relink_target_matches(store, &scan, path, er) {
+                        relinked.insert(path.to_vec());
+                        return;
+                    }
                 }
                 match rename::tombstone_path(path, &mut rng, &exists) {
                     Ok(Some(t)) => {

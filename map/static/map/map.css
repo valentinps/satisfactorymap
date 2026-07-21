@@ -1907,15 +1907,6 @@ body.panelResizing #categoryDetailColumn {
 
 /* The placement ghost: selection bbox outline following the cursor. Inside
    the map pane so latLngToContainerPoint coordinates apply directly. */
-#editorGhost {
-  position: absolute;
-  z-index: 1400;
-  border: 2px dashed #ffb454;
-  background: rgba(255, 180, 84, 0.12);
-  border-radius: 3px;
-  pointer-events: none;
-}
-
 #editorHint {
   position: absolute;
   bottom: 64px;
@@ -2076,6 +2067,82 @@ body.panelResizing #categoryDetailColumn {
 #offsetDialogButtons button:hover {
   background: #33435a;
   color: #fff;
+}
+
+/* Paste placement panel: same visual language as #offsetDialog but docked
+   top-right and NON-modal -- map clicks pick the position while it's open. */
+#pastePanel {
+  position: fixed;
+  top: 72px;
+  /* Clear the altitude rail docked at the screen's right edge. */
+  right: calc(var(--altitude-width) + 12px);
+  z-index: 1500;
+  width: 300px;
+  padding: 16px;
+  background: #20232a;
+  border: 1px solid #3a3f4a;
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+  color: #eee;
+  font-size: 13px;
+}
+
+#pastePanelTitle {
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+#pastePosModes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  color: #aab2c0;
+}
+
+#pastePosModes label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.pastePanelDivider {
+  border-top: 1px solid #3a3f4a;
+  margin: 10px 0;
+}
+
+#pasteResult {
+  margin-top: 10px;
+  color: #8ab4f8;
+  font-size: 12px;
+  min-height: 15px;
+}
+
+#pastePanelButtons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+#pastePanelButtons button {
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid #3a5070;
+  background: #2a3545;
+  color: #8ab4f8;
+}
+
+#pastePanelButtons button:hover {
+  background: #33435a;
+  color: #fff;
+}
+
+#pastePanelApplyBtn {
+  font-weight: 600;
 }
 
 /* Download button turns amber once edits are pending. */

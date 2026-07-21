@@ -23,6 +23,12 @@ struct AppState {
     /// frontend pulls byte slices and parses per top-level chunk). Cleared by
     /// `payload_done` or replaced by the next load/edit.
     chunked_payload: Mutex<Option<Vec<u8>>>,
+    /// Native clipboard slots: big copy blobs stay HERE and only a small
+    /// pointer JSON crosses the webview/OS clipboard (WebView2 truncates
+    /// huge IPC strings -- an 800k-object blob runs to ~100MB+). Keyed by a
+    /// monotonic id; entries live until the app exits because committed
+    /// pasteExternal ops replay from them on every undo, across save loads.
+    clipboard_slots: Mutex<(u64, std::collections::HashMap<u64, String>)>,
 }
 
 /// Payloads at most this big go back as one raw `Response` (the standing
@@ -158,6 +164,10 @@ async fn apply_edits(
     on_progress: Channel<ProgressMsg>,
     state: State<'_, AppState>,
 ) -> Result<Response, String> {
+    let ops = {
+        let slots = state.clipboard_slots.lock().unwrap();
+        resolve_clipboard_slots(&ops, &slots.1)?
+    };
     let mut guard = state.session.lock().unwrap();
     let session = guard
         .as_mut()
@@ -188,15 +198,73 @@ async fn export_save(state: State<'_, AppState>) -> Result<Response, String> {
     Ok(Response::new(session.export_sav()?))
 }
 
+/// Blobs at most this big return whole (and land on the OS clipboard as the
+/// portable v2 format other tabs/the browser build can paste). Bigger ones
+/// stay in a native slot and only the pointer JSON crosses the IPC boundary.
+const INLINE_CLIPBOARD_MAX: usize = 8 * 1024 * 1024;
+
 #[tauri::command]
 async fn extract_clipboard(
     names: Vec<String>,
     lightweight: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let guard = state.session.lock().unwrap();
-    let session = guard.as_ref().ok_or_else(|| "No save loaded".to_string())?;
-    session.extract_clipboard(&names, &lightweight)
+    let (blob, meta) = {
+        let guard = state.session.lock().unwrap();
+        let session = guard.as_ref().ok_or_else(|| "No save loaded".to_string())?;
+        session.extract_clipboard_with_meta(&names, &lightweight)?
+    };
+    if blob.len() <= INLINE_CLIPBOARD_MAX {
+        return Ok(blob);
+    }
+    let mut slots = state.clipboard_slots.lock().unwrap();
+    slots.0 += 1;
+    let id = slots.0;
+    slots.1.insert(id, blob);
+    // meta is `{"smapPaste":3,...}` from the core; add the slot id.
+    let mut pointer: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&meta).map_err(|e| format!("Bad clipboard meta: {e}"))?;
+    pointer.insert("slot".into(), serde_json::json!(id));
+    Ok(serde_json::Value::Object(pointer).to_string())
+}
+
+/// Splice native-slot blobs back into pasteExternal ops: `{"op":...,"slot":N,
+/// ...}` becomes the op's own fields merged with the stored blob's fields
+/// (the blob JSON is inserted verbatim -- never parsed -- so a 100MB+ blob
+/// costs one memcpy, not a serde round-trip).
+fn resolve_clipboard_slots(
+    ops: &str,
+    slots: &std::collections::HashMap<u64, String>,
+) -> Result<String, String> {
+    if !ops.contains("\"slot\"") {
+        return Ok(ops.to_string());
+    }
+    let parsed: Vec<serde_json::Value> =
+        serde_json::from_str(ops).map_err(|e| format!("Bad edit ops: {e}"))?;
+    let mut parts: Vec<String> = Vec::with_capacity(parsed.len());
+    for mut op in parsed {
+        let slot_id = op.as_object().and_then(|o| o.get("slot")).and_then(|v| v.as_u64());
+        let Some(id) = slot_id else {
+            parts.push(op.to_string());
+            continue;
+        };
+        let blob = slots.get(&id).ok_or_else(|| {
+            "The copied objects are no longer in memory (the app was restarted since the copy) \
+             -- copy them again"
+                .to_string()
+        })?;
+        let obj = op.as_object_mut().expect("op with slot is an object");
+        obj.remove("slot");
+        // The blob carries the authoritative anchor (same value the pointer
+        // gave the frontend); dropping the op's copy avoids a duplicate key.
+        obj.remove("anchor");
+        let mut merged = op.to_string();
+        merged.pop(); // trailing '}'
+        merged.push(',');
+        merged.push_str(&blob[1..]); // blob starts with '{'
+        parts.push(merged);
+    }
+    Ok(format!("[{}]", parts.join(",")))
 }
 
 #[tauri::command]
@@ -342,6 +410,59 @@ async fn server_fetch_latest(
 }
 
 #[cfg(test)]
+mod slot_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn slot_op_merges_with_its_blob() {
+        let blob = serde_json::json!({
+            "smapPaste": 2, "saveVersion": 46, "objectVersion": 51,
+            "lightweightVersion": 1, "anchor": [10.0, 20.0],
+            "bboxWorld": [0.0, 0.0, 20.0, 40.0], "count": 3,
+            "zLen": 12, "z": "abc="
+        });
+        let mut slots = HashMap::new();
+        slots.insert(7u64, blob.to_string());
+        let ops = serde_json::json!([
+            {"op": "deleteActors", "names": ["X"]},
+            {"op": "pasteExternal", "slot": 7, "anchor": [10.0, 20.0],
+             "delta": [1.0, 2.0, 3.0], "rotateYawDeg": 90.0, "seed": 42}
+        ])
+        .to_string();
+        let resolved = resolve_clipboard_slots(&ops, &slots).unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&resolved).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0]["op"], "deleteActors");
+        let p = &parsed[1];
+        assert_eq!(p["op"], "pasteExternal");
+        assert!(p.get("slot").is_none());
+        assert_eq!(p["saveVersion"], 46);
+        assert_eq!(p["z"], "abc=");
+        assert_eq!(p["delta"][2], 3.0);
+        assert_eq!(p["rotateYawDeg"], 90.0);
+        assert_eq!(p["anchor"][1], 20.0);
+        // The merged op string parses as a real EditOp.
+        sav_core::editor::ops::parse_ops_json(&resolved).unwrap();
+    }
+
+    #[test]
+    fn missing_slot_is_a_plain_error() {
+        let ops = serde_json::json!([{"op": "pasteExternal", "slot": 99,
+            "anchor": [0.0, 0.0], "delta": [0.0, 0.0, 0.0], "seed": 1}])
+        .to_string();
+        let err = resolve_clipboard_slots(&ops, &HashMap::new()).unwrap_err();
+        assert!(err.contains("copy them again"), "{err}");
+    }
+
+    #[test]
+    fn slotless_ops_pass_through_verbatim() {
+        let ops = r#"[{"op":"moveActors","names":["A"],"delta":[1.0,2.0,0.0]}]"#;
+        assert_eq!(resolve_clipboard_slots(ops, &HashMap::new()).unwrap(), ops);
+    }
+}
+
+#[cfg(test)]
 mod chunk_tests {
     use super::*;
 
@@ -389,7 +510,11 @@ mod chunk_tests {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState { session: Mutex::new(None), chunked_payload: Mutex::new(None) })
+        .manage(AppState {
+            session: Mutex::new(None),
+            chunked_payload: Mutex::new(None),
+            clipboard_slots: Mutex::new((0, std::collections::HashMap::new())),
+        })
         .invoke_handler(tauri::generate_handler![
             load,
             apply_edits,

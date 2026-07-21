@@ -187,8 +187,22 @@ var SelectionTool = {};
       actorNames: [],
       lightweight: [],
       skipped: 0,
-      bbox: { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
+      // minZ/maxZ are altitude METERS (bucket z convention, stride - 1), so
+      // the paste panel can offer an absolute-altitude field; they stay
+      // Infinity when no editable record carries a z.
+      bbox: { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity,
+              minZ: Infinity, maxZ: -Infinity },
     };
+    // Altitude of one selected record, meters: same stride-1 slot the
+    // altitude filter reads (first vertex for line buckets).
+    function recordZ(r) {
+      var stride = r.bucket.pointStride;
+      if (r.bucket.lines) {
+        var line = r.bucket.lines[r.index];
+        return line ? line[stride - 1] : undefined;
+      }
+      return r.bucket.points ? r.bucket.points[r.index * stride + stride - 1] : undefined;
+    }
     selected.forEach(function(r) {
       total++;
       if (!byLabel.hasOwnProperty(r.bucket.label)) {
@@ -214,6 +228,11 @@ var SelectionTool = {};
         b.minY = Math.min(b.minY, r.y);
         b.maxX = Math.max(b.maxX, r.x);
         b.maxY = Math.max(b.maxY, r.y);
+        var z = recordZ(r);
+        if (typeof z === "number") {
+          b.minZ = Math.min(b.minZ, z);
+          b.maxZ = Math.max(b.maxZ, z);
+        }
       } else {
         editTargets.skipped++;
       }

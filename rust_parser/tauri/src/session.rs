@@ -195,14 +195,17 @@ impl AppSession {
             .to_string())
     }
 
-    /// Cross-save clipboard blob (JSON) for the given edit targets.
-    pub fn extract_clipboard(
+    /// Cross-save clipboard blob (JSON) for the given edit targets, plus the
+    /// small metadata JSON the command layer turns into a slot pointer when
+    /// the blob is too big to cross the IPC boundary.
+    pub fn extract_clipboard_with_meta(
         &self,
         names: &[String],
         lightweight_json: &str,
-    ) -> Result<String, String> {
+    ) -> Result<(String, String), String> {
         let items = editor::clipboard::parse_lw_refs(lightweight_json).map_err(|e| e.msg)?;
-        editor::clipboard::extract_clipboard(self.store()?, names, &items).map_err(|e| e.msg)
+        editor::clipboard::extract_clipboard_with_meta(self.store()?, names, &items)
+            .map_err(|e| e.msg)
     }
 
     /// The current (possibly edited) save re-serialized to downloadable .sav

@@ -8,3 +8,13 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# `cargo tauri dev` uses the dev profile; without these a debug sav_core makes
+# big-save parsing/copying 10-30x slower than release (zlib and base64 in
+# particular). Optimizing just the data-crunching crates keeps dev builds
+# usable while the shell crates stay fast to recompile.
+[profile.dev.package.sav_core]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 2
