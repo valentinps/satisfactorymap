@@ -5,7 +5,7 @@ Layout:
     index.html, *.js, *.css, vendor/, icons/   (from map/static/map/)
     tiles/{0..3}/{x}_{y}.png                   (pyramid cut from map_highres.png)
     pkg/sav_wasm.js, pkg/sav_wasm_bg.wasm      (wasm-pack --target no-modules)
-    _headers                                   (Cloudflare Pages: COOP/COEP + noindex)
+    _headers                                   (Cloudflare Pages: COOP/COEP)
 
 Prerequisites: game_data extracted (game_data/generated/*.json +
 map_highres.png; see README), Rust toolchain + wasm-pack.
@@ -25,15 +25,9 @@ STATIC = os.path.join(REPO, "map", "static", "map")
 # Never copied into dist/ (server-era or landing-page files).
 EXCLUDE = {"landing.html", "landing.js", "landing.css", "__pycache__"}
 
-# X-Robots-Tag: noindex keeps every search engine from indexing the deployment
-# while it's pre-release; delete that line and redeploy to launch publicly.
-# Deliberately NOT a robots.txt Disallow: blocking the crawl would stop Google
-# from ever SEEING the noindex, and blocked-but-linked URLs can still appear
-# in results as bare links.
 HEADERS = """/*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
-  X-Robots-Tag: noindex
 """
 
 TILE_SIZE = 256
