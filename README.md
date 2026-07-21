@@ -7,7 +7,7 @@ browser, without uploading anything anywhere.**
 account. Or get the [desktop app](#desktop-app) for saves too big for any
 browser.
 
-![The map with a 633,000-object mega-factory loaded](docs/screenshot.png)
+![The map with a 632,000-object mega-factory loaded](docs/screenshot.png)
 
 Your save is parsed **on your own machine** by a Rust parser compiled to
 WebAssembly. Nothing is uploaded, so there is nothing to wait for: a
