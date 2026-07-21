@@ -1,6 +1,6 @@
 [package]
 name = "sav_tauri"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Native desktop shell for the Satisfactory save map"
 default-run = "sav_tauri"
