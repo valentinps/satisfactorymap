@@ -52,6 +52,15 @@
        (panels.js drives open/close) instead of a strip of six bare icon
        tiles: the game icons alone were unreadable, the labels do the work.
        Row ids are load-bearing -- progression.js/finditem.js bind by id. -->
+  <!-- Desktop-app auto-update (panels.js): hidden until the Tauri updater
+       reports a newer release; click downloads + installs it. -->
+  <button id="updatePill" class="topPillButton" style="display:none">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15">
+      <path d="M12 21V10m0 0-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+    <span id="updatePillLabel">Update</span>
+  </button>
   <!-- Depot is an inventory view, not progression -- its own pill next to
        the dropdown, same style. -->
   <button id="depotIconButton" class="topPillButton" title="Dimensional Depot contents">

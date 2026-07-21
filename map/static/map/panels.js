@@ -69,6 +69,47 @@
     desktopAppLink.style.display = "none";
   }
 
+  // ---- Desktop auto-update (Tauri updater plugin) -------------------------
+  // Quiet check shortly after startup; a waiting update shows the accent
+  // pill in the top bar. Clicking downloads + verifies the signed installer
+  // and runs it (passive mode) -- on Windows the app exits into the
+  // installer and reopens updated. Any failure (offline, no latest.json on
+  // the newest release yet, endpoint change) is silently ignored: updating
+  // is never worth an error dialog on launch.
+  var updatePill = document.getElementById("updatePill");
+  var updatePillLabel = document.getElementById("updatePillLabel");
+  if (updatePill && window.__TAURI__ && window.__TAURI__.updater) {
+    setTimeout(function() {
+      window.__TAURI__.updater.check().then(function(update) {
+        if (!update) {
+          return;
+        }
+        updatePillLabel.textContent = "Update to v" + update.version;
+        updatePill.title = "A new version is ready -- click to download and install";
+        updatePill.style.display = "flex";
+        updatePill.addEventListener("click", function() {
+          updatePill.disabled = true;
+          var received = 0, total = 0;
+          update.downloadAndInstall(function(progress) {
+            if (progress.event === "Started") {
+              total = progress.data.contentLength || 0;
+            } else if (progress.event === "Progress") {
+              received += progress.data.chunkLength;
+              updatePillLabel.textContent = total
+                ? "Downloading… " + Math.round(received / total * 100) + "%"
+                : "Downloading…";
+            } else if (progress.event === "Finished") {
+              updatePillLabel.textContent = "Installing…";
+            }
+          }).catch(function() {
+            updatePill.disabled = false;
+            updatePillLabel.textContent = "Update failed — retry";
+          });
+        });
+      }).catch(function() { /* no manifest / offline: stay quiet */ });
+    }, 3000);
+  }
+
   // ---- "Progression" dropdown (top right) ---------------------------------
   // Open/close chrome only -- the rows' own click handlers live in
   // progression.js/finditem.js, bound by id. A row click bubbles here and

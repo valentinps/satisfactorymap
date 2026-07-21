@@ -633,6 +633,7 @@ mod chunk_tests {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             session: Mutex::new(None),
             chunked_payload: Mutex::new(None),

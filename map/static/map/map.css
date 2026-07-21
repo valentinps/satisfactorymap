@@ -467,6 +467,24 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
 }
 
+/* Desktop auto-update pill: accent-colored so a waiting update is
+   noticeable without nagging (no modal, no badge count). */
+#updatePill {
+  color: var(--accent-soft);
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+
+#updatePill:hover {
+  background: var(--accent-bg-hover);
+  color: #fff;
+}
+
+#updatePill:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
 #statusMenuButton .statusMenuChevron {
   color: var(--muted);
   transition: transform 0.15s ease;

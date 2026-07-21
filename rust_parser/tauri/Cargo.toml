@@ -1,6 +1,6 @@
 [package]
 name = "sav_tauri"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Native desktop shell for the Satisfactory save map"
 default-run = "sav_tauri"
@@ -23,6 +23,7 @@ tauri-build = { version = "2", features = [] }
 sav_core = { path = "../core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
 # Native OS-clipboard access for copy/paste blobs: WebView2's
 # navigator.clipboard.readText pops a permission prompt on every paste.
 arboard = { version = "3", default-features = false }
