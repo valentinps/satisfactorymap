@@ -359,6 +359,9 @@ fn write_value(out: &mut String, data: &[u8], v: &PropertyValue) {
                 // MapVal::Props converts to just the properties list (no
                 // propTypes pair -- convert.rs prop_list(..).0).
                 MapVal::Props(pl) => write_props(out, data, pl),
+                MapVal::Bool(x) => {
+                    let _ = write!(out, "{}", x);
+                }
                 MapVal::I32(x) => {
                     let _ = write!(out, "{}", x);
                 }

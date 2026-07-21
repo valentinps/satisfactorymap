@@ -163,6 +163,7 @@ pub enum MapKey {
 #[derive(Debug)]
 pub enum MapVal {
     Props(PropList),
+    Bool(u8),
     I32(i32),
     I64(i64),
     U8(u8),

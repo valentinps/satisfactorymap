@@ -763,6 +763,8 @@ pub fn parse_properties(
                             current_entity_save_version,
                             object_ue5_version,
                         )?),
+                        // Lenient like PropertyValue::Bool: non-0/1 bytes seen in the wild.
+                        "BoolProperty" => MapVal::Bool(c.u8()?),
                         "IntProperty" => MapVal::I32(c.i32()?),
                         "Int64Property" => MapVal::I64(c.i64()?),
                         "ByteProperty" => MapVal::U8(c.u8()?),
