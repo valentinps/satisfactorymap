@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "sav_tauri"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "reqwest 0.12.28",
  "sav_core",
