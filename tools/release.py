@@ -75,8 +75,10 @@ def main():
 
     if not args.skip_site_build:
         run([sys.executable, os.path.join(REPO, "tools", "build_site.py")])
+    # The CLI takes the key CONTENT (the _PATH variant isn't recognized by
+    # all tauri-cli versions); the key itself still never leaves this machine.
     env = dict(os.environ,
-               TAURI_SIGNING_PRIVATE_KEY_PATH=KEY_PATH,
+               TAURI_SIGNING_PRIVATE_KEY=open(KEY_PATH, encoding="utf-8").read(),
                TAURI_SIGNING_PRIVATE_KEY_PASSWORD="")
     run(["cargo", "tauri", "build"], cwd=os.path.join(REPO, "rust_parser", "tauri"), env=env)
 
