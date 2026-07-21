@@ -47,7 +47,10 @@ fastest way to open saves straight from your save folder. It can also pull
 the newest save **straight off a dedicated server** (the official server
 HTTPS API — the same one the in-game Server Manager uses): enter the
 server's address and admin password in the Save File panel and hit *Fetch
-latest save*. Download the
+latest save*. One firewall note: the API listens on **TCP** port 7777,
+while the game itself uses UDP — so the server must have TCP 7777 (or its
+custom port) open too, not just UDP
+([details](docs/server-fetch.md)). Download the
 installer from the
 [Releases page](https://github.com/valentinps/satisfactorymap/releases),
 or build it from source in a few minutes
