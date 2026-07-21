@@ -160,6 +160,7 @@ pub fn parse_object(
             let type_path_bytes = ah.type_path.bytes(c.data);
             let tp = std::str::from_utf8(type_path_bytes).unwrap_or("");
             if tables.conveyor_belts.iter().any(|b| b == tp) {
+                let count_field_off = c.pos;
                 let count = c.u32()?;
                 let mut items = Vec::with_capacity(count as usize);
                 // Items only sit on belts in saves that predate chain actors
@@ -187,7 +188,8 @@ pub fn parse_object(
                     let position = c.f32()?;
                     items.push((length, name, position));
                 }
-                actor_specific = ActorSpecific::ConveyorBelt(items);
+                actor_specific =
+                    ActorSpecific::ConveyorBelt { items, count_field_off, end_off: c.pos };
             } else if GAME_MODE_STATE.contains(&tp) {
                 let count = c.u32()?;
                 let mut refs = Vec::with_capacity(count as usize);
@@ -248,6 +250,7 @@ pub fn parse_object(
                 actor_specific = ActorSpecific::Vehicles(vehicles);
             } else if tp == LIGHTWEIGHT_SUBSYSTEM {
                 let lightweight_version = c.u32()?;
+                let group_count_field_off = c.pos;
                 let count1 = c.u32()?;
                 let mut items = Vec::with_capacity(count1 as usize);
                 for _ in 0..count1 {
@@ -348,7 +351,12 @@ pub fn parse_object(
                         instances,
                     });
                 }
-                actor_specific = ActorSpecific::Lightweight { version: lightweight_version, items };
+                actor_specific = ActorSpecific::Lightweight {
+                    version: lightweight_version,
+                    group_count_field_off,
+                    groups_end_off: c.pos,
+                    items,
+                };
             } else if CONVEYOR_CHAINS.contains(&tp) {
                 let _starting_belt = parse_object_reference(c)?;
                 let _ending_belt = parse_object_reference(c)?;

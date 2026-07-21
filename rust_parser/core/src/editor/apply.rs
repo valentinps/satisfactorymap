@@ -14,8 +14,9 @@ use crate::store::*;
 use std::collections::{BTreeSet, HashMap};
 
 /// The byte-level effect of one op, in PRE-op offsets. Patches never overlap
-/// inserts/removes (they target count/size fields and transform blocks), and
-/// a single plan never mixes inserts with removes.
+/// inserts/removes (they target count/size fields and transform blocks);
+/// inserts never fall inside removed spans (apply_plan remaps their offsets
+/// when a plan carries both).
 #[derive(Default)]
 pub struct EditPlan {
     pub(crate) patches: Vec<(usize, Vec<u8>)>,
@@ -40,8 +41,24 @@ pub fn apply_plan(body: &mut Vec<u8>, mut plan: EditPlan) -> PResult<()> {
         body[*at..at + bytes.len()].copy_from_slice(bytes);
     }
 
+    // A plan may hold both (chained-belt deletes write items back into
+    // surviving belts): removes run first, so shift each insert offset left
+    // by the removed bytes before it. Inserts never target removed spans.
     if !plan.removes.is_empty() && !plan.inserts.is_empty() {
-        return Err(perr!("Edit plan mixes inserts and removes"));
+        plan.removes.sort_by_key(|(at, _)| *at);
+        for (at, _) in &mut plan.inserts {
+            let mut shift = 0usize;
+            for &(r, len) in &plan.removes {
+                if r + len <= *at {
+                    shift += len;
+                } else if r >= *at {
+                    break;
+                } else {
+                    return Err(perr!("Edit plan inserts inside a removed span"));
+                }
+            }
+            *at -= shift;
+        }
     }
 
     if !plan.removes.is_empty() {
@@ -203,6 +220,40 @@ pub(crate) fn patch_add_u64(plan: &mut EditPlan, data: &[u8], off: usize, add: i
 // time from their byte spans, and the special actors a plan needs wholesale
 // (conveyor chains, power lines, the lightweight subsystem) are located by
 // their HEADER type paths -- headers are always retained.
+
+/// Reset every serialized mPipeNetworkID IntProperty in `body` to -1
+/// (unassigned). The network id is a plain int -- never an ObjectRef, so
+/// ref tombstoning misses it -- and it names an FGPipeNetwork object of the
+/// SOURCE save. A copy keeping it either points at a network that doesn't
+/// exist (cross-save paste: the game asserts in
+/// FGPipeSubsystem::AddFluidIntegrantToNetwork the moment anything touches
+/// the network) or shares a live network with the original (same-save
+/// duplicate: disjoint pipe graphs teleporting fluid). -1 makes the pipe
+/// subsystem flood-fill fresh networks at register time, exactly as for
+/// newly built pipes. Matched byte-exactly: [len 15]"mPipeNetworkID\0"
+/// [len 12]"IntProperty\0", then the 9 header bytes of either property
+/// layout (ue5 >= 1012: [type_a 0][size 4][pad 0]; older saves:
+/// [size 4][array index 0][pad 0]), then the i32 value.
+pub(crate) fn neutralize_pipe_network_ids(body: &mut [u8]) {
+    const HEAD: &[u8] = b"\x0f\x00\x00\x00mPipeNetworkID\x00\x0c\x00\x00\x00IntProperty\x00";
+    const NEW_TAIL: &[u8] = b"\x00\x00\x00\x00\x04\x00\x00\x00\x00";
+    const OLD_TAIL: &[u8] = b"\x04\x00\x00\x00\x00\x00\x00\x00\x00";
+    let mut i = 0;
+    while i + HEAD.len() + NEW_TAIL.len() + 4 <= body.len() {
+        if !body[i..].starts_with(HEAD) {
+            i += 1;
+            continue;
+        }
+        let t = i + HEAD.len();
+        if body[t..].starts_with(NEW_TAIL) || body[t..].starts_with(OLD_TAIL) {
+            let v = t + NEW_TAIL.len();
+            body[v..v + 4].copy_from_slice(&(-1i32).to_le_bytes());
+            i = v + 4;
+        } else {
+            i = t;
+        }
+    }
+}
 
 /// Slots of all actors whose type path exactly matches one of `candidates`.
 pub(crate) fn actor_slots_of_types(store: &SaveStore, candidates: &[&str]) -> Vec<(usize, usize)> {
@@ -428,15 +479,32 @@ fn plan_move_actors(
 }
 
 /// The one Lightweight subsystem object -- lightweight edits address groups
-/// inside it by type path. Located by header type path and parsed on demand;
-/// returns (level_idx, object_idx, owned groups).
-pub(crate) fn lightweight_subsystem(
-    store: &SaveStore,
-) -> PResult<(usize, usize, u32, Vec<LightweightGroup>)> {
+/// inside it by type path. Located by header type path and parsed on demand.
+pub(crate) struct LwSubsystem {
+    pub li: usize,
+    pub oi: usize,
+    pub version: u32,
+    /// Offset in `SaveStore.data` of the subsystem's u32 group count.
+    pub group_count_field_off: usize,
+    /// Offset just past the last group (new-group insertion point).
+    pub groups_end_off: usize,
+    pub groups: Vec<LightweightGroup>,
+}
+
+pub(crate) fn lightweight_subsystem(store: &SaveStore) -> PResult<LwSubsystem> {
     for (li, oi) in actor_slots_of_types(store, &[crate::object::LIGHTWEIGHT_SUBSYSTEM]) {
         let object = fetch(store, li, oi)?;
-        if let ActorSpecific::Lightweight { version, items } = object.actor_specific {
-            return Ok((li, oi, version, items));
+        if let ActorSpecific::Lightweight { version, group_count_field_off, groups_end_off, items } =
+            object.actor_specific
+        {
+            return Ok(LwSubsystem {
+                li,
+                oi,
+                version,
+                group_count_field_off,
+                groups_end_off,
+                groups: items,
+            });
         }
     }
     Err(perr!("Save has no lightweight buildable subsystem"))
@@ -453,7 +521,7 @@ fn plan_move_lightweight(
     if rotate_yaw_deg != 0.0 && pivot.is_none() {
         return Err(perr!("rotate requires a pivot"));
     }
-    let (_, _, _, groups) = lightweight_subsystem(store)?;
+    let groups = lightweight_subsystem(store)?.groups;
     for item in items {
         let group = groups
             .iter()
@@ -661,6 +729,7 @@ fn plan_duplicate_actors(
         rename_matcher.substitute(&mut body_copy);
         tombstone_matcher.substitute(&mut header_copy);
         tombstone_matcher.substitute(&mut body_copy);
+        neutralize_pipe_network_ids(&mut body_copy);
 
         if let Header::Actor(actor) = &store.levels[li].headers[oi] {
             let t = (actor.transform_off - h_off) as usize;
@@ -727,7 +796,7 @@ fn plan_duplicate_lightweight(
         return Err(perr!("rotate requires a pivot"));
     }
     let data: &[u8] = &store.data;
-    let (li, oi, _, groups) = lightweight_subsystem(store)?;
+    let LwSubsystem { li, oi, groups, .. } = lightweight_subsystem(store)?;
 
     let mut added_per_group: HashMap<usize, i64> = HashMap::new(); // count_field_off -> count
     let mut total_added = 0i64;
@@ -799,21 +868,19 @@ pub(crate) fn lightweight_record_bytes(
 // Deletion
 // ---------------------------------------------------------------------------
 
-/// belt instance names that appear in any conveyor chain (deleting one would
-/// leave the chain actor's packed belt list pointing at nothing, which the
-/// game -- and our own parser's chain handling -- can't tolerate). Chain
-/// actors are found by header type path and parsed on demand.
-fn chained_belt_names(store: &SaveStore) -> PResult<std::collections::HashSet<Vec<u8>>> {
-    let mut set = std::collections::HashSet::new();
-    for (li, oi) in actor_slots_of_types(store, &crate::object::CONVEYOR_CHAINS) {
-        let object = fetch(store, li, oi)?;
-        if let ActorSpecific::ConveyorChain { belts, .. } = &object.actor_specific {
-            for cb in belts {
-                set.insert(cb.belt.path_name.bytes(&store.data).to_vec());
-            }
-        }
-    }
-    Ok(set)
+/// One belt-format item record (the pre-chain per-belt layout, v44 item
+/// format -- chain actors only exist in saves past that gate): [u32 0
+/// InventoryItem padding][item class string][u32 0 no item state]
+/// [f32 position along the belt, cm].
+fn belt_item_record(path: &[u8], position: f32) -> Vec<u8> {
+    let mut r = Vec::with_capacity(path.len() + 17);
+    r.extend_from_slice(&0u32.to_le_bytes());
+    r.extend_from_slice(&(path.len() as u32 + 1).to_le_bytes());
+    r.extend_from_slice(path);
+    r.push(0);
+    r.extend_from_slice(&0u32.to_le_bytes());
+    r.extend_from_slice(&position.to_le_bytes());
+    r
 }
 
 fn plan_delete_actors(
@@ -832,23 +899,113 @@ fn plan_delete_actors(
         return Err(perr!("Cannot delete objects from different world levels at once"));
     }
 
-    let chained = chained_belt_names(store)?;
-    for &(li, oi) in &set {
-        let name = store.levels[li].headers[oi].instance_name().bytes(data);
-        if chained.contains(&name.to_vec()) {
-            return Err(perr!(
-                "Cannot delete {}: the belt is part of a conveyor chain (move it instead, or delete the whole line in game)",
-                String::from_utf8_lossy(name)
-            ));
-        }
-    }
-
-    // Also delete power lines with EITHER endpoint on a deleted actor -- a
-    // wire to nowhere renders and simulates wrong in game.
     let mut deleted_actor_names: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
     for &(li, oi) in &set {
         deleted_actor_names.insert(store.levels[li].headers[oi].instance_name().bytes(data));
     }
+
+    // A deleted belt drags its whole conveyor-chain ACTOR with it: the
+    // chain's packed belt list cannot point at a deleted belt. The line's
+    // other belts survive with a dangling mConveyorChainActor ref -- the
+    // game reads that as null and rebuilds chains on load (the same
+    // migration that upgrades pre-chain saves), re-splitting the line at
+    // the gap. And like cutting a line in game, only the DELETED segments'
+    // items are lost: every surviving belt gets its own slice of the
+    // chain's item ring written back as per-belt records (the pre-chain
+    // format that migration reads), so the rebuilt chains come up loaded.
+    // Full rationale + what to do if the game ever drops this migration
+    // path: docs/chained-belt-delete.md.
+    let mut extra_chains: Vec<(usize, usize)> = Vec::new();
+    // (belt li, belt oi, count field, insert offset, record bytes, count)
+    let mut belt_writebacks: Vec<(usize, usize, usize, usize, Vec<u8>, i64)> = Vec::new();
+    for (li, oi) in actor_slots_of_types(store, &crate::object::CONVEYOR_CHAINS) {
+        if set.contains(&(li, oi)) {
+            continue;
+        }
+        let object = fetch(store, li, oi)?;
+        let ActorSpecific::ConveyorChain {
+            belts, items, maximum_items, chain_lead_item_index, ..
+        } = &object.actor_specific
+        else {
+            continue;
+        };
+        if !belts.iter().any(|cb| deleted_actor_names.contains(cb.belt.path_name.bytes(data))) {
+            continue;
+        }
+        if li != level_idx {
+            return Err(perr!(
+                "Cannot delete: the belt's conveyor chain lives in a different world level"
+            ));
+        }
+        extra_chains.push((li, oi));
+        if items.is_empty() || *maximum_items <= 0 || *chain_lead_item_index < 0 {
+            continue;
+        }
+        let maximum = *maximum_items as i64;
+        for cb in belts {
+            let belt_path = cb.belt.path_name.bytes(data);
+            if deleted_actor_names.contains(belt_path)
+                || cb.lead_item_index < 0
+                || cb.tail_item_index < 0
+            {
+                continue;
+            }
+            let Some(&(bli, boi)) = scan.by_instance_name.get(belt_path) else { continue };
+            // This belt's contiguous window of the chain's slot ring (the
+            // same arithmetic the tooltip's per-segment item list uses).
+            let start = (cb.lead_item_index as i64 - *chain_lead_item_index as i64)
+                .rem_euclid(maximum) as usize;
+            let count = (cb.tail_item_index as i64 - cb.lead_item_index as i64)
+                .rem_euclid(maximum) as usize
+                + 1;
+            let slots: Vec<(usize, &[u8])> = items
+                .iter()
+                .skip(start)
+                .take(count)
+                .enumerate()
+                .filter_map(|(j, (p, _))| {
+                    let b = p.bytes(data);
+                    (!b.is_empty() && b.is_ascii()).then_some((j, b))
+                })
+                .collect();
+            if slots.is_empty() {
+                continue;
+            }
+            let belt_object = fetch(store, bli, boi)?;
+            let ActorSpecific::ConveyorBelt { count_field_off, end_off, .. } =
+                &belt_object.actor_specific
+            else {
+                continue; // modded belt type outside the known tables
+            };
+            // Belt length from the chain's spline chords: slots span the
+            // belt uniformly, so slot index -> distance along the belt.
+            // Approximate is fine -- the game re-derives exact positions.
+            let mut belt_len = 0f64;
+            for w in cb.elements.windows(2) {
+                let (a, b) = (w[0][0], w[1][0]);
+                belt_len +=
+                    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+            }
+            if !belt_len.is_finite() || belt_len <= 0.0 {
+                belt_len = 100.0;
+            }
+            let mut records = Vec::new();
+            for &(j, path) in &slots {
+                let position = (belt_len * (j as f64 + 0.5) / count as f64) as f32;
+                records.extend_from_slice(&belt_item_record(path, position));
+            }
+            belt_writebacks.push((
+                bli,
+                boi,
+                *count_field_off,
+                *end_off,
+                records,
+                slots.len() as i64,
+            ));
+        }
+    }
+    // Also delete power lines with EITHER endpoint on a deleted actor -- a
+    // wire to nowhere renders and simulates wrong in game.
     let owner_deleted = |endpoint: &ObjectRef| -> bool {
         if endpoint.path_name.is_empty() {
             return false;
@@ -875,9 +1032,9 @@ fn plan_delete_actors(
             }
         }
     }
-    for (li, oi) in extra_wires {
+    for (li, oi) in extra_wires.into_iter().chain(extra_chains) {
         full_set.insert((li, oi));
-        // A wire's own components (if any) go with it.
+        // A cascade-deleted actor's own components (if any) go with it.
         if let Some((_, components)) = &fetch(store, li, oi)?.actor_reference_associations {
             for comp in components {
                 if comp.path_name.is_empty() {
@@ -902,18 +1059,35 @@ fn plan_delete_actors(
         removed_body_bytes += b_len as i64;
     }
 
+    // Belt-item write-backs grow surviving belt bodies (insert offsets are
+    // pre-remove; apply_plan remaps them past the removed spans).
+    let mut inserted_body_bytes = 0i64;
+    for (bli, boi, count_field_off, end_off, records, n) in belt_writebacks {
+        inserted_body_bytes += records.len() as i64;
+        patch_add_u32(plan, data, count_field_off, n);
+        // Belt object body grows: [gv u32][migrate u32][object_size u32].
+        let object_size_field = store.levels[bli].object_spans[boi].0 as usize + 8;
+        patch_add_u32(plan, data, object_size_field, records.len() as i64);
+        plan.inserts.push((end_off, records));
+    }
+
     let n_removed = full_set.len() as i64;
     let spans = &level.spans;
     patch_add_u64(plan, data, spans.header_size_field_off as usize, -removed_header_bytes);
     patch_add_u32(plan, data, spans.header_size_field_off as usize + 8, -n_removed);
-    patch_add_u64(plan, data, spans.objects_size_field_off as usize, -removed_body_bytes);
+    patch_add_u64(
+        plan,
+        data,
+        spans.objects_size_field_off as usize,
+        inserted_body_bytes - removed_body_bytes,
+    );
     patch_add_u32(plan, data, spans.object_count_field_off as usize, -n_removed);
     Ok(())
 }
 
 fn plan_delete_lightweight(store: &SaveStore, plan: &mut EditPlan, items: &[LwRef]) -> PResult<()> {
     let data: &[u8] = &store.data;
-    let (li, oi, _, groups) = lightweight_subsystem(store)?;
+    let LwSubsystem { li, oi, groups, .. } = lightweight_subsystem(store)?;
 
     let mut removed_per_group: HashMap<usize, i64> = HashMap::new();
     let mut seen: BTreeSet<(usize, u32)> = BTreeSet::new(); // (count_field_off, index)

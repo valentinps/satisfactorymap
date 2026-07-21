@@ -225,6 +225,12 @@ const SaveClient = (() => {
          }
          case "exportSave":
             return invoke("export_save").then((bytes) => new Uint8Array(bytes));
+         case "exportSaveDialog":
+            return invoke("export_save_dialog", { defaultName: msg.defaultName });
+         case "writeClipboardText":
+            return invoke("clipboard_write_text", { text: msg.text });
+         case "readPasteBlob":
+            return invoke("read_paste_blob");
          case "extractClipboard":
             return invoke("extract_clipboard", {
                names: msg.names,
@@ -400,6 +406,21 @@ const SaveClient = (() => {
       // possibly edited, save re-serialized; the uploaded file is untouched).
       exportSave() {
          return request({ op: "exportSave" });
+      },
+      // Desktop only: native Save-as dialog + direct-to-disk write on the
+      // Rust side. Resolves to the written path, or null on cancel.
+      exportSaveDialog(defaultName) {
+         return request({ op: "exportSaveDialog", defaultName });
+      },
+      // Desktop only: OS-clipboard text via the native side -- WebView2's
+      // navigator.clipboard prompts for permission on read.
+      writeClipboardText(text) {
+         return request({ op: "writeClipboardText", text });
+      },
+      // Desktop only: paste blob off the OS clipboard (null when it holds
+      // none); big cross-app blobs come back as a native-slot pointer.
+      readPasteBlob() {
+         return request({ op: "readPasteBlob" });
       },
       // extractClipboard(names, lightweight) -> Promise<string>: the
       // cross-save clipboard blob JSON for the given edit targets.

@@ -73,7 +73,10 @@ var EditorTool = (function() {
   function isEditableBucket(bucket) {
     return bucket.key.indexOf("building:") === 0
       || bucket.key.indexOf("line:belt:") === 0
-      || bucket.key.indexOf("line:pipe:") === 0;
+      || bucket.key.indexOf("line:pipe:") === 0
+      || bucket.key === "line:railroads"
+      || bucket.key === "line:hypertubes"
+      || bucket.key.indexOf("line:vehiclePath:") === 0;
   }
 
   function parseLightweightId(id) {
@@ -463,7 +466,7 @@ var EditorTool = (function() {
     // Extracting 100k+ objects takes a noticeable moment in the worker, so
     // it runs under the busy overlay -- otherwise a big Copy looks like
     // nothing happened until the status line quietly changes.
-    if (navigator.clipboard && navigator.clipboard.writeText) {
+    if (window.__TAURI__ || (navigator.clipboard && navigator.clipboard.writeText)) {
       SaveLoadFlow.showBusy("Copying " + n.toLocaleString() + " object" + (n === 1 ? "" : "s") + "…");
       SaveClient.extractClipboard(targets.actorNames, targets.lightweight)
         .then(function(json) {
@@ -472,7 +475,11 @@ var EditorTool = (function() {
           if (json.length > 200e6) {
             throw new Error("too many objects for the browser clipboard — use the desktop app");
           }
-          return navigator.clipboard.writeText(json);
+          // Desktop: write native-side, off WebView2's permission-gated
+          // clipboard API.
+          return window.__TAURI__
+            ? SaveClient.writeClipboardText(json)
+            : navigator.clipboard.writeText(json);
         })
         .then(function() {
           SaveLoadFlow.hideBusy();
@@ -489,16 +496,28 @@ var EditorTool = (function() {
     }
   }
 
+  // OS-clipboard text a paste could use, or null. Desktop reads native-side:
+  // WebView2's navigator.clipboard.readText pops a permission prompt on
+  // every Ctrl+V (and big cross-app blobs come back as a slot pointer).
+  function readOsClipboardText() {
+    if (window.__TAURI__) {
+      return SaveClient.readPasteBlob().catch(function() { return null; });
+    }
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      return Promise.resolve(null);
+    }
+    return navigator.clipboard.readText().catch(function() {
+      return null; // permission denied / unfocused: same-tab paste only
+    });
+  }
+
   // What a paste would use right now: the in-tab clipboard when set, else a
   // cross-tab blob from the OS clipboard (written by copyTargets in any tab).
   function resolvePaste() {
     if (clipboard) {
       return Promise.resolve({ mode: "internal" });
     }
-    if (!navigator.clipboard || !navigator.clipboard.readText) {
-      return Promise.resolve(null);
-    }
-    return navigator.clipboard.readText().then(function(text) {
+    return readOsClipboardText().then(function(text) {
       if (!text || text.length > 200e6 || text.indexOf("\"smapPaste\"") === -1) {
         return null;
       }
@@ -520,8 +539,6 @@ var EditorTool = (function() {
         return null;
       }
       return { mode: "external", blob: blob };
-    }, function() {
-      return null; // permission denied / unfocused: same-tab paste only
     });
   }
 
@@ -899,19 +916,28 @@ var EditorTool = (function() {
     downloadBtn.disabled = true;
     downloadBtn.textContent = "Exporting…";
     SaveLoadFlow.showBusy("Exporting save…");
-    SaveClient.exportSave()
-      .then(function(bytes) {
-        var blob = new Blob([bytes], { type: "application/octet-stream" });
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement("a");
-        a.href = url;
-        a.download = downloadName();
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        // Give the click a tick to start the download before revoking.
-        setTimeout(function() { URL.revokeObjectURL(url); }, 5000);
-      })
+    // Desktop: native Save-as dialog, written to disk from the Rust side.
+    // The browser-style anchor click below would hand WebView2 an invisible
+    // silent download into the Downloads folder.
+    var job = window.__TAURI__
+      ? SaveClient.exportSaveDialog(downloadName()).then(function(path) {
+          if (path) {
+            SaveLoadFlow.setStatus("Saved " + path);
+          }
+        })
+      : SaveClient.exportSave().then(function(bytes) {
+          var blob = new Blob([bytes], { type: "application/octet-stream" });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement("a");
+          a.href = url;
+          a.download = downloadName();
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          // Give the click a tick to start the download before revoking.
+          setTimeout(function() { URL.revokeObjectURL(url); }, 5000);
+        });
+    job
       .catch(function(error) {
         SaveLoadFlow.setStatus("Failed to export save: " + (error && error.message || error));
       })

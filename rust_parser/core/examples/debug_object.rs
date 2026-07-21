@@ -37,7 +37,7 @@ fn find_belts(store: &sav_core::store::SaveStore) {
             }
             match store.parse_object_at(li, oi) {
                 Ok(o) => {
-                    if let sav_core::store::ActorSpecific::ConveyorBelt(items) = &o.actor_specific {
+                    if let sav_core::store::ActorSpecific::ConveyorBelt { items, .. } = &o.actor_specific {
                         if items.is_empty() {
                             continue;
                         }

@@ -9,3 +9,5 @@ Buildings icons: add icons of buildings instead of colored dots in the filter li
 Stacking belt issue
 
 Stackable poles no tooltip
+
+Fix selection blue overlay not being properly rotated.

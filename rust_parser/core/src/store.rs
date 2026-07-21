@@ -256,8 +256,18 @@ pub struct ChainBelt {
 #[derive(Debug)]
 pub enum ActorSpecific {
     None,
-    /// Conveyor belt items: [length, name, position]
-    ConveyorBelt(Vec<(u32, StrRef, f32)>),
+    /// Conveyor belt/lift items, the pre-chain per-belt format: [u32
+    /// InventoryItem padding, item class, position along the belt]. Dormant
+    /// on current saves (chain actors own belt items since 1.0), but the
+    /// delete engine writes records back here when a chain is deleted -- the
+    /// game reads them when it rebuilds chains on load.
+    ConveyorBelt {
+        items: Vec<(u32, StrRef, f32)>,
+        /// Offset in `SaveStore.data` of the belt's u32 item count.
+        count_field_off: usize,
+        /// Offset just past the last item record (insertion point).
+        end_off: usize,
+    },
     /// GameMode / GameState: list of ObjectReference
     RefList(Vec<ObjectRef>),
     /// BP_PlayerState_C trailing size 1, type 3: bare int
@@ -275,7 +285,14 @@ pub enum ActorSpecific {
     /// Wheeled vehicles: [[name, bytes(105)], ...]
     Vehicles(Vec<(StrRef, DataRef)>),
     /// FGLightweightBuildableSubsystem: [version, [path, instances], ...]
-    Lightweight { version: u32, items: Vec<LightweightGroup> },
+    Lightweight {
+        version: u32,
+        /// Offset in `SaveStore.data` of the subsystem's u32 group count.
+        group_count_field_off: usize,
+        /// Offset just past the last group (new-group insertion point).
+        groups_end_off: usize,
+        items: Vec<LightweightGroup>,
+    },
     /// FGConveyorChainActor*: 7-element list
     ConveyorChain {
         chain_actor: ObjectRef,

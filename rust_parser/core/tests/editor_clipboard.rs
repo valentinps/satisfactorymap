@@ -166,6 +166,225 @@ fn paste_lightweight_into_another_save() {
     assert_eq!(count_in(&target2), before + 1);
 }
 
+/// Pasting a lightweight type the target save has never built synthesizes a
+/// brand-new subsystem group instead of demanding "build one first": rewrite
+/// the blob's type path to one no save can already contain, paste two
+/// records, and check the new group parses back with both instances.
+#[test]
+fn paste_lightweight_type_absent_from_target() {
+    let source = load("All_autosave_0.sav");
+    let target = load("All_autosave_1.sav");
+    let tables = ClassTables::embedded();
+
+    let groups_of = |s: &SaveStore| -> Vec<(String, usize)> {
+        for level in &s.levels {
+            for object in level.parsed_objects() {
+                if let ActorSpecific::Lightweight { items, .. } = &object.actor_specific {
+                    return items
+                        .iter()
+                        .map(|g| (g.type_path.to_string(&s.data), g.instances.len()))
+                        .collect();
+                }
+            }
+        }
+        Vec::new()
+    };
+    let (type_path, _) = groups_of(&source)
+        .into_iter()
+        .find(|(_, n)| *n >= 2)
+        .expect("source save has a lightweight type with two instances");
+
+    let lw = vec![
+        LwRef { type_path: type_path.clone(), index: 0 },
+        LwRef { type_path: type_path.clone(), index: 1 },
+    ];
+    let blob_json = extract_clipboard(&source, &[], &lw).unwrap();
+
+    // Retarget every copied record to a fabricated class absent everywhere.
+    let fake = "/Game/FactoryGame/Test/Build_SyntheticWall.Build_SyntheticWall_C";
+    let mut blob: serde_json::Value = serde_json::from_str(&blob_json).unwrap();
+    let mut payload = sav_core::editor::clipboard::inflate_payload(
+        blob["z"].as_str().unwrap(),
+        blob["zLen"].as_u64().unwrap(),
+    )
+    .unwrap();
+    for fl in &mut payload.lightweight {
+        fl.type_path = fake.into();
+    }
+    let raw = serde_json::to_vec(&payload).unwrap();
+    let (compressed, raw_len) = sav_core::editor::session::compress_body(&raw);
+    blob["z"] = json!(base64_std(&compressed));
+    blob["zLen"] = json!(raw_len as u64);
+
+    let groups_before = groups_of(&target);
+    assert!(groups_before.iter().all(|(t, _)| t != fake));
+
+    let op = op_from_blob(&blob.to_string(), [2000.0, 2000.0, 0.0]);
+    let target2 = session::step(&target, &op, &tables).unwrap();
+
+    let groups_after = groups_of(&target2);
+    assert_eq!(groups_after.len(), groups_before.len() + 1, "one new group");
+    let (_, n) = groups_after.iter().find(|(t, _)| t == fake).expect("synthesized group present");
+    assert_eq!(*n, 2, "both records landed in the new group");
+    for (t, n) in &groups_before {
+        assert_eq!(groups_after.iter().find(|(t2, _)| t2 == t).unwrap().1, *n, "{t} unchanged");
+    }
+
+    // The edited target still round-trips through export.
+    let exported = export_sav(&target2.file_header, effective_body(&target2));
+    parse_full_save(&exported, &tables, None).unwrap();
+}
+
+/// Pasted pipes must not keep the source save's pipe-network id: the id
+/// names an FGPipeNetwork object that doesn't exist in the target save, and
+/// the game asserts (FGPipeSubsystem.cpp:560) the moment anything touches
+/// that network. The paste resets every copied mPipeNetworkID to -1 so the
+/// subsystem builds fresh networks on load, like for newly built pipes.
+#[test]
+fn pasted_pipe_network_id_is_reset() {
+    let source = load("All_autosave_0.sav");
+    let target = load("All_autosave_1.sav");
+    let tables = ClassTables::embedded();
+    let prefix = "/Game/FactoryGame/Buildable/Factory/Pipeline/Build_Pipeline";
+
+    // A pipe whose components carry a real network id in the source save.
+    let scan_src = SaveScan::new(&source);
+    let mut picked: Option<String> = None;
+    'outer: for (li, level) in source.levels.iter().enumerate() {
+        for (oi, header) in level.headers.iter().enumerate() {
+            let Header::Actor(a) = header else { continue };
+            if !a.type_path.to_string(&source.data).starts_with(prefix) {
+                continue;
+            }
+            let object = source.parse_object_at(li, oi).unwrap();
+            let Some((_, comps)) = &object.actor_reference_associations else { continue };
+            for comp in comps {
+                let Some(&(cli, coi)) =
+                    scan_src.by_instance_name.get(comp.path_name.bytes(&source.data))
+                else {
+                    continue;
+                };
+                let comp_object = source.parse_object_at(cli, coi).unwrap();
+                let id = sav_core::mapdata::props::int(
+                    &comp_object.properties,
+                    &source.data,
+                    b"mPipeNetworkID",
+                );
+                if matches!(id, Some(id) if id >= 0) {
+                    picked = Some(a.instance_name.to_string(&source.data));
+                    break 'outer;
+                }
+            }
+        }
+    }
+    let Some(name) = picked else {
+        eprintln!("no pipe with an assigned network id; skipping");
+        return;
+    };
+
+    let blob_json = extract_clipboard(&source, &[name], &[]).unwrap();
+    let op = op_from_blob(&blob_json, [3000.0, 0.0, 0.0]);
+    let target2 = session::step(&target, &op, &tables).unwrap();
+
+    // Every component of the pasted pipe has id -1 (none keep a source id).
+    let scan_before = SaveScan::new(&target);
+    let scan2 = SaveScan::new(&target2);
+    let mut checked = 0;
+    for (li, level) in target2.levels.iter().enumerate() {
+        for (oi, header) in level.headers.iter().enumerate() {
+            let Header::Actor(a) = header else { continue };
+            if !a.type_path.to_string(&target2.data).starts_with(prefix)
+                || scan_before
+                    .by_instance_name
+                    .contains_key(a.instance_name.bytes(&target2.data))
+            {
+                continue;
+            }
+            let object = target2.parse_object_at(li, oi).unwrap();
+            let Some((_, comps)) = &object.actor_reference_associations else { continue };
+            for comp in comps {
+                let Some(&(cli, coi)) =
+                    scan2.by_instance_name.get(comp.path_name.bytes(&target2.data))
+                else {
+                    continue;
+                };
+                let comp_object = target2.parse_object_at(cli, coi).unwrap();
+                if let Some(id) = sav_core::mapdata::props::int(
+                    &comp_object.properties,
+                    &target2.data,
+                    b"mPipeNetworkID",
+                ) {
+                    assert_eq!(id, -1, "pasted pipe component kept a source network id");
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "pasted pipe's connection components not found");
+
+    let exported = export_sav(&target2.file_header, effective_body(&target2));
+    parse_full_save(&exported, &tables, None).unwrap();
+}
+
+/// A pasted sign keeps its widget-layout asset ref intact: soft refs carry
+/// the asset path in the LEVEL slot and the widget class in the path slot
+/// ("BPW_Sign4x1_2_C"); the tombstoner must not mistake that class name for
+/// a dangling instance ref -- that was the "pasted signs are blank" bug.
+#[test]
+fn pasted_sign_keeps_layout_ref() {
+    let source = load("All_autosave_0.sav");
+    let target = load("All_autosave_1.sav");
+    let tables = ClassTables::embedded();
+
+    let mut found: Option<(usize, usize, String)> = None;
+    for (li, level) in source.levels.iter().enumerate() {
+        for (oi, header) in level.headers.iter().enumerate() {
+            let Header::Actor(a) = header else { continue };
+            if a.type_path.to_string(&source.data).contains("WidgetSign") {
+                found = Some((li, oi, a.instance_name.to_string(&source.data)));
+            }
+        }
+    }
+    let Some((li, oi, name)) = found else {
+        eprintln!("no widget signs; skipping");
+        return;
+    };
+    let layout_of = |s: &SaveStore, li: usize, oi: usize| -> Option<(String, String)> {
+        let object = s.parse_object_at(li, oi).unwrap();
+        match sav_core::extract::find_prop(&object.properties, &s.data, b"mSoftActivePrefabLayout")
+        {
+            Some(sav_core::store::PropertyValue::SoftObject(r, _)) => {
+                Some((r.level_name.to_string(&s.data), r.path_name.to_string(&s.data)))
+            }
+            _ => None,
+        }
+    };
+    let original = layout_of(&source, li, oi);
+    assert!(original.is_some(), "sign has no soft layout ref");
+
+    let blob_json = extract_clipboard(&source, &[name], &[]).unwrap();
+    let op = op_from_blob(&blob_json, [500.0, 0.0, 0.0]);
+    let target2 = session::step(&target, &op, &tables).unwrap();
+
+    let scan_before = SaveScan::new(&target);
+    let mut checked = false;
+    for (pli, level) in target2.levels.iter().enumerate() {
+        for (poi, header) in level.headers.iter().enumerate() {
+            let Header::Actor(a) = header else { continue };
+            if !a.type_path.to_string(&target2.data).contains("WidgetSign")
+                || scan_before
+                    .by_instance_name
+                    .contains_key(a.instance_name.bytes(&target2.data))
+            {
+                continue;
+            }
+            assert_eq!(layout_of(&target2, pli, poi), original, "layout ref changed");
+            checked = true;
+        }
+    }
+    assert!(checked, "pasted sign not found");
+}
+
 /// Six-figure copy/paste on the 600k-object save: run explicitly with
 /// `cargo test --release --test editor_clipboard -- --ignored`.
 #[test]

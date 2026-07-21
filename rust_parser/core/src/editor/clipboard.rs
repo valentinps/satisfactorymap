@@ -8,7 +8,7 @@
 use crate::editor::apply::{
     self, expand_duplicate_set, lightweight_record_bytes, lightweight_subsystem,
     patch_add_u32, patch_add_u64, rotate_quat_yaw, transform_xy, transform_vec3, write_f32,
-    write_f64, EditPlan,
+    write_f64, EditPlan, LwSubsystem,
 };
 use crate::editor::ops::{ExtRef, ForeignActor, ForeignLightweight, ForeignPayload, LwRef};
 use crate::editor::session::{compress_body, decompress_body};
@@ -37,6 +37,19 @@ pub fn inflate_payload(z: &str, z_len: u64) -> PResult<ForeignPayload> {
     let compressed = B64.decode(z).map_err(|e| perr!("Bad clipboard data: {}", e))?;
     let raw = decompress_body(&compressed, z_len as usize)?;
     serde_json::from_slice(&raw).map_err(|e| perr!("Bad clipboard payload: {}", e))
+}
+
+/// Append a save-format string (i32 length incl. null + ASCII bytes + null
+/// terminator). Type paths are ASCII in practice; anything else can't
+/// round-trip through the narrow encoding, so refuse rather than corrupt.
+fn encode_save_string(out: &mut Vec<u8>, s: &str) -> PResult<()> {
+    if !s.is_ascii() || s.bytes().any(|b| b == 0) {
+        return Err(perr!("Cannot encode non-ASCII type path {:?}", s));
+    }
+    out.extend_from_slice(&(s.len() as u32 + 1).to_le_bytes());
+    out.extend_from_slice(s.as_bytes());
+    out.push(0);
+    Ok(())
 }
 
 /// The resource a world-static node actor yields in `store`: the per-node
@@ -178,7 +191,7 @@ pub fn extract_clipboard_with_meta(
     let mut lightweight: Vec<serde_json::Value> = Vec::new();
     let mut lightweight_version: Option<u32> = None;
     if !items.is_empty() {
-        let (_, _, version, groups) = lightweight_subsystem(store)?;
+        let LwSubsystem { version, groups, .. } = lightweight_subsystem(store)?;
         lightweight_version = Some(version);
         for item in items {
             let group = groups
@@ -401,6 +414,14 @@ pub(crate) fn plan_paste_external(
                 if err.is_some() || r.path_name.is_empty() {
                     return;
                 }
+                // Asset-scoped refs put the asset path in the LEVEL part
+                // (SoftObjectProperty: level "/Game/.../BPW_Sign4x1_2",
+                // path "BPW_Sign4x1_2_C" -- a sign layout's widget class).
+                // Those are static data, not save instances: tombstoning
+                // one blanks every pasted sign. Keep them verbatim.
+                if r.level_name.bytes(&f.combined).starts_with(b"/") {
+                    return;
+                }
                 let path = r.path_name.bytes(&f.combined);
                 if path.starts_with(b"/")
                     || rename_matcher.contains_any(path)
@@ -438,6 +459,7 @@ pub(crate) fn plan_paste_external(
             rename_matcher.substitute(&mut body_copy);
             tombstone_matcher.substitute(&mut header_copy);
             tombstone_matcher.substitute(&mut body_copy);
+            apply::neutralize_pipe_network_ids(&mut body_copy);
 
             if let Header::Actor(actor) = &f.header {
                 // transform_off was recorded relative to the combined buffer,
@@ -486,7 +508,14 @@ pub(crate) fn plan_paste_external(
     let mut lw_total = 0i64;
     let mut lw_subsystem: Option<(usize, usize)> = None;
     if !foreign_lightweight.is_empty() {
-        let (li, oi, target_version, groups) = lightweight_subsystem(store)?;
+        let LwSubsystem {
+            li,
+            oi,
+            version: target_version,
+            group_count_field_off,
+            groups_end_off,
+            groups,
+        } = lightweight_subsystem(store)?;
         if li != target_li {
             return Err(perr!("Lightweight subsystem is not in the persistent level"));
         }
@@ -498,16 +527,11 @@ pub(crate) fn plan_paste_external(
                 target_version
             ));
         }
+        // Types this save has never built get a fresh group synthesized at
+        // the end of the subsystem's group list; the wrapper is just
+        // [u32 0][type path][u32 count] ahead of the records.
+        let mut new_groups: Vec<(String, u32, Vec<u8>)> = Vec::new();
         for fl in foreign_lightweight {
-            let group = groups
-                .iter()
-                .find(|g| g.type_path.eq_ascii(data, &fl.type_path))
-                .ok_or_else(|| {
-                    perr!(
-                        "This save has no {} yet -- build one of that type first, then paste",
-                        fl.type_path.rsplit('.').next().unwrap_or(&fl.type_path)
-                    )
-                })?;
             let mut record =
                 B64.decode(&fl.r).map_err(|e| perr!("Bad clipboard data: {}", e))?;
             if record.len() < 56 {
@@ -535,9 +559,39 @@ pub(crate) fn plan_paste_external(
             write_f64(&mut record, 40, ny);
             write_f64(&mut record, 48, pos[2] + delta[2]);
 
-            lw_total += record.len() as i64;
-            *lw_added_per_group.entry(group.count_field_off).or_insert(0) += 1;
-            lw_inserts.push((group.end_off as usize, record));
+            match groups.iter().find(|g| g.type_path.eq_ascii(data, &fl.type_path)) {
+                Some(group) => {
+                    lw_total += record.len() as i64;
+                    *lw_added_per_group.entry(group.count_field_off).or_insert(0) += 1;
+                    lw_inserts.push((group.end_off, record));
+                }
+                None => {
+                    let entry = match new_groups.iter_mut().find(|(t, _, _)| *t == fl.type_path) {
+                        Some(e) => e,
+                        None => {
+                            new_groups.push((fl.type_path.clone(), 0, Vec::new()));
+                            new_groups.last_mut().unwrap()
+                        }
+                    };
+                    entry.1 += 1;
+                    entry.2.extend_from_slice(&record);
+                }
+            }
+        }
+        // Records for the LAST existing group insert at the same offset as
+        // new-group blobs; stable sort keeps push order, so those records
+        // (pushed in the loop above) stay inside their group.
+        if !new_groups.is_empty() {
+            patch_add_u32(plan, data, group_count_field_off, new_groups.len() as i64);
+            for (type_path, count, records) in new_groups {
+                let mut blob = Vec::with_capacity(records.len() + type_path.len() + 16);
+                blob.extend_from_slice(&0u32.to_le_bytes());
+                encode_save_string(&mut blob, &type_path)?;
+                blob.extend_from_slice(&count.to_le_bytes());
+                blob.extend_from_slice(&records);
+                lw_total += blob.len() as i64;
+                lw_inserts.push((groups_end_off, blob));
+            }
         }
     }
 

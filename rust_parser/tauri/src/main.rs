@@ -15,6 +15,7 @@ use sav_tauri_lib::session::AppSession;
 use std::sync::Mutex;
 use tauri::ipc::{Channel, Response};
 use tauri::{Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 struct AppState {
     session: Mutex<Option<AppSession>>,
@@ -196,6 +197,128 @@ async fn export_save(state: State<'_, AppState>) -> Result<Response, String> {
     let guard = state.session.lock().unwrap();
     let session = guard.as_ref().ok_or_else(|| "No save loaded".to_string())?;
     Ok(Response::new(session.export_sav()?))
+}
+
+/// Where the game itself lists saves: %LOCALAPPDATA%\FactoryGame\Saved\
+/// SaveGames, descending into the per-account folder when there's exactly
+/// one. None (the dialog keeps its own default) when absent.
+fn game_saves_dir() -> Option<std::path::PathBuf> {
+    let root = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+        .join("FactoryGame")
+        .join("Saved")
+        .join("SaveGames");
+    let mut subdirs = std::fs::read_dir(&root)
+        .ok()?
+        .filter_map(|e| Some(e.ok()?.path()))
+        .filter(|p| p.is_dir());
+    match (subdirs.next(), subdirs.next()) {
+        (Some(only), None) => Some(only),
+        _ => Some(root),
+    }
+}
+
+/// Native "Save as…" export: pick a destination with the OS dialog, then
+/// re-serialize the current save straight to disk. The browser build's
+/// anchor-click download becomes a silent, invisible WebView2 download in a
+/// native shell, and the bytes never need to cross the IPC boundary anyway.
+/// Returns the written path, or None when the dialog is cancelled.
+#[tauri::command]
+async fn export_save_dialog(
+    default_name: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let bytes = {
+        let guard = state.session.lock().unwrap();
+        let session = guard.as_ref().ok_or_else(|| "No save loaded".to_string())?;
+        session.export_sav()?
+    };
+    // Dialog + write on a blocking thread: the dialog can stay open
+    // indefinitely and must not pin an async-runtime worker.
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_title("Export edited save")
+            .add_filter("Satisfactory save", &["sav"])
+            .set_file_name(&default_name);
+        if let Some(dir) = game_saves_dir() {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(picked) = dialog.blocking_save_file() else {
+            return Ok(None);
+        };
+        let path = picked.into_path().map_err(|e| format!("Bad export path: {e}"))?;
+        std::fs::write(&path, &bytes)
+            .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+    .map_err(|e| format!("Export task failed: {e}"))?
+}
+
+/// Put text on the OS clipboard native-side (the desktop copy path):
+/// keeps the whole flow off WebView2's permission-gated clipboard API.
+#[tauri::command]
+async fn clipboard_write_text(text: String) -> Result<(), String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    cb.set_text(text).map_err(|e| e.to_string())
+}
+
+/// Ceiling for a cross-app paste blob read off the OS clipboard; matches the
+/// frontend's own cap for the browser path.
+const PASTE_BLOB_MAX: usize = 200_000_000;
+
+/// Read the OS clipboard native-side and return a paste blob if one is
+/// there: WebView2's navigator.clipboard.readText pops a permission prompt
+/// on every Ctrl+V, so the desktop build never touches it. Small blobs
+/// return verbatim; a big one (copied in a browser tab -- desktop copies
+/// that size already live in a slot) is stashed in a native slot and
+/// returns a pointer, keeping huge strings off the IPC boundary.
+/// Non-blob clipboard content returns None.
+#[tauri::command]
+async fn read_paste_blob(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) else {
+        return Ok(None); // empty / non-text clipboard
+    };
+    if text.len() > PASTE_BLOB_MAX || !text.contains("\"smapPaste\"") {
+        return Ok(None);
+    }
+    if text.len() <= INLINE_CLIPBOARD_MAX {
+        return Ok(Some(text));
+    }
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Ok(None);
+    };
+    if !matches!(parsed.get("smapPaste").and_then(|v| v.as_u64()), Some(1) | Some(2)) {
+        return Ok(None);
+    }
+    // Same pointer shape extract_clipboard hands out for its own big blobs.
+    let mut pointer = serde_json::Map::new();
+    pointer.insert("smapPaste".into(), serde_json::json!(3));
+    for key in ["anchor", "anchorZ", "bboxWorld", "count"] {
+        match parsed.get(key) {
+            Some(v) => {
+                pointer.insert(key.to_string(), v.clone());
+            }
+            None if key == "anchorZ" => {} // absent in v1 blobs
+            None => return Ok(None),
+        }
+    }
+    let mut slots = state.clipboard_slots.lock().unwrap();
+    // Re-pasting the same clipboard must not stash a fresh 100MB copy each
+    // time: reuse the slot that already holds these exact bytes.
+    let id = match slots.1.iter().find(|(_, v)| **v == text).map(|(k, _)| *k) {
+        Some(id) => id,
+        None => {
+            slots.0 += 1;
+            let id = slots.0;
+            slots.1.insert(id, text);
+            id
+        }
+    };
+    pointer.insert("slot".into(), serde_json::json!(id));
+    Ok(Some(serde_json::Value::Object(pointer).to_string()))
 }
 
 /// Blobs at most this big return whole (and land on the OS clipboard as the
@@ -519,6 +642,9 @@ fn main() {
             load,
             apply_edits,
             export_save,
+            export_save_dialog,
+            clipboard_write_text,
+            read_paste_blob,
             extract_clipboard,
             describe_instance,
             find_item,

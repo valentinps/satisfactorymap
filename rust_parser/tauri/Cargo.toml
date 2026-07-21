@@ -23,6 +23,9 @@ tauri-build = { version = "2", features = [] }
 sav_core = { path = "../core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# Native OS-clipboard access for copy/paste blobs: WebView2's
+# navigator.clipboard.readText pops a permission prompt on every paste.
+arboard = { version = "3", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Dedicated-server save fetch (src/server_api.rs). Blocking on purpose: the

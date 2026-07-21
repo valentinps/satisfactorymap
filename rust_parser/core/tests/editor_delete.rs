@@ -1,6 +1,6 @@
 //! Delete-engine tests: remove a machine (components go with it), attached
-//! wires follow deleted poles, chained belts are refused, lightweight
-//! instances splice out, and delete round-trips through export.
+//! wires follow deleted poles, chained belts drag their chain actor along,
+//! lightweight instances splice out, and delete round-trips through export.
 
 use sav_core::editor::ops::{EditOp, LwRef};
 use sav_core::editor::{effective_body, export_sav, session};
@@ -102,30 +102,79 @@ fn delete_pole_removes_attached_wires() {
     assert!(!scan2.by_instance_name.contains_key(owner.as_bytes()));
 }
 
+/// Deleting one belt of a conveyor chain deletes that chain ACTOR too (its
+/// packed belt list cannot point at a gone belt), and every SURVIVING belt
+/// of the line inherits its own slice of the chain's items as per-belt
+/// records -- only the deleted segment's items are lost, like cutting a
+/// line in game.
 #[test]
-fn delete_chained_belt_is_refused() {
+fn delete_chained_belt_removes_chain_actor() {
     let store = load("All_autosave_0.sav");
     let tables = ClassTables::embedded();
 
-    let mut belt: Option<String> = None;
-    for level in &store.levels {
-        for object in level.parsed_objects() {
+    // A chain with 2+ belts: delete one, the other must survive. Prefer a
+    // chain whose surviving belt actually carries items so the write-back
+    // is exercised, not just the zero case.
+    let mut target: Option<(String, String, String, usize)> = None;
+    'outer: for (li, level) in store.levels.iter().enumerate() {
+        for (oi, object) in level.parsed_objects().iter().enumerate() {
             if let ActorSpecific::ConveyorChain { belts, .. } = &object.actor_specific {
-                belt = Some(belts[0].belt.path_name.to_string(&store.data));
+                if belts.len() < 2 {
+                    continue;
+                }
+                let Header::Actor(a) = &store.levels[li].headers[oi] else { continue };
+                let other_belt = belts[1].belt.path_name.to_string(&store.data);
+                let expected_items = sav_core::mapdata::queries::conveyor_chain_segment_item_paths(
+                    &object.actor_specific,
+                    &store.data,
+                    other_belt.as_bytes(),
+                )
+                .into_iter()
+                .filter(|p| !p.is_empty())
+                .count();
+                if target.is_none() || expected_items > 0 {
+                    target = Some((
+                        a.instance_name.to_string(&store.data),
+                        belts[0].belt.path_name.to_string(&store.data),
+                        other_belt,
+                        expected_items,
+                    ));
+                    if expected_items > 0 {
+                        break 'outer;
+                    }
+                }
             }
         }
     }
-    let Some(belt) = belt else {
-        eprintln!("no conveyor chains; skipping");
+    let Some((chain_name, belt, other_belt, expected_items)) = target else {
+        eprintln!("no conveyor chain with 2+ belts; skipping");
         return;
     };
+    if expected_items == 0 {
+        eprintln!("note: surviving belt has no items in this save; write-back untested");
+    }
 
-    let op = EditOp::DeleteActors { names: vec![belt] };
-    let err = match session::step(&store, &op, &tables) {
-        Ok(_) => panic!("deleting a chained belt should be refused"),
-        Err(e) => e,
+    let op = EditOp::DeleteActors { names: vec![belt.clone()] };
+    let store2 = session::step(&store, &op, &tables).unwrap();
+
+    let scan2 = SaveScan::new(&store2);
+    assert!(!scan2.by_instance_name.contains_key(belt.as_bytes()), "belt survived");
+    assert!(!scan2.by_instance_name.contains_key(chain_name.as_bytes()), "chain actor survived");
+    assert!(
+        scan2.by_instance_name.contains_key(other_belt.as_bytes()),
+        "other belt of the line was deleted"
+    );
+
+    // The surviving belt inherited exactly its slice of the chain's items.
+    let &(bli, boi) = scan2.by_instance_name.get(other_belt.as_bytes()).unwrap();
+    let belt_object = store2.parse_object_at(bli, boi).unwrap();
+    let ActorSpecific::ConveyorBelt { items, .. } = &belt_object.actor_specific else {
+        panic!("surviving belt lost its belt-specific data");
     };
-    assert!(err.msg.contains("conveyor chain"), "{}", err.msg);
+    assert_eq!(items.len(), expected_items, "written-back item count");
+
+    let exported = export_sav(&store2.file_header, effective_body(&store2));
+    parse_full_save(&exported, &tables, None).unwrap();
 }
 
 #[test]

@@ -30,14 +30,18 @@ var SelectionTool = {};
   var modalClose = document.getElementById("selectionModalClose");
 
   var MIN_DRAG_PX = 4; // Below this the gesture is a stray right-click, not a drag.
-  // Only belts and pipes are selectable among the line layers -- their
-  // segments carry content (in-transit items / fluid). Their buckets are now
-  // per-mark ("line:belt:Mk.6", "line:pipe:Mk.1", ...), matched by prefix.
-  // The other line layers (railroads, hypertubes, power lines, vehicle
-  // paths) hold nothing, and power lines in particular also exist as point
-  // actors (which would double-count), so they're left out.
+  // Line layers whose segments are real editable actors: belts/pipes
+  // (per-mark buckets "line:belt:Mk.6", ...), railroads, hypertubes, and
+  // vehicle paths ("line:vehiclePath:<mark>"). Their spline data is
+  // actor-local, so the edit engine's header-transform move/copy carries
+  // the geometry. Power lines stay out: wires already travel with their
+  // poles on copy/move, and selecting them directly would double-count.
   function isSelectableLineBucket(bucket) {
-    return bucket.key.indexOf("line:belt:") === 0 || bucket.key.indexOf("line:pipe:") === 0;
+    return bucket.key.indexOf("line:belt:") === 0
+      || bucket.key.indexOf("line:pipe:") === 0
+      || bucket.key === "line:railroads"
+      || bucket.key === "line:hypertubes"
+      || bucket.key.indexOf("line:vehiclePath:") === 0;
   }
 
   var selecting = false;
