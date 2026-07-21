@@ -358,9 +358,10 @@ var SelectionTool = {};
   }
 
   // Group the selection per bucket and bake each group's geometry into a
-  // map-pixel-space Path2D: footprint boxes for buildings (yaw ignored --
-  // a "what's selected" cue, not geometry), the full polyline for belt/pipe
-  // segments. Centers are kept alongside for the small-on-screen dot pass.
+  // map-pixel-space Path2D: each building's real rotated footprint (same
+  // corner math as map.js's _traceRect, including the genuinely-tilted
+  // polygon overrides), the full polyline for belt/pipe segments. Centers
+  // are kept alongside for the small-on-screen dot pass.
   function rebuildGroupCache() {
     var groups = new Map();
     selected.forEach(function(r) {
@@ -388,7 +389,32 @@ var SelectionTool = {};
         return;
       }
       if (g.half) {
-        g.path.rect(r.x - g.half[0], r.y - g.half[1], g.half[0] * 2, g.half[1] * 2);
+        var tilted = r.bucket.tiltedFootprints && r.bucket.tiltedFootprints[r.index];
+        if (tilted) {
+          // Pre-rotated silhouette polygon (offsets from center) -- just
+          // translate, same as map.js's _tracePolygon.
+          g.path.moveTo(r.x + tilted[0], r.y + tilted[1]);
+          for (var ti = 2; ti < tilted.length; ti += 2) {
+            g.path.lineTo(r.x + tilted[ti], r.y + tilted[ti + 1]);
+          }
+          g.path.closePath();
+        } else {
+          // Rotated-corner math copied from map.js's _traceRect (yaw
+          // negated for the flipped-Y map-pixel space), without the affine
+          // since this path is in raw map-pixel coordinates.
+          var yaw = r.bucket.pointStride === 4 ? r.bucket.points[r.index * 4 + 2] : 0;
+          var cos = Math.cos(-yaw);
+          var sin = Math.sin(-yaw);
+          var cosW = cos * g.half[0];
+          var sinW = sin * g.half[0];
+          var cosD = cos * g.half[1];
+          var sinD = sin * g.half[1];
+          g.path.moveTo(r.x + cosW - sinD, r.y + sinW + cosD);
+          g.path.lineTo(r.x - cosW - sinD, r.y - sinW + cosD);
+          g.path.lineTo(r.x - cosW + sinD, r.y - sinW - cosD);
+          g.path.lineTo(r.x + cosW + sinD, r.y + sinW - cosD);
+          g.path.closePath();
+        }
       }
       g.xs.push(r.x);
       g.ys.push(r.y);
