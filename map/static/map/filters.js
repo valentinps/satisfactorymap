@@ -1442,12 +1442,20 @@ var Filters = {};
   // other toggle (see the row/parent checkbox handlers above), so it
   // survives a reload. Both live in the nav column's header (not the detail
   // pane) since they act globally, across every category -- not just
-  // whichever one happens to be selected. Excludes the save-file <select>
-  // etc. in the footer, which have no checkboxes, so scoping to #sidebar is
-  // safe even though the footer now lives inside the nav panel.
+  // whichever one happens to be selected. Scoped to the nav column + detail
+  // pane, NOT all of #sidebar: #sidebarFooter also holds checkboxes that are
+  // not visibility toggles (the server-fetch "Remember password" box), and a
+  // bulk pass flipping that one would silently store/keep the admin password
+  // without firing its change handler.
   function setAllVisibility(checked) {
-    var sidebar = document.getElementById("sidebar");
-    var checkboxes = sidebar.querySelectorAll("input[type=checkbox]");
+    var scopes = [document.getElementById("categoryNavColumn"),
+                  document.getElementById("categoryDetailPane")];
+    var checkboxes = [];
+    scopes.forEach(function(scope) {
+      if (!scope) return;
+      var found = scope.querySelectorAll("input[type=checkbox]");
+      for (var i = 0; i < found.length; i++) checkboxes.push(found[i]);
+    });
     for (var i = 0; i < checkboxes.length; i++) {
       checkboxes[i].checked = checked;
       checkboxes[i].indeterminate = false;
