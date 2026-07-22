@@ -284,6 +284,17 @@ var Filters = {};
     });
   }
 
+  // Raw world-space [x, y] for the tooltip's Coordinates row, recovered from
+  // a stride-3 [x, y, z] points array. The payload used to ship parallel
+  // worldPositions arrays; the projection is exactly invertible, so they were
+  // dropped from the payload (slim_payload_value in mapdata/mod.rs).
+  function worldPositionAt(points, index) {
+    if (!points) {
+      return undefined;
+    }
+    return EditorTool.mapPxToWorldXY(points[index * 3], points[index * 3 + 1]);
+  }
+
   function makeIconBucket(key, label, color, points, ids, tooltipKind, tooltipInfo, url, opacity, pinFillColor, pointStride) {
     return MapApp.layer.addBucket({
       key: key, label: label, color: color, visible: true,
@@ -735,15 +746,9 @@ var Filters = {};
           }
           var purityColor = PURITY_COLORS[purityName] || PURITY_COLORS.UNKNOWN;
           var purityLabel = PURITY_LABELS[purityName] || purityName;
-          // worldPositions is a flat [x0,y0,x1,y1,...] array, same order/
-          // length as points/ids -- the raw world-space position sav_map_data
-          // already computed for this exact point (see collectResourceNodes),
-          // used for the tooltip's Coordinates row/copy button without
-          // needing a live-actor lookup.
           var tooltipInfo = function(index) {
-            var worldPositions = purityData.worldPositions;
-            var position = worldPositions ? [worldPositions[index * 2], worldPositions[index * 2 + 1]] : undefined;
-            return { title: resourceEntry.label, rows: [["Purity", purityLabel], ["Status", stateLabel]], position: position };
+            return { title: resourceEntry.label, rows: [["Purity", purityLabel], ["Status", stateLabel]],
+                     position: worldPositionAt(purityData.points, index) };
           };
           var bucket = makeIconBucket(
             "node:" + resourceEntry.resourceType + ":" + state + ":" + purityName, resourceEntry.label,
@@ -821,7 +826,6 @@ var Filters = {};
       var color = HARD_DRIVE_COLORS[stateKey];
       var points = hardDrives[stateKey];
       var ids = hardDrives[stateKey + "Ids"];
-      var worldPositions = hardDrives[stateKey + "WorldPositions"];
       // What a crash site demands before it hands over its hard drive --
       // either an item stack or a power hookup (see
       // sav_map_data.collectHardDrives) -- always shown, explicitly as
@@ -840,7 +844,7 @@ var Filters = {};
       // See sav_map_data.collectHardDrives -- needed even once dismantled,
       // since the actor itself is gone from the save by then.
       var tooltipInfo = function(index) {
-        var position = worldPositions ? [worldPositions[index * 2], worldPositions[index * 2 + 1]] : undefined;
+        var position = worldPositionAt(points, index);
         var requirement = requirements ? requirements[index] : null;
         var rows = [["Status", HARD_DRIVE_LABELS[stateKey]], ["Requirement", requirementText(requirement)]];
         return { title: "Hard Drive", rows: rows, position: position };
@@ -895,12 +899,10 @@ var Filters = {};
         // actually removed from the save, so a live lookup would never
         // find a position for it, but this static reference data still has it.
         var remainingInfo = function(index) {
-          var wp = data.remainingWorldPositions;
-          return { title: kind.label, rows: [["Status", "Remaining"]], position: wp ? [wp[index * 2], wp[index * 2 + 1]] : undefined };
+          return { title: kind.label, rows: [["Status", "Remaining"]], position: worldPositionAt(data.remaining, index) };
         };
         var collectedInfo = function(index) {
-          var wp = data.collectedWorldPositions;
-          return { title: kind.label, rows: [["Status", "Collected"]], position: wp ? [wp[index * 2], wp[index * 2 + 1]] : undefined };
+          return { title: kind.label, rows: [["Status", "Collected"]], position: worldPositionAt(data.collected, index) };
         };
         var remainingBucket = makeIconBucket(
           "collectable:" + kind.key + ":remaining", kind.label, kind.color, data.remaining,
@@ -954,11 +956,10 @@ var Filters = {};
       // sav_map_data.collectDroppedItems) -- static tooltip, everything's
       // already in the payload.
       var tooltipInfo = function(index) {
-        var wp = itemEntry.worldPositions;
         return {
           title: itemEntry.label,
           rows: [["Amount", itemEntry.counts[index]], ["Status", "On the ground"]],
-          position: wp ? [wp[index * 2], wp[index * 2 + 1]] : undefined,
+          position: worldPositionAt(itemEntry.points, index),
         };
       };
       var bucket = url

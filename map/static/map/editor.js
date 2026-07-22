@@ -1090,5 +1090,9 @@ var EditorTool = (function() {
     redo: redo,
     opCount: function() { return actions.length; },
     isPlacing: function() { return placement !== null; },
+    // filters.js derives tooltip world coordinates from bucket points with
+    // this since the payload no longer ships worldPositions arrays (see
+    // slim_payload_value in mapdata/mod.rs).
+    mapPxToWorldXY: mapPxToWorldXY,
   };
 })();

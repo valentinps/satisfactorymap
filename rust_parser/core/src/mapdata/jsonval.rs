@@ -4,9 +4,17 @@
 use serde_json::Value;
 
 /// f64 -> Value with orjson's non-finite handling (NaN/Inf serialize as
-/// null).
+/// null), rounded to 2 decimals.
+///
+/// The Python-parity era serialized every float at full shortest-roundtrip
+/// precision (up to 17 significant digits); with the parity gate retired,
+/// 2 decimals is plenty for everything the payload carries -- 0.01 map px
+/// is ~1 cm of world space, far below one screen pixel at max zoom -- and
+/// float digits were ~half the payload's bytes. n/100 for |n| < 2^53 parses
+/// to the nearest double, whose shortest repr is the plain 2-decimal string.
 pub fn jnum(x: f64) -> Value {
-    match serde_json::Number::from_f64(x) {
+    let rounded = if x.is_finite() && x.abs() < 4.5e13 { (x * 100.0).round() / 100.0 } else { x };
+    match serde_json::Number::from_f64(rounded) {
         Some(n) => Value::Number(n),
         None => Value::Null,
     }

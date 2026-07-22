@@ -313,11 +313,45 @@ const SaveClient = (() => {
       return out;
    }
 
+   // The payload ships bulk id arrays with this ubiquitous prefix stripped
+   // (see slim_payload_value in mapdata/mod.rs). Mirror rule: string arrays
+   // under a key named "ids" or ending in "Ids", elements without a ':' get
+   // the prefix back -- full instance names always contain ':' (their level
+   // part), stripped suffixes never do, and lightweight ids
+   // ("LightweightBuildable:...") keep their ':' and pass through untouched.
+   const ID_PREFIX = "Persistent_Level:PersistentLevel.";
+
+   function expandPayloadIds(value) {
+      if (Array.isArray(value)) {
+         for (const item of value) {
+            expandPayloadIds(item);
+         }
+         return value;
+      }
+      if (value && typeof value === "object") {
+         for (const key of Object.keys(value)) {
+            const v = value[key];
+            if ((key === "ids" || key.endsWith("Ids")) && Array.isArray(v)) {
+               for (let i = 0; i < v.length; i++) {
+                  if (typeof v[i] === "string" && v[i].indexOf(":") === -1) {
+                     v[i] = ID_PREFIX + v[i];
+                  }
+               }
+            } else {
+               expandPayloadIds(v);
+            }
+         }
+      }
+      return value;
+   }
+
    // Payload bytes -> payload object, transport-agnostic: the worker path is a
    // plain parse; the Tauri path may indirect through the chunk protocol.
    function parsePayloadBytes(payloadBytes) {
       const parsed = JSON.parse(new TextDecoder().decode(payloadBytes));
-      return IS_TAURI ? resolveChunkedPayload(parsed) : Promise.resolve(parsed);
+      return IS_TAURI
+         ? resolveChunkedPayload(parsed).then(expandPayloadIds)
+         : Promise.resolve(expandPayloadIds(parsed));
    }
 
    function request(msg, transfer) {
