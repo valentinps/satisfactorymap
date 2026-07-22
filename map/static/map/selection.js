@@ -370,7 +370,12 @@ var SelectionTool = {};
         g = {
           isLine: r.bucket.renderType === "line",
           half: r.bucket.footprintPixels || null,
-          path: new Path2D(),
+          // Lines bake their polyline here once. Footprints do NOT: their
+          // rotated geometry is built per-frame in drawHighlight, culled to
+          // the viewport (see the note there) -- so a huge zoomed-out
+          // selection that renders as dots builds no footprint path at all.
+          path: r.bucket.renderType === "line" ? new Path2D() : null,
+          recs: [], // footprint groups only: refs for the deferred build
           xs: [],
           ys: [],
         };
@@ -389,38 +394,44 @@ var SelectionTool = {};
         return;
       }
       if (g.half) {
-        var tilted = r.bucket.tiltedFootprints && r.bucket.tiltedFootprints[r.index];
-        if (tilted) {
-          // Pre-rotated silhouette polygon (offsets from center) -- just
-          // translate, same as map.js's _tracePolygon.
-          g.path.moveTo(r.x + tilted[0], r.y + tilted[1]);
-          for (var ti = 2; ti < tilted.length; ti += 2) {
-            g.path.lineTo(r.x + tilted[ti], r.y + tilted[ti + 1]);
-          }
-          g.path.closePath();
-        } else {
-          // Rotated-corner math copied from map.js's _traceRect (yaw
-          // negated for the flipped-Y map-pixel space), without the affine
-          // since this path is in raw map-pixel coordinates.
-          var yaw = r.bucket.pointStride === 4 ? r.bucket.points[r.index * 4 + 2] : 0;
-          var cos = Math.cos(-yaw);
-          var sin = Math.sin(-yaw);
-          var cosW = cos * g.half[0];
-          var sinW = sin * g.half[0];
-          var cosD = cos * g.half[1];
-          var sinD = sin * g.half[1];
-          g.path.moveTo(r.x + cosW - sinD, r.y + sinW + cosD);
-          g.path.lineTo(r.x - cosW - sinD, r.y - sinW + cosD);
-          g.path.lineTo(r.x - cosW + sinD, r.y - sinW - cosD);
-          g.path.lineTo(r.x + cosW + sinD, r.y + sinW - cosD);
-          g.path.closePath();
-        }
+        g.recs.push(r);
       }
       g.xs.push(r.x);
       g.ys.push(r.y);
     });
     groupCache = [];
     groups.forEach(function(g) { groupCache.push(g); });
+  }
+
+  // One selected building's rotated footprint appended to `path`, in raw
+  // map-pixel space. Same corner math as map.js's _traceRect (yaw negated for
+  // the flipped-Y map space) with the tilted-polygon override. Uses an
+  // explicit closing lineTo, NOT closePath(): closePath on a Path2D holding
+  // many subpaths is O(n^2) in Chrome (50k footprints = ~4.5s), which is what
+  // turned large selections into a multi-second freeze.
+  function appendFootprint(path, r, half) {
+    var tilted = r.bucket.tiltedFootprints && r.bucket.tiltedFootprints[r.index];
+    if (tilted) {
+      path.moveTo(r.x + tilted[0], r.y + tilted[1]);
+      for (var ti = 2; ti < tilted.length; ti += 2) {
+        path.lineTo(r.x + tilted[ti], r.y + tilted[ti + 1]);
+      }
+      path.lineTo(r.x + tilted[0], r.y + tilted[1]);
+      return;
+    }
+    var yaw = r.bucket.pointStride === 4 ? r.bucket.points[r.index * 4 + 2] : 0;
+    var cos = Math.cos(-yaw);
+    var sin = Math.sin(-yaw);
+    var cosW = cos * half[0];
+    var sinW = sin * half[0];
+    var cosD = cos * half[1];
+    var sinD = sin * half[1];
+    var x0 = r.x + cosW - sinD, y0 = r.y + sinW + cosD;
+    path.moveTo(x0, y0);
+    path.lineTo(r.x - cosW - sinD, r.y - sinW + cosD);
+    path.lineTo(r.x - cosW + sinD, r.y - sinW - cosD);
+    path.lineTo(r.x + cosW + sinD, r.y + sinW - cosD);
+    path.lineTo(x0, y0);
   }
 
   function drawHighlight() {
@@ -494,9 +505,26 @@ var SelectionTool = {};
         return; // Lines stroke last, over the fills.
       }
       if (g.half && Math.max(g.half[0], g.half[1]) * scale >= MIN_HALF_SCREEN_PX) {
-        ctx.fill(g.path);
-        ctx.lineWidth = 1.5 / scale;
-        ctx.stroke(g.path);
+        // Build the rotated footprints now, for viewport-visible objects
+        // only. When zoomed in far enough to show real footprints, only a
+        // small slice of a large selection is on screen, so this stays cheap
+        // even for a 300k selection (and is skipped whenever the group is
+        // small enough to draw as dots below).
+        var fpPath = new Path2D();
+        var fpCount = 0;
+        for (var fi = 0; fi < g.recs.length; fi++) {
+          var fr = g.recs[fi];
+          if (fr.x < minX || fr.x > maxX || fr.y < minY || fr.y > maxY) {
+            continue;
+          }
+          appendFootprint(fpPath, fr, g.half);
+          fpCount++;
+        }
+        if (fpCount > 0) {
+          ctx.fill(fpPath);
+          ctx.lineWidth = 1.5 / scale;
+          ctx.stroke(fpPath);
+        }
         return;
       }
       // Too small on screen for its real footprint: fixed-size dots.
