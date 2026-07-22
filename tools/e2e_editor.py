@@ -115,6 +115,11 @@ def main():
         print(f"undo OK ({time.time() - t0:.1f}s)")
 
         # -- Export + re-import ------------------------------------------------
+        # The download button lives inside the "Save details" disclosure,
+        # which starts collapsed on every load -- expand it first.
+        page.evaluate(
+            "if (document.getElementById('saveDetails').style.display === 'none')"
+            "  document.getElementById('saveDetailsToggle').click()")
         with page.expect_download() as dl_info:
             page.click("#downloadSaveBtn")
         out = pathlib.Path(tempfile.mkdtemp()) / dl_info.value.suggested_filename

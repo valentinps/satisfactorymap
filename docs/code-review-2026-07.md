@@ -57,18 +57,23 @@ The weaknesses cluster in four themes, systematic rather than sloppy:
 7. ✅ **Mapdata: NaN-safe sorts** — NaN fluid amounts from modded/corrupt
    saves panicked `sort_by(...partial_cmp().expect())` comparators and
    killed the worker (`queries.rs`, `geometry.rs` hull).
-8. **WebGL alpha compositing mismatch** — `webgl_layer.js` uses
+8. ✅ **WebGL alpha compositing mismatch** — `webgl_layer.js` used
    `premultipliedAlpha:false` with straight-alpha blending, so translucent
-   fills over bare map render at ~0.30 effective opacity instead of 0.55
-   (alpha applied twice at page composite). Fix: premultiplied output +
-   `(ONE, ONE_MINUS_SRC_ALPHA)`; A/B against `?renderer=canvas`.
-9. **Tauri chunked-payload generation token** — `payload_slice(offset,len)`
-   serves whatever the stash currently holds; a load/edit completing
-   between slice pulls can interleave two payloads. Guarded today only by
-   UI-level flags in another layer.
-10. **Dedicated-server password protection** — no trust-on-first-use cert
-    pinning over the (necessarily) unverified TLS, and plaintext
-    localStorage persistence where the OS keyring is available natively.
+   fills over bare map rendered at ~0.30 effective opacity instead of 0.55
+   (alpha applied twice at page composite). Fixed with premultiplied shader
+   output + `(ONE, ONE_MINUS_SRC_ALPHA)`; A/B against `?renderer=canvas`
+   dropped the mean per-pixel difference from 11.55 to 0.46 (AA noise).
+   The stale `depthMask` after the outline pass was fixed alongside.
+9. ✅ **Tauri chunked-payload generation token** — `payload_slice` served
+   whatever the stash currently held; a load/edit completing between slice
+   pulls could interleave two payloads. The stash now carries a generation
+   counter that slice/done requests must match, and the JS side frees the
+   stash in a `finally`.
+10. ✅ **Dedicated-server password protection** — a custom rustls verifier
+    now pins the self-signed cert's SHA-256 on first successful login
+    (TOFU); a changed cert requires explicit user confirmation. The
+    remembered password moved from plaintext localStorage to the OS
+    credential store (with migration of the old copy).
 
 ## Remaining findings by area
 
@@ -88,29 +93,30 @@ The weaknesses cluster in four themes, systematic rather than sloppy:
 
 ### Save editor (`rust_parser/core/src/editor/`) — solid
 
-- **M** `apply_plan` (`apply.rs:36-100`) enforces none of its documented
-  invariants (sorted, disjoint, patches outside removes). Violations mean
-  either silent wrong bytes (same-length writes are invisible to the strict
-  re-parse gate) or underflow panics. Cheap `debug_assert`s close it.
+- ✅ `apply_plan` now validates the whole plan (bounds, disjoint removes,
+  patches outside removed spans) before mutating a byte — closing both the
+  silent-corruption class and the mid-apply-error partial mutation.
+- ✅ The sign asset-scoped soft-ref exemption now exists in the duplicate
+  path too (was paste-only — the one confirmed drift between the two
+  rename/tombstone passes).
+- ✅ `plan_move` only parses conveyor chains when the moved set contains a
+  Conveyor-typed actor.
 - **M** Wire "Locations" rewrite finds the vector by 24-byte f64 pattern
-  search (`apply.rs:335`); a numerically-equal other vector (zero-length
+  search (`apply.rs`); a numerically-equal other vector (zero-length
   wire) gets silently rewritten — the one corruption class the re-parse
   gate cannot catch.
-- **M** `plan_duplicate_actors` / `plan_paste_external` are ~70% the same
-  algorithm and have drifted once already (the sign soft-ref exemption
-  exists only in the paste path). Unify.
-- **M** Every `MoveActors` op parses *all* conveyor chains (full item
-  rings) and all power wires even when irrelevant; gate on the moved set.
-- **L** No pre-flight bounds pass before mutation (mid-apply error forces a
-  full multi-second replay-from-pristine); delete errors say "Cannot copy";
-  machines with missing component records can't be deleted on modded saves;
-  tombstone names aren't checked against concurrently generated names.
+- **M** `plan_duplicate_actors` / `plan_paste_external` remain ~70% the
+  same algorithm (the known drift is fixed; full unification still open).
+- **L** Power-line sweeps still parse every wire per move/duplicate/delete;
+  delete errors say "Cannot copy"; machines with missing component records
+  can't be deleted on modded saves; tombstone names aren't checked against
+  concurrently generated names.
 
 ### Mapdata (`rust_parser/core/src/mapdata/`) — good, fragile edges
 
-- **M** Four collectors run twice per load (depot contents, collectables,
-  hard drives, drops — payload pass then index pass), plus per-kind rescans
-  of huge collectable lists: a few hundred ms of duplication per load.
+- ✅ The four collectors that ran twice per load (depot contents,
+  collectables, hard drives, drops) are now OnceCell-memoized on the
+  SaveScan; payload writes them by reference, the index reuses them.
 - **M** Resource nodes missing from the static tables are silently dropped
   from the map (the extracted tables have ~704 known gaps); bucket unknown
   types instead of `continue`.
@@ -162,12 +168,10 @@ The weaknesses cluster in four themes, systematic rather than sloppy:
 
 ### Frontend UI (filters/finditem/editor/selection/…) — solid
 
-- **M** Train "Show only this on map" reads pin buckets with stride 4 but
-  the train pin bucket is stride 3 → NaN/misplaced pins whose ids don't
-  match coordinates (`finditem.js:607`).
-- **M** Find-item searches carry no request generation: a slow older query
-  overwrites a newer result and can re-open the modal with the *previous
-  save's* data (`tooltip.js` already implements the right guard pattern).
+- ✅ Train/vehicle isolate now builds lens pins from rect buckets only
+  (fixes the stride-3 misread and the duplicated road-vehicle pins).
+- ✅ Find-item and building/vehicle searches carry a generation token;
+  stale responses (older query, previous save) are dropped.
 - **M** Sidebar toggles made while a highlight is active are reverted by
   the snapshot restore without resyncing checkboxes.
 - **M** After a partial session recovery, `editor.js` leaves `redoStack`
