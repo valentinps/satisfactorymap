@@ -302,11 +302,13 @@
   // The native side does the whole exchange against the official dedicated-
   // server HTTPS API (server_fetch_latest command: login -> enumerate ->
   // download into the app-data dir) and hands back a path that loads through
-  // the normal loadLocalPath flow. The address always persists in
-  // localStorage; the password only when "Remember password" is ticked
-  // (stored unencrypted -- the label's tooltip says so).
+  // the normal loadLocalPath flow. The address persists in localStorage (not
+  // a secret); the password, when "Remember password" is ticked, lives in the
+  // OS credential store via the server_password_* commands -- never in
+  // localStorage. (An older build stored it in localStorage; setup migrates
+  // and deletes any leftover.)
   var SERVER_HOST_KEY = "smap.serverFetchHost";
-  var SERVER_PASS_KEY = "smap.serverFetchPassword";
+  var LEGACY_SERVER_PASS_KEY = "smap.serverFetchPassword";
 
   function setupServerFetch() {
     var panel = document.getElementById("serverFetchPanel");
@@ -316,24 +318,44 @@
     var passInput = document.getElementById("serverFetchPassword");
     var rememberBox = document.getElementById("serverFetchRememberBox");
     var button = document.getElementById("serverFetchButton");
+    var invoke = window.__TAURI__.core.invoke;
     panel.style.display = "block";
     try {
       hostInput.value = window.localStorage.getItem(SERVER_HOST_KEY) || "";
-      var storedPass = window.localStorage.getItem(SERVER_PASS_KEY);
-      if (storedPass !== null) {
-        // A stored password IS the remember choice -- no separate flag.
-        passInput.value = storedPass;
-        rememberBox.checked = true;
-      }
-    } catch (e) { /* storage blocked: the fields just start empty */ }
+    } catch (e) { /* storage blocked: the field just starts empty */ }
+
+    var storedHost = hostInput.value.trim();
+    var legacyPass = null;
+    try {
+      legacyPass = window.localStorage.getItem(LEGACY_SERVER_PASS_KEY);
+    } catch (e) { /* nothing to migrate */ }
+    if (legacyPass !== null && storedHost) {
+      // One-time migration of the pre-keyring plaintext copy.
+      invoke("server_password_store", { host: storedHost, password: legacyPass })
+        .then(function() {
+          try { window.localStorage.removeItem(LEGACY_SERVER_PASS_KEY); } catch (e) { /* ok */ }
+        })
+        .catch(function() { /* keyring unavailable: keep the legacy copy */ });
+      passInput.value = legacyPass;
+      rememberBox.checked = true;
+    } else if (storedHost) {
+      // A stored password IS the remember choice -- no separate flag.
+      invoke("server_password_get", { host: storedHost }).then(function(stored) {
+        if (stored !== null && passInput.value === "") {
+          passInput.value = stored;
+          rememberBox.checked = true;
+        }
+      }).catch(function() { /* credential store unavailable: start empty */ });
+    }
 
     // Unticking forgets immediately -- don't make the user fetch to be
-    // sure the password is gone from disk.
+    // sure the password is gone from the credential store.
     rememberBox.addEventListener("change", function() {
       if (!rememberBox.checked) {
-        try {
-          window.localStorage.removeItem(SERVER_PASS_KEY);
-        } catch (e) { /* nothing stored anyway */ }
+        var h = hostInput.value.trim();
+        if (h) {
+          invoke("server_password_forget", { host: h }).catch(function() { /* nothing stored */ });
+        }
       }
     });
 
@@ -359,12 +381,11 @@
       }
       try {
         window.localStorage.setItem(SERVER_HOST_KEY, host);
-        if (rememberBox.checked) {
-          window.localStorage.setItem(SERVER_PASS_KEY, passInput.value);
-        } else {
-          window.localStorage.removeItem(SERVER_PASS_KEY);
-        }
       } catch (e) { /* not persisting is fine */ }
+      (rememberBox.checked
+        ? invoke("server_password_store", { host: host, password: passInput.value })
+        : invoke("server_password_forget", { host: host })
+      ).catch(function() { /* credential store unavailable: fetch anyway */ });
       button.disabled = true;
       setStatus("Connecting to " + host + "…");
       var channel = new window.__TAURI__.core.Channel();
@@ -381,7 +402,29 @@
         return loadLocalPath(result.path);
       }, function(error) {
         button.disabled = false;
-        setStatus("Server fetch failed: " + String((error && error.message) || error));
+        var message = String((error && error.message) || error);
+        // Pinned-certificate mismatch (see server_api.rs): the server's TLS
+        // cert changed since first login. Legitimate after a server
+        // reinstall, so offer to trust the new one -- explicitly, never
+        // silently.
+        if (message.indexOf("TOFU_PIN_MISMATCH") !== -1) {
+          var trust = window.confirm(
+            "The server's TLS certificate has changed since it was first trusted." +
+            "\n\nIf you reinstalled the server or it regenerated its certificate, " +
+            "this is expected and you can trust the new certificate." +
+            "\n\nIf not, someone may be intercepting the connection -- click Cancel." +
+            "\n\nTrust the new certificate and retry?");
+          if (trust) {
+            invoke("server_forget_pin", { host: host })
+              .then(fetchLatest, function(forgetError) {
+                setStatus("Could not reset the pinned certificate: " + String(forgetError));
+              });
+          } else {
+            setStatus("Server fetch cancelled: certificate not trusted.");
+          }
+          return;
+        }
+        setStatus("Server fetch failed: " + message);
       });
     }
 
