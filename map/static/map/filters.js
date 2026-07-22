@@ -322,9 +322,11 @@ var Filters = {};
       key: key, label: label, color: color, visible: true,
       renderType: "line",
       // 3 = [x, y, z] per vertex (power lines, plain straight segments); 7 =
-      // [x, y, z, arriveTangentX, arriveTangentY, leaveTangentX, leaveTangentY]
+      // [x, y, arriveTangentX, arriveTangentY, leaveTangentX, leaveTangentY, z]
       // (belts/pipelines/railroads/hypertubes -- enough to draw the real
-      // curve through each spline point, see map.js's _drawLineBucket).
+      // curve through each spline point). z is LAST so altitude reads at
+      // stride-1 work for both strides; see map.js line ~22 and the tangent
+      // reads in _drawLineBucket -- do NOT reorder to put z third.
       pointStride: pointStride || 3,
       lines: polylines.map(function(line) { return new Float32Array(line); }),
       ids: ids || null,

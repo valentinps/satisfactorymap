@@ -786,15 +786,22 @@ var FindItem = {};
   });
 
   document.addEventListener("keydown", function(e) {
-    if (e.key !== "Escape") {
+    // One layer per Escape press: every module's Escape handler lives on
+    // document, so without this the same keypress would close a modal AND
+    // cancel a placement AND clear a highlight at once. The first handler to
+    // act calls preventDefault(); the rest bail on e.defaultPrevented.
+    if (e.key !== "Escape" || e.defaultPrevented) {
       return;
     }
     if (overlay.style.display !== "none") {
       closeItemModal();
+      e.preventDefault();
     } else if (buildingOverlay.style.display !== "none") {
       closeBuildingModal();
+      e.preventDefault();
     } else if (highlighting) {
       clearHighlight(); // No modal open, but a filter is live on the map -- Esc reverts it.
+      e.preventDefault();
     }
   });
 

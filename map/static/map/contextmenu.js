@@ -150,8 +150,9 @@ var ContextMenu = {};
     }
   });
   document.addEventListener("keydown", function(e) {
-    if (e.key === "Escape") {
+    if (e.key === "Escape" && !e.defaultPrevented && menu.style.display !== "none") {
       hide();
+      e.preventDefault(); // One layer per press -- see finditem.js.
     }
   });
   window.addEventListener("blur", hide);
