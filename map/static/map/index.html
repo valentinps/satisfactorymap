@@ -20,20 +20,38 @@
 </head>
 <body class="no-category-selected">
 <div id="topBar">
-  <!-- Hamburger + wordmark share one card that sits flush on the sidebar's
-       top edge while the panel is shown (its visual header); panels.js adds
-       .detached when the panel is hidden and the cluster becomes a free
-       floating card again. -->
-  <div id="brandCluster">
-    <!-- Shows/hides the whole sidebar overlay (see panels.js). -->
-    <button id="menuButton" title="Hide the side panel" aria-expanded="true">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18">
-        <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  <!-- The bar is three flex sections -- left cluster, search, right actions.
+       The two side sections share leftover space equally (equal flex grow
+       from a zero basis, floored at their own content), which is what keeps
+       the search pill PERFECTLY centered regardless of how wide either side
+       is (e.g. the desktop app's update pill appearing on the left). -->
+  <div id="topBarLeft">
+    <!-- Hamburger + wordmark share one card that sits flush on the sidebar's
+         top edge while the panel is shown (its visual header); panels.js adds
+         .detached when the panel is hidden and the cluster becomes a free
+         floating card again. -->
+    <div id="brandCluster">
+      <!-- Shows/hides the whole sidebar overlay (see panels.js). -->
+      <button id="menuButton" title="Hide the side panel" aria-expanded="true">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18">
+          <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button id="logoButton" title="Satisfactory Save Map">
+        <span class="logoKicker">Satisfactory</span>
+        <span class="logoName">Save Map</span>
+      </button>
+    </div>
+    <!-- Desktop-app auto-update (panels.js): hidden until the Tauri updater
+         reports a newer release; click downloads + installs it. Lives on the
+         LEFT, next to the brand, so the right-side pill row keeps a stable
+         width -- both sides stay near-equal and the search bar centered. -->
+    <button id="updatePill" class="topPillButton" style="display:none">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15">
+        <path d="M12 21V10m0 0-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
       </svg>
-    </button>
-    <button id="logoButton" title="Satisfactory Save Map">
-      <span class="logoKicker">Satisfactory</span>
-      <span class="logoName">Save Map</span>
+      <span id="updatePillLabel">Update</span>
     </button>
   </div>
   <div id="mainSearchWrap">
@@ -52,15 +70,7 @@
        (panels.js drives open/close) instead of a strip of six bare icon
        tiles: the game icons alone were unreadable, the labels do the work.
        Row ids are load-bearing -- progression.js/finditem.js bind by id. -->
-  <!-- Desktop-app auto-update (panels.js): hidden until the Tauri updater
-       reports a newer release; click downloads + installs it. -->
-  <button id="updatePill" class="topPillButton" style="display:none">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15">
-      <path d="M12 21V10m0 0-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-    </svg>
-    <span id="updatePillLabel">Update</span>
-  </button>
+  <div id="topBarActions">
   <!-- Depot is an inventory view, not progression -- its own pill next to
        the dropdown, same style. -->
   <button id="depotIconButton" class="topPillButton" title="Dimensional Depot contents">
@@ -100,6 +110,7 @@
       </button>
     </div>
   </div>
+  </div>
 </div>
 
 <div id="sidebar">
@@ -123,16 +134,27 @@
             <path d="M8 3v5h8V3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
           </svg>
           <span>Save File</span>
-          <!-- Quiet pointer to the native app, placed where someone
-               wrestling a big save is already looking. Hidden inside the
-               desktop app itself (panels.js checks window.__TAURI__). -->
-          <a id="desktopAppLink" href="https://github.com/valentinps/satisfactorymap/releases/latest" target="_blank" rel="noopener" title="Download the desktop app — same map, no browser memory limit">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11">
-              <path d="M12 3v11m0 0 4-4m-4 4-4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            </svg>
-            <span>Desktop app</span>
-          </a>
+          <div id="loadPanelHeaderActions">
+            <!-- Eject the loaded save (data.js's clearSave) -- shown only
+                 while one is loaded; frees the parser's memory too. -->
+            <button id="clearSaveBtn" style="display:none" title="Unload this save — clears the map and frees its memory">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11">
+                <path d="M5 13.5 12 7l7 6.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                <line x1="5" y1="18" x2="19" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              <span>Unload</span>
+            </button>
+            <!-- Quiet pointer to the native app, placed where someone
+                 wrestling a big save is already looking. Hidden inside the
+                 desktop app itself (panels.js checks window.__TAURI__). -->
+            <a id="desktopAppLink" href="https://github.com/valentinps/satisfactorymap/releases/latest" target="_blank" rel="noopener" title="Download the desktop app — same map, no browser memory limit">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11">
+                <path d="M12 3v11m0 0 4-4m-4 4-4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              <span>Desktop app</span>
+            </a>
+          </div>
         </div>
         <!-- The save never leaves the browser: it's parsed locally by the
              WASM parser in worker.js (see save_client.js/data.js). -->

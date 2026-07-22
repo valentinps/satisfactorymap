@@ -340,10 +340,10 @@ var EditorTool = (function() {
 
   // ---- Toolbar (edit count / undo / redo) ---------------------------------------
 
-  // The top bar centers the search box within a flex row whose sides are
-  // unequal (menu+logo left, status buttons + altitude padding right), so
-  // "centered" for top notifications means the SEARCH BOX's center, not the
-  // viewport's -- align to it directly.
+  // The top bar centers the search box between its two flex side sections
+  // (equal-width while there's room, but content-floored on narrow
+  // windows), so "centered" for top notifications means the SEARCH BOX's
+  // center, not the viewport's -- align to it directly.
   function alignToolbar() {
     var searchBox = document.getElementById("searchBox");
     if (!searchBox || !toolbar) {
@@ -1090,6 +1090,20 @@ var EditorTool = (function() {
       cancelPlacement();
       closeOffsetDialog();
       downloadBtn.style.display = "";
+      updateToolbar();
+    },
+    // Called by data.js's clearSave: the save (and its worker session) is
+    // going away entirely -- same reset as a load, but the editor chrome
+    // (export button, toolbar) hides instead of arming for a new save.
+    onSaveClosed() {
+      currentFileName = null;
+      actions = [];
+      redoStack = [];
+      clipboard = null;
+      cancelPlacement();
+      closeOffsetDialog();
+      closePastePanel();
+      downloadBtn.style.display = "none";
       updateToolbar();
     },
     startMove: startMove,

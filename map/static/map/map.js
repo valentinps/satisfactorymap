@@ -2117,6 +2117,53 @@ var MapApp = {};
     layer.requestRedraw();
   };
 
+  // Recomputes the map's pan limits from the loaded data. The default limit
+  // (the map image plus a half-map margin) is what keeps panning from
+  // wandering off into the void -- but mods let people build OUTSIDE the
+  // vanilla world border, and those builds load fine yet sit beyond the
+  // pannable area, unreachable. Walking the freshly built buckets' XY
+  // extents and taking the union with the vanilla map rect keeps the
+  // off-map build reachable while vanilla saves keep the classic limits.
+  // Called after every load/edit/unload (see data.js's applyPayload and
+  // clearSave); with no buckets it simply restores the defaults.
+  MapApp.refreshMaxBounds = function() {
+    var map = MapApp.map;
+    if (!map) {
+      return;
+    }
+    var mapSize = MapApp.mapSize;
+    var minX = 0, minY = 0, maxX = mapSize, maxY = mapSize;
+    var buckets = (MapApp.layer && MapApp.layer.buckets) || [];
+    for (var b = 0; b < buckets.length; b++) {
+      var bucket = buckets[b];
+      var stride = bucket.pointStride;
+      if (!stride) {
+        continue;
+      }
+      if (bucket.points) {
+        var pts = bucket.points;
+        for (var i = 0; i + 1 < pts.length; i += stride) {
+          var x = pts[i], y = pts[i + 1];
+          // NaN coordinates (corrupt/odd modded actors) fail every
+          // comparison and are skipped naturally.
+          if (x < minX) minX = x; else if (x > maxX) maxX = x;
+          if (y < minY) minY = y; else if (y > maxY) maxY = y;
+        }
+      } else if (bucket.lines) {
+        for (var li = 0; li < bucket.lines.length; li++) {
+          var line = bucket.lines[li];
+          for (var vi = 0; vi + 1 < line.length; vi += stride) {
+            var lx = line[vi], ly = line[vi + 1];
+            if (lx < minX) minX = lx; else if (lx > maxX) maxX = lx;
+            if (ly < minY) minY = ly; else if (ly > maxY) maxY = ly;
+          }
+        }
+      }
+    }
+    var margin = mapSize * 0.5;
+    map.setMaxBounds([[minY - margin, minX - margin], [maxY + margin, maxX + margin]]);
+  };
+
   MapApp.init = function() {
     // The WebGL layer (webgl_layer.js, loaded right after this file) renders
     // every frame during interaction, so Leaflet's animated zoom and drag
@@ -2165,6 +2212,8 @@ var MapApp = {};
     var mapSize = 8192;
     var margin = mapSize * 0.5;
     var bounds = [[0, 0], [mapSize, mapSize]];
+    // Vanilla pan limits; refreshMaxBounds below widens them per save when a
+    // modded build lives outside the map image.
     map.setMaxBounds([[-margin, -margin], [mapSize + margin, mapSize + margin]]);
     // Tiled base map instead of one 8192px imageOverlay: Chrome re-decodes a
     // monolithic image in full on the FIRST visit to every raster scale

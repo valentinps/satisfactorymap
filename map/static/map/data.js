@@ -153,6 +153,48 @@
     Progression.build(payload);
     SelectionTool.reset();
     showGameSettings(payload.gameSettings);
+    // Widen the pan limits if this save builds outside the vanilla map
+    // (mods allow it); recomputed per payload so an edit that deletes the
+    // out-of-map build snaps the limits back too.
+    MapApp.refreshMaxBounds();
+    clearSaveBtn.style.display = "flex";
+  }
+
+  // "Unload" (the eject button next to the Save File header): drop the
+  // loaded save entirely -- map, sidebar, editor state, and the parse
+  // session's memory (SaveClient.reset terminates the wasm worker; native
+  // side frees its session). Pending edits die with the session, so those
+  // get a confirmation first; a plain viewed save just unloads.
+  var clearSaveBtn = document.getElementById("clearSaveBtn");
+
+  function clearSave() {
+    if (loadInFlight) {
+      return; // Mid-parse the worker owns the UI; let it finish first.
+    }
+    var edits = EditorTool.opCount();
+    if (edits > 0 && !window.confirm(
+        "Unload this save? Your " + edits + " unexported edit" + (edits === 1 ? "" : "s")
+        + " will be lost. (Use \"Download save\" first to keep them.)")) {
+      return;
+    }
+    SaveClient.reset();
+    MapApp.currentFile = null;
+    currentFile = null;
+    currentPath = null;
+    Tooltip.unpin();
+    Tooltip.hide();
+    MapApp.setHighlight(null, null);
+    SelectionTool.reset();
+    EditorTool.onSaveClosed();
+    Filters.clear();
+    Altitude.clear();
+    FindItem.build({});   // empty catalogs; also resets any search highlight state
+    Progression.build({}); // no progression data
+    showGameSettings(null);
+    MapApp.refreshMaxBounds(); // back to the vanilla pan limits
+    clearSaveBtn.style.display = "none";
+    hideProgress();
+    setStatus("Save unloaded -- drop a .sav anywhere or click above.");
   }
 
   // Editor.js drives the same progress/status UI during applyEdits, and
@@ -448,6 +490,7 @@
       // Desktop: native "Open" dialog returning a path. Browser: hidden file input.
       if (isTauri) { pickAndLoadTauri(); } else { uploadFileInput.click(); }
     });
+    clearSaveBtn.addEventListener("click", clearSave);
     uploadFileInput.addEventListener("change", function() {
       loadLocalFile(uploadFileInput.files[0]);
       uploadFileInput.value = ""; // Re-selecting the same file should fire change again.

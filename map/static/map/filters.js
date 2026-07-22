@@ -1436,6 +1436,41 @@ var Filters = {};
     MapApp.layer.requestRedraw();
   };
 
+  // Tears the whole per-save UI down without building a new one -- the
+  // "unload save" flow (see data.js's clearSave). Mirrors the reset half of
+  // Filters.build: empties the sidebar tree and every per-save lookup, drops
+  // the buckets, and hides the footer's save-details chrome.
+  Filters.clear = function() {
+    document.getElementById("categoryNavColumn").innerHTML = "";
+    document.getElementById("categoryDetailPane").innerHTML = "";
+    categoryEntries = [];
+    buildingSearchEntries = [];
+    vehicleSearchEntries = [];
+    bucketLayerCheckbox = {};
+    bucketLayerLabel = {};
+    bucketCategoryCheckbox = {};
+    bucketCategoryLabel = {};
+    groupCheckboxStates = [];
+    MapApp.layer.clearBuckets();
+    deselectAllCategories();
+    var totalEl = document.getElementById("totalObjectCount");
+    if (totalEl) {
+      totalEl.innerHTML = "";
+    }
+    var detailsToggle = document.getElementById("saveDetailsToggle");
+    if (detailsToggle) {
+      detailsToggle.style.display = "none";
+      detailsToggle.classList.remove("open");
+      detailsToggle.setAttribute("aria-expanded", "false");
+    }
+    var detailsBody = document.getElementById("saveDetails");
+    if (detailsBody) {
+      detailsBody.style.display = "none";
+    }
+    Filters.refreshHiddenObjectsIndicator();
+    MapApp.layer.requestRedraw();
+  };
+
   // "Check all" / "Uncheck all" -- every checkbox at every nesting level
   // (top-level sections, subcategories, and leaf rows) is a real DOM
   // checkbox somewhere under #sidebar (nav column rows + every category's

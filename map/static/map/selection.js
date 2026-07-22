@@ -712,6 +712,60 @@ var SelectionTool = {};
     finishSelection(startClient, { x: e.clientX, y: e.clientY }, selectingAdditive);
   });
 
+  // ---- Ctrl+A: select everything ------------------------------------------
+  // Same semantics as a right-drag box over the whole world: visible buckets
+  // only, altitude filter respected. Selections this big are legitimate
+  // (megabase-wide move/delete) but take a noticeable moment to aggregate and
+  // highlight, so past this threshold ask before committing.
+  var SELECT_ALL_CONFIRM_THRESHOLD = 500000;
+
+  // Upper bound on what a select-all would grab (per-bucket object counts;
+  // cheap, no per-point walk) -- just for the confirmation gate.
+  function selectableObjectCount() {
+    var total = 0;
+    MapApp.layer.buckets.forEach(function(bucket) {
+      if (!bucket.visible || bucket.excludeFromSelection) {
+        return;
+      }
+      if (bucket.renderType === "line") {
+        if (isSelectableLineBucket(bucket) && bucket.lines) {
+          total += bucket.lines.length;
+        }
+      } else if (bucket.points) {
+        total += bucket.points.length / bucket.pointStride;
+      }
+    });
+    return total;
+  }
+
+  document.addEventListener("keydown", function(e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "a") {
+      return;
+    }
+    var target = e.target;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+      return; // Ctrl+A in a text field keeps its select-the-text meaning.
+    }
+    if (!window.MapApp || !MapApp.layer) {
+      return;
+    }
+    var count = selectableObjectCount();
+    if (count === 0) {
+      return;
+    }
+    e.preventDefault(); // Ours even if the user cancels -- don't also select the page text.
+    if (count >= SELECT_ALL_CONFIRM_THRESHOLD
+        && !window.confirm("Are you sure you want to select all objects?")) {
+      return;
+    }
+    var records = collectInBox(-Infinity, Infinity, -Infinity, Infinity);
+    selected.clear();
+    records.forEach(function(r) {
+      selected.set(recordKey(r), r);
+    });
+    refreshUI();
+  });
+
   // ---- Selection modal (List objects / Total inventory) -------------------
 
   function openModal(title, summary) {

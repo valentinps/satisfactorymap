@@ -232,6 +232,15 @@ var Altitude = {};
     layoutSliders();
   };
 
+  // Unload flow (see data.js's clearSave): hide the rail and lift the
+  // filter. savedRange is dropped too -- an explicit unload is a fresh
+  // start, unlike the save-to-save reloads build() preserves it across.
+  Altitude.clear = function() {
+    panel.style.display = "none";
+    savedRange = null;
+    MapApp.setAltitudeRange(-Infinity, Infinity);
+  };
+
   minSlider.addEventListener("input", applyRange);
   maxSlider.addEventListener("input", applyRange);
   resetButton.addEventListener("click", function() {

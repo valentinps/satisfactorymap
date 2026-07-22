@@ -119,6 +119,27 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   pointer-events: auto;
 }
 
+/* The bar's two side sections (see index.html's #topBar comment): equal
+   flex grow from a ZERO basis makes them the same width whenever there's
+   room, which is what actually centers the search pill -- with the old
+   single-row layout it was only centered in the leftover space, so it sat
+   visibly off-center whenever the sides were unequal (always, and worse in
+   the desktop app once the update pill appeared). max-content floors keep
+   the pills from being squashed on narrow windows; the search pill then
+   gives way instead (flex-shrink on #mainSearchWrap). */
+#topBarLeft, #topBarActions {
+  flex: 1 1 0;
+  min-width: max-content;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  pointer-events: none;
+}
+
+#topBarActions {
+  justify-content: flex-end;
+}
+
 /* Hamburger + wordmark as ONE card (see #brandCluster in index.html) --
    two separate floating buttons read as disconnected little islands.
    While the sidebar is shown the card sits flush on its top edge (same
@@ -231,7 +252,10 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
    the native <datalist>, whose dropdown the browser positioned and styled
    itself (badly, and with no room for item icons). */
 #mainSearchWrap {
-  flex: 1 1 auto;
+  /* Fixed 560px basis (the search pill's full width) between the two
+     equal-width side sections -- shrinks only once both sides are down to
+     their max-content floors. */
+  flex: 0 1 560px;
   min-width: 0;
   display: flex;
   justify-content: center;
@@ -991,13 +1015,21 @@ body.panelResizing #categoryDetailColumn {
   letter-spacing: 0.06em;
 }
 
-/* "Desktop app" download link at the header's right edge -- same quiet
-   small-caps voice as the header itself, accent on hover. */
+/* Right edge of the Save File header: the "Unload" ejector (only while a
+   save is loaded) and the "Desktop app" download link (browser only). */
+#loadPanelHeaderActions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* "Desktop app" download link -- same quiet small-caps voice as the header
+   itself, accent on hover. */
 #desktopAppLink {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-left: auto;
   color: var(--faint);
   text-decoration: none;
   font-size: 10px;
@@ -1007,6 +1039,28 @@ body.panelResizing #categoryDetailColumn {
 
 #desktopAppLink:hover {
   color: var(--accent-soft);
+}
+
+/* "Unload" (data.js's clearSave) -- same quiet voice as the link beside it;
+   pink on hover, the established "something leaves the view" signal, since
+   it clears the whole map. Revealed by data.js while a save is loaded. */
+#clearSaveBtn {
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  color: var(--faint);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+#clearSaveBtn:hover {
+  color: #ff9ec2;
 }
 
 .loadPanelIcon {
