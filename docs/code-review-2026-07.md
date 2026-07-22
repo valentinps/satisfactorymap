@@ -123,9 +123,12 @@ The weaknesses cluster in four themes, systematic rather than sloppy:
 - **M** Lightweight instance-name strings are materialized 3–4× in the map
   index (formatted IDs, owned keys, decoded Strings) — tens of MB near the
   4 GB wasm ceiling; intern type paths.
-- **M** Payload is 2–3× larger than needed: 17-digit floats, full 65-char
-  instance paths, world positions derivable client-side — all frozen by
-  the retired-Python parity gate. Deciding to end parity unlocks all three.
+- ✅ Payload diet (parity gate retired): floats round to 2 decimals,
+  worldPositions dropped (client derives via inverse projection), id
+  prefixes stripped on the wire and re-expanded in save_client.js.
+  Measured 36.1MB → 20.8MB (−42%) on the 15MB test save; rendering
+  pixel-identical. Remaining levers if ever needed: id-stem interning /
+  handle-based ids (a further ~25–40%).
 - **L** Malformed regenerated `buildings.json` (clearance/power-range
   shapes) panics table init for *all* saves — degrade per-class instead;
   hardcoded belt/pipe-rate tables silently exclude modded marks; belt
