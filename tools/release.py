@@ -39,6 +39,24 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
+def ensure_release_worthy_tree():
+    """The GitHub tag points at origin/main, but the binaries are built from
+    this working tree -- refuse to run unless the two are the same commit
+    with nothing uncommitted (v0.1.4 shipped with an uncommitted Cargo.lock
+    this check would have caught)."""
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=REPO,
+                           capture_output=True, text=True).stdout.strip()
+    if dirty:
+        sys.exit("working tree has uncommitted changes -- commit or stash first:\n" + dirty)
+    run(["git", "fetch", "origin", "main"])
+    rev = lambda ref: subprocess.run(["git", "rev-parse", ref], cwd=REPO,
+                                     capture_output=True, text=True).stdout.strip()
+    head, remote = rev("HEAD"), rev("origin/main")
+    if head != remote:
+        sys.exit(f"HEAD ({head[:12]}) is not origin/main ({remote[:12]}) -- the release "
+                 "tag will point at origin/main, so push (or check out) that commit first")
+
+
 def gh_token():
     out = subprocess.run(
         ["git", "credential", "fill"], cwd=REPO, capture_output=True, text=True,
@@ -64,7 +82,12 @@ def main():
     ap.add_argument("--notes", required=True, help="release-notes .md ({CHECKSUMS} is replaced)")
     ap.add_argument("--skip-site-build", action="store_true",
                     help="reuse dist/ as-is (frontend/wasm unchanged)")
+    ap.add_argument("--allow-dirty", action="store_true",
+                    help="skip the clean-tree/origin-sync check (dry runs only)")
     args = ap.parse_args()
+
+    if not args.allow_dirty:
+        ensure_release_worthy_tree()
 
     conf = json.load(open(os.path.join(REPO, "rust_parser", "tauri", "tauri.conf.json")))
     version = conf["version"]
