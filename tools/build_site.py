@@ -13,6 +13,7 @@ map_highres.png; see README), Rust toolchain + wasm-pack.
 Usage: py tools/build_site.py [--skip-wasm]
 """
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -58,8 +59,13 @@ def buildTiles(mapImage):
 
     cacheDir = os.path.join(os.path.dirname(mapImage), "map_tiles")
     stampPath = os.path.join(cacheDir, ".stamp")
-    stat = os.stat(mapImage)
-    stamp = f"{stat.st_mtime_ns}:{stat.st_size}:{TILE_SIZE}:{TILE_LEVELS}:{TILE_BLEED}"
+    # Content hash, not mtime: package_game_data.py ships the tile cache inside
+    # game_data.zip, and zip extraction does not preserve mtimes -- an mtime
+    # stamp mismatched after every unpack, re-cutting all tiles on every fresh
+    # setup (and needing Pillow when the docs imply it's extraction-only).
+    with open(mapImage, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
+    stamp = f"{digest}:{TILE_SIZE}:{TILE_LEVELS}:{TILE_BLEED}"
     try:
         with open(stampPath, encoding="utf-8") as f:
             if f.read() == stamp:
