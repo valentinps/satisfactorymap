@@ -79,17 +79,18 @@ The weaknesses cluster in four themes, systematic rather than sloppy:
 
 ### Rust parser core (`rust_parser/core/src/`) — solid
 
-- **M** `level.rs:477` — the "missing final array count" quirk path copies
-  the entire decompressed body (2× peak memory, wasm OOM risk for
-  calculator-resaved files); an 8-byte tail buffer would do.
-- **M** Per-property `String` allocations to drive the type `match` in the
-  hottest parse loop (`properties.rs`); match on bytes instead.
-- **M** No adversarial-input tests: nothing asserts "corrupt input returns
-  `Err`, never panics" for `reader.rs`/`properties.rs`/`decompress.rs`.
-  A small corpus of truncated/bit-flipped fixtures would be high value.
+- ✅ The "missing final array count" quirk path no longer copies the whole
+  decompressed body (it synthesized the empty-tail read directly).
+- ✅ Per-property type names are borrowed as `&str` in the hot loop, not
+  allocated as `String`s per property.
+- ✅ Adversarial-input test suite (`tests/corrupt_input.rs`): truncations,
+  hostile length/count fields, byte flips, terabyte-uncompressed claims —
+  each must Err, never panic/abort.
+- ✅ Dead `decompressed_size`, `build_instance_slots`, `substitute_names`
+  removed.
 - **L** `u64→usize as` truncation on wasm32 size fields (misleading error,
-  not silent success); dead `decompressed_size` and `build_instance_slots`;
-  `store.rs` `parsed_objects()` is a pub `.expect()` accessor.
+  not silent success); `store.rs` `parsed_objects()` is a pub `.expect()`
+  accessor.
 
 ### Save editor (`rust_parser/core/src/editor/`) — solid
 
@@ -117,12 +118,12 @@ The weaknesses cluster in four themes, systematic rather than sloppy:
 - ✅ The four collectors that ran twice per load (depot contents,
   collectables, hard drives, drops) are now OnceCell-memoized on the
   SaveScan; payload writes them by reference, the index reuses them.
-- **M** Resource nodes missing from the static tables are silently dropped
-  from the map (the extracted tables have ~704 known gaps); bucket unknown
-  types instead of `continue`.
-- **M** Lightweight instance-name strings are materialized 3–4× in the map
-  index (formatted IDs, owned keys, decoded Strings) — tens of MB near the
-  4 GB wasm ceiling; intern type paths.
+- ✅ Resource nodes missing from the static tables are kept visible under
+  the actor's own class name instead of dropped (was ~700 vanishing nodes).
+- ✅ MapIndex stores instance Slots + a lightweight count instead of
+  materializing every name as a String (names build on demand); the
+  progression manager lookup does one header pass with a first-byte gate
+  instead of ~1.8M naive substring searches.
 - ✅ Payload diet (parity gate retired): floats round to 2 decimals,
   worldPositions dropped (client derives via inverse projection), id
   prefixes stripped on the wire and re-expanded in save_client.js.
@@ -155,19 +156,19 @@ The weaknesses cluster in four themes, systematic rather than sloppy:
 - **H** (accepted) The 2D canvas fallback still carries the unchunked ~2s
   full-map redraw at zoom −1; after a real GL context loss users land on
   it with no warning.
-- **M** `_redrawHighlight` does O(n) `ids.indexOf` per frame with a pinned
-  tooltip (store the hit index); hitTest's line phase walks every polyline
+- ✅ `_redrawHighlight` caches the hit-test's index instead of an O(n)
+  `ids.indexOf` every frame with a pinned tooltip.
+- **M** hitTest's line phase walks every polyline
   per hover tick (grid-index line bboxes); no devicePixelRatio handling in
   the 2D layer, and the pin-sprite DPR bake is negated by a CSS-resolution
   canvas; `depthMask` left false after the outline pass makes next frame's
-  depth clear a no-op (correct today only by coincidence); GL stream
-  rebuild is the synchronous per-edit latency floor.
-- **L** Stale comments that invite bugs (`map.js:92` "filters.js pushes
-  buckets directly" — false; `filters.js:313` documents the wrong stride-7
-  layout); renderer constants duplicated between canvas and GL with "keep
-  in sync" notes; script-tag load order is a silent perf cliff; probe GL
-  contexts never released; altitude "Reset" persists a concrete range
-  instead of a no-filter sentinel.
+  depth clear a no-op — ✅ fixed (depthMask restored); GL stream rebuild is
+  the synchronous per-edit latency floor.
+- ✅ The two bug-inviting stale comments (`map.js` bucket-push, `filters.js`
+  stride-7 layout) and the altitude Reset sentinel are fixed.
+- **L** Renderer constants duplicated between canvas and GL with "keep in
+  sync" notes; script-tag load order is a silent perf cliff; probe GL
+  contexts never released.
 
 ### Frontend UI (filters/finditem/editor/selection/…) — solid
 
@@ -177,27 +178,24 @@ The weaknesses cluster in four themes, systematic rather than sloppy:
   stale responses (older query, previous save) are dropped.
 - **M** Sidebar toggles made while a highlight is active are reverted by
   the snapshot restore without resyncing checkboxes.
-- **M** After a partial session recovery, `editor.js` leaves `redoStack`
-  referencing a state that no longer exists.
-- **L** Five uncoordinated document-level Escape handlers dismiss several
-  layers per press; label-keyed catalogs collide on duplicate labels;
+- ✅ `editor.js` clears `redoStack` after a partial session recovery.
+- ✅ The five document-level Escape handlers now peel one layer per press
+  (via `defaultPrevented`).
+- **L** Label-keyed catalogs collide on duplicate labels;
   `savedVisibility` localStorage grows unboundedly; `el()` helper
   duplicated in six files; lightweight-ID logic duplicated between
   editor.js and selection.js; accent-button CSS recipe copy-pasted ~6×.
 
 ### Python / build / CI — weakest layer, largely addressed above
 
-- **M** Fresh-setup breakage: the tile-cache stamp is mtime-based and can
-  never survive the `game_data.zip` round-trip, so every fresh setup
-  re-cuts all tiles and hits Pillow — which no requirements file declares
-  for building. The zip also ships ~1400 guaranteed-dead tile PNGs.
-- **M** `build.sh` pipes two unpinned remote installers to `sh` and
-  fetches `game_data.zip` without a checksum inside the production deploy
-  path; no `set -o pipefail`.
+- ✅ Fresh-setup tile re-cut fixed: the tile-cache stamp is now a content
+  hash, so it survives the `game_data.zip` round-trip (mtime didn't).
+  Pillow and playwright are now declared in `requirements.txt`.
+- ✅ `build.sh` hardened: `set -o pipefail`, wasm-pack pinned to a prebuilt
+  v0.15.0 binary, `game_data.zip` verified against a hardcoded SHA-256.
 - **L** `package_game_data.py`'s traversal-guard comment is wrong (safety
   actually rests on `ZipFile.extract`); updater signing key sits
-  unencrypted at a well-known path; `requirements.txt` incomplete
-  (playwright) with a stale Pillow comment; `extract_map_image.py` tells
+  unencrypted at a well-known path; `extract_map_image.py` tells
   you to update a deleted file; two scripts hardcode the local Windows
   username as defaults; CONTRIBUTING points at a Google Drive
   `game_data.zip` while production pulls the GitHub release; 19 upstream
