@@ -6,7 +6,7 @@
 //! rescanning the save. Python dict insertion-order semantics (last value
 //! wins, first position kept) are preserved everywhere via IndexMap.
 
-use super::collectors::{buildings, simple, trains_progression, world};
+use super::collectors::{buildings, trains_progression};
 use super::consts::*;
 use super::geometry::{project_xy, world_z_to_meters};
 use super::jsonval::jnum;
@@ -357,7 +357,7 @@ impl MapIndex {
         // comprehension, so a duplicate itemPath is last-wins (IndexMap
         // insert overwrites the value, keeps the first position -- same).
         let mut dimensional_depot_by_item: IndexMap<String, i64> = IndexMap::new();
-        if let Value::Array(rows) = simple::collect_dimensional_depot_contents(&scan) {
+        if let Value::Array(rows) = scan.depot_contents() {
             for row in rows {
                 let item_path = row["itemPath"].as_str().unwrap_or_default().to_string();
                 let count = row["count"].as_i64().unwrap_or(0);
@@ -421,7 +421,7 @@ fn collect_static_item_locations(scan: &SaveScan) -> IndexMap<String, Vec<Static
         }
     }
 
-    let collectables = world::collect_collectables(scan);
+    let collectables = scan.collectables();
     for (kind, item_short_name, label) in COLLECTABLE_ITEMS {
         add_entries(
             &mut index,
@@ -434,7 +434,7 @@ fn collect_static_item_locations(scan: &SaveScan) -> IndexMap<String, Vec<Static
         );
     }
 
-    let hard_drives = world::collect_hard_drives(scan);
+    let hard_drives = scan.hard_drives();
     add_entries(
         &mut index,
         HARD_DRIVE_ITEM_SHORT_NAME,
@@ -447,7 +447,7 @@ fn collect_static_item_locations(scan: &SaveScan) -> IndexMap<String, Vec<Static
 
     // World-spawned free item stacks in not-yet-generated map areas -- the
     // catalog-only remainder (see _uncollectedCatalogDrops).
-    for (short_name, quantity, position, instance_name) in world::uncollected_catalog_drops(scan) {
+    for &(short_name, quantity, position, instance_name) in scan.uncollected_catalog_drops() {
         let [px, py] = project_xy(position[0], position[1]);
         index.entry(short_name.to_string()).or_default().push(StaticItemLocation {
             instance_name: instance_name.to_string(),

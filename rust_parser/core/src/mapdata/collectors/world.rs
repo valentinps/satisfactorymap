@@ -631,7 +631,7 @@ pub fn collect_dropped_items(scan: &SaveScan) -> Value {
         );
     }
 
-    for (short_name, quantity, position, instance_name) in uncollected_catalog_drops(scan) {
+    for &(short_name, quantity, position, instance_name) in scan.uncollected_catalog_drops() {
         append_drop(&mut buckets, short_name, position, instance_name.as_bytes(), Value::from(quantity));
     }
 

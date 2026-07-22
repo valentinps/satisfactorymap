@@ -135,9 +135,23 @@ fn build_payload_json_with_scan(
 
     let mut done: u64 = 0;
     for key in requested {
-        let (_, collector) = registry.iter().find(|(k, _)| *k == key).unwrap();
-        let value = collector(scan);
-        write_entry(&mut out, &mut first, key, &value);
+        // The steps the save-index build consumes too are memoized on the
+        // scan (SaveScan::collectables etc.) -- write those by reference so
+        // a full load computes each exactly once, clone-free.
+        let cached: Option<&Value> = match key {
+            "collectables" => Some(scan.collectables()),
+            "hardDrives" => Some(scan.hard_drives()),
+            "dimensionalDepot" => Some(scan.depot_contents()),
+            _ => None,
+        };
+        match cached {
+            Some(value) => write_entry(&mut out, &mut first, key, value),
+            None => {
+                let (_, collector) = registry.iter().find(|(k, _)| *k == key).unwrap();
+                let value = collector(scan);
+                write_entry(&mut out, &mut first, key, &value);
+            }
+        }
         done += 1;
         if let Some(cb) = progress.as_deref_mut() {
             cb(done, BUILD_STEP_COUNT);
