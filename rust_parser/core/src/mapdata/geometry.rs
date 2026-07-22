@@ -97,9 +97,8 @@ pub fn tilt_intensity(rotation: [f64; 4]) -> f64 {
 /// dropped, then lexicographic order.
 fn convex_hull(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut pts: Vec<(f64, f64)> = points.to_vec();
-    pts.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0).unwrap().then_with(|| a.1.partial_cmp(&b.1).unwrap())
-    });
+    // total_cmp: a NaN coordinate (corrupt quaternion) must not panic here.
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
     pts.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
     if pts.len() <= 2 {
         return pts;

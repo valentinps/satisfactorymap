@@ -149,7 +149,9 @@ fn inventory_rows(solid: IndexMap<Vec<u8>, i64>, fluid: IndexMap<String, f64>) -
         ));
     }
     // list.sort(key=count, reverse=True): stable, equal counts keep order.
-    rows.sort_by(|a, b| b.0.partial_cmp(&a.0).expect("count NaN"));
+    // total_cmp: a NaN count (corrupt/modded fluid value) must not panic the
+    // worker; Python's list.sort tolerates NaN too (garbage order, no crash).
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0));
     Value::Array(rows.into_iter().map(|(_, v)| v).collect())
 }
 
@@ -609,7 +611,7 @@ pub fn find_item_locations(store: &SaveStore, index: &MapIndex, item_short_name:
     }
 
     // locations.sort(key=count, reverse=True) -- stable.
-    locations.sort_by(|a, b| b.0.partial_cmp(&a.0).expect("count NaN"));
+    locations.sort_by(|a, b| b.0.total_cmp(&a.0)); // total_cmp: NaN-safe, see above
 
     let total_value = if is_fluid {
         jnum(py_round(total_count / 1000.0, 1))
