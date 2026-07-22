@@ -158,12 +158,21 @@ pub fn collect_resource_nodes(scan: &SaveScan) -> Value {
                 None => (None, None),
             };
         // Python `or`: an empty-string override falls back to the static
-        // entry too; no override and no static entry -> not a real node.
+        // entry too. No override and no static entry used to mean "not a
+        // real node" and the actor was silently dropped -- but the
+        // reveal-extracted tables have known gaps (~700 nodes on a mature
+        // save), so those are real nodes vanishing from the map. Keep them
+        // visible under the actor's own class name instead; purity stays
+        // UNKNOWN via the arm below.
+        let fallback_type: String;
         let resource_type: &str = match override_resource_type {
             Some(rt) if !rt.is_empty() => rt,
             _ => match static_entry {
                 Some(entry) => entry.0.as_str(),
-                None => continue,
+                None => {
+                    fallback_type = props::lossy(props::short_name(type_path));
+                    &fallback_type
+                }
             },
         };
         // Purity: the override wins outright; the static table's enum NAME
