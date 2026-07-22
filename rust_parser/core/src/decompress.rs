@@ -72,16 +72,20 @@ pub fn decompress_save_file(
         c.pos += comp_len;
     }
 
-    // StrRef/DataRef (and the store's span/offset fields) index this buffer
-    // with `usize` offsets. On 64-bit native builds (the desktop app) that's
-    // 64-bit, so there is no size cap. On wasm32 `usize` is `u32`, so the body
-    // must stay within a 32-bit address space -- and wasm can't hold >4GB
-    // anyway. Only that build enforces the cap.
+    // The whole body is retained as one contiguous Vec<u8> (`out` below), and
+    // StrRef/DataRef index it with `usize` offsets. On 64-bit native builds
+    // (the desktop app) there is no practical cap. On wasm32 the hard limit is
+    // isize::MAX (~2.14GB), NOT the 4GB address space: Rust requires every
+    // single allocation's size to fit in isize, so `vec![0u8; total_uncomp]`
+    // panics with "capacity overflow" (an uncatchable wasm trap -> the app
+    // showed a raw "unreachable") the moment the body exceeds ~2.14GB. Return
+    // the actionable error instead -- the desktop app has no such limit. The
+    // +8 leaves room for the editor's quirk-padding append.
     #[cfg(target_pointer_width = "32")]
-    if total_uncomp as u64 + 8 > u32::MAX as u64 {
+    if total_uncomp as u64 + 8 > isize::MAX as u64 {
         return Err(perr!(
-            "Decompressed save is {} bytes; saves over 4GB are not supported in the browser (wasm32); use the desktop app.",
-            total_uncomp
+            "This save decompresses to {:.2} GB. The browser build can load saves up to about 2 GB; use the desktop app for larger ones.",
+            total_uncomp as f64 / 1e9
         ));
     }
 
