@@ -728,9 +728,8 @@ pub fn aggregate_selection_inventory(
 
 pub fn collect_building_info(store: &SaveStore, index: &MapIndex, type_paths: &[String]) -> Value {
     let data: &[u8] = &store.data;
-    let empty: Vec<String> = Vec::new();
 
-    let mut all_instance_names: Vec<&str> = Vec::new();
+    let mut all_instance_names: Vec<String> = Vec::new();
     let mut recipe_counts: IndexMap<String, i64> = IndexMap::new(); // insertion order == recipeOrder
     let mut no_recipe_count: i64 = 0;
     let mut has_recipe_capable_instance = false;
@@ -742,11 +741,11 @@ pub fn collect_building_info(store: &SaveStore, index: &MapIndex, type_paths: &[
 
     for type_path in type_paths {
         let is_generator = type_path.contains("Generator");
-        let instance_names = index.instance_names_by_type_path.get(type_path).unwrap_or(&empty);
-        for instance_name in instance_names {
-            all_instance_names.push(instance_name.as_str());
+        let instance_names = index.instance_names_for_type_path(store, type_path);
+        for instance_name in &instance_names {
+            all_instance_names.push(instance_name.clone());
         }
-        for instance_name in instance_names {
+        for instance_name in &instance_names {
             // Lightweight buildables -- no recipe/power/inventory concept.
             let Some(object) = index.parse_object_by_name(store, instance_name.as_bytes()) else {
                 continue;
@@ -818,7 +817,11 @@ pub fn collect_building_info(store: &SaveStore, index: &MapIndex, type_paths: &[
     result.insert("count".into(), Value::from(all_instance_names.len() as i64));
     result.insert(
         "inventory".into(),
-        aggregate_selection_inventory(store, index, &all_instance_names),
+        aggregate_selection_inventory(
+            store,
+            index,
+            &all_instance_names.iter().map(String::as_str).collect::<Vec<&str>>(),
+        ),
     );
     if has_recipe_capable_instance {
         let mut recipe_rows: Vec<(i64, Value)> = recipe_counts
@@ -893,7 +896,6 @@ fn docking_state_is_docked(value: &PropertyValue, data: &[u8]) -> bool {
 
 pub fn collect_vehicle_info(store: &SaveStore, index: &MapIndex, type_paths: &[String]) -> Value {
     let data: &[u8] = &store.data;
-    let empty: Vec<String> = Vec::new();
     let mut count: i64 = 0;
     let mut automated_count: i64 = 0;
     let mut docked_count: i64 = 0;
@@ -902,7 +904,7 @@ pub fn collect_vehicle_info(store: &SaveStore, index: &MapIndex, type_paths: &[S
     let mut fuel_components: Vec<Object> = Vec::new();
     let mut fuel_key: Vec<u8> = Vec::new();
     for type_path in type_paths {
-        for instance_name in index.instance_names_by_type_path.get(type_path).unwrap_or(&empty) {
+        for instance_name in &index.instance_names_for_type_path(store, type_path) {
             count += 1;
             let name_bytes = instance_name.as_bytes();
             let Some(object) = index.parse_object_by_name(store, name_bytes) else { continue };

@@ -64,11 +64,16 @@ pub struct TrainInfo {
     pub cars: Vec<TrainCar>,
 }
 
-/// lightweightInstancesById value: {"typePath":, "position":}.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct LightweightEntry {
-    pub type_path: String,
-    pub position: [f64; 3],
+/// One type path's instances, by reference: actor entries as Slots into the
+/// store (their names decode from headers on demand), lightweights as a bare
+/// count (their synthetic "LightweightBuildable:<tp>:<idx>" ids are fully
+/// derivable). The old shape materialized every instance name as an owned
+/// String -- tens of MB duplicated beside the store, inside a worker already
+/// near the 4GB wasm ceiling, all of it CBOR-shipped in the lean handoff.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub struct TypePathBucket {
+    pub actor_slots: Vec<Slot>,
+    pub lightweight_count: usize,
 }
 
 /// One row of staticItemLocations (typePath is always None there). position/
@@ -105,8 +110,11 @@ pub struct MapIndex {
     pub pipe_network_id_to_fluid: IndexMap<i32, String>,
     pub pipe_network_id_to_total_fluid: IndexMap<i32, f64>,
     pub pipe_network_id_to_members: IndexMap<i32, Vec<String>>,
-    pub lightweight_instances_by_id: IndexMap<String, LightweightEntry>,
-    pub instance_names_by_type_path: IndexMap<String, Vec<String>>,
+    /// Positions per lightweight type path; index in the Vec == the <idx> of
+    /// the synthetic id. Replaces the old per-instance map whose keys and
+    /// per-entry type_path clones cost ~200 bytes x 100k+ instances.
+    pub lightweight_positions_by_type_path: IndexMap<String, Vec<[f64; 3]>>,
+    pub instance_slots_by_type_path: IndexMap<String, TypePathBucket>,
     /// itemShortName -> [(instanceName, count)], insertion-ordered (the exact
     /// extract::item_location_index output).
     pub item_location_index: IndexMap<Vec<u8>, Vec<(Vec<u8>, i64)>>,
@@ -130,6 +138,36 @@ impl MapIndex {
         let object = store.parse_object_at(li, oi);
         debug_assert!(object.is_ok(), "reparse of a known instance failed: {:?}", object.as_ref().err().map(|e| &e.msg));
         object.ok()
+    }
+
+    /// Materialized instance names for one type path: actor names decode
+    /// from their headers, lightweight ids synthesize from the count --
+    /// same content and order the old eagerly-materialized map stored.
+    pub fn instance_names_for_type_path(&self, store: &SaveStore, type_path: &str) -> Vec<String> {
+        let Some(bucket) = self.instance_slots_by_type_path.get(type_path) else {
+            return Vec::new();
+        };
+        let data: &[u8] = &store.data;
+        let mut names: Vec<String> = bucket
+            .actor_slots
+            .iter()
+            .map(|&(li, oi)| store.levels[li].headers[oi].instance_name().to_string(data))
+            .collect();
+        names.extend(
+            (0..bucket.lightweight_count)
+                .map(|idx| format!("LightweightBuildable:{}:{}", type_path, idx)),
+        );
+        names
+    }
+
+    /// Resolve a synthetic "LightweightBuildable:<tp>:<idx>" id to its type
+    /// path and position (None for ordinary instance names or stale ids).
+    pub fn lightweight_entry(&self, instance_name: &str) -> Option<(&str, [f64; 3])> {
+        let rest = instance_name.strip_prefix("LightweightBuildable:")?;
+        let (type_path, idx) = rest.rsplit_once(':')?;
+        let idx: usize = idx.parse().ok()?;
+        let (key, positions) = self.lightweight_positions_by_type_path.get_key_value(type_path)?;
+        positions.get(idx).map(|&p| (key.as_str(), p))
     }
 
     /// CBOR-serialize for the lean-worker handoff: the loaded worker ships
@@ -195,26 +233,28 @@ impl MapIndex {
         let by_instance_name: IndexMap<Vec<u8>, Slot> =
             scan.by_instance_name.iter().map(|(k, &v)| (k.to_vec(), v)).collect();
 
-        // -- instanceNamesByTypePath ------------------------------------------
+        // -- instanceSlotsByTypePath ------------------------------------------
         // Keys decode via each bucket's first actor's StrRef so wide (UTF-16)
         // type paths come out exactly like Python str (same as buildings.rs).
-        let mut instance_names_by_type_path: IndexMap<String, Vec<String>> = IndexMap::new();
+        // Values are slots/counts; names materialize on demand via
+        // instance_names_for_type_path.
+        let mut instance_slots_by_type_path: IndexMap<String, TypePathBucket> = IndexMap::new();
         for (_, seq_headers) in &scan.actor_seqs_by_type_path {
             let type_path = scan.actor(seq_headers[0].1).type_path.to_string(data);
-            let names: Vec<String> = seq_headers
-                .iter()
-                .map(|&(_, slot)| scan.actor(slot).instance_name.to_string(data))
-                .collect();
-            instance_names_by_type_path.insert(type_path, names);
+            instance_slots_by_type_path.insert(
+                type_path,
+                TypePathBucket {
+                    actor_slots: seq_headers.iter().map(|&(_, slot)| slot).collect(),
+                    lightweight_count: 0,
+                },
+            );
         }
         // Lightweight buildables' synthetic "LightweightBuildable:<tp>:<idx>"
         // ids fold in (setdefault + extend).
         for group in buildings::find_lightweight_buildable_groups(&scan) {
             let type_path = group.type_path.to_string(data);
-            let bucket = instance_names_by_type_path.entry(type_path.clone()).or_default();
-            for idx in 0..group.instances.len() {
-                bucket.push(format!("LightweightBuildable:{}:{}", type_path, idx));
-            }
+            instance_slots_by_type_path.entry(type_path).or_default().lightweight_count +=
+                group.instances.len();
         }
 
         // -- stationNameByStationInstance --------------------------------------
@@ -307,16 +347,13 @@ impl MapIndex {
             }
         }
 
-        // -- lightweightInstancesById ------------------------------------------
-        let mut lightweight_instances_by_id: IndexMap<String, LightweightEntry> = IndexMap::new();
+        // -- lightweightPositionsByTypePath ------------------------------------
+        let mut lightweight_positions_by_type_path: IndexMap<String, Vec<[f64; 3]>> =
+            IndexMap::new();
         for group in buildings::find_lightweight_buildable_groups(&scan) {
             let type_path = group.type_path.to_string(data);
-            for (idx, instance) in group.instances.iter().enumerate() {
-                lightweight_instances_by_id.insert(
-                    format!("LightweightBuildable:{}:{}", type_path, idx),
-                    LightweightEntry { type_path: type_path.clone(), position: instance.position },
-                );
-            }
+            lightweight_positions_by_type_path
+                .insert(type_path, group.instances.iter().map(|i| i.position).collect());
         }
 
         // -- train consists ------------------------------------------------------
@@ -375,8 +412,8 @@ impl MapIndex {
             pipe_network_id_to_fluid,
             pipe_network_id_to_total_fluid,
             pipe_network_id_to_members,
-            lightweight_instances_by_id,
-            instance_names_by_type_path,
+            lightweight_positions_by_type_path,
+            instance_slots_by_type_path,
             item_location_index,
             dimensional_depot_by_item,
             static_item_locations,
@@ -514,21 +551,28 @@ impl MapIndex {
         }
 
         let mut lightweight = serde_json::Map::new();
-        for (id, entry) in &self.lightweight_instances_by_id {
-            lightweight.insert(
-                id.clone(),
-                json!({
-                    "typePath": entry.type_path,
-                    "position": [jnum(entry.position[0]), jnum(entry.position[1]), jnum(entry.position[2])],
-                }),
-            );
+        for (type_path, positions) in &self.lightweight_positions_by_type_path {
+            for (idx, p) in positions.iter().enumerate() {
+                lightweight.insert(
+                    format!("LightweightBuildable:{}:{}", type_path, idx),
+                    json!({
+                        "typePath": type_path,
+                        "position": [jnum(p[0]), jnum(p[1]), jnum(p[2])],
+                    }),
+                );
+            }
         }
 
         let mut by_type_path = serde_json::Map::new();
-        for (type_path, instance_names) in &self.instance_names_by_type_path {
+        for type_path in self.instance_slots_by_type_path.keys() {
             by_type_path.insert(
                 type_path.clone(),
-                Value::Array(instance_names.iter().map(|n| Value::String(n.clone())).collect()),
+                Value::Array(
+                    self.instance_names_for_type_path(store, type_path)
+                        .into_iter()
+                        .map(Value::String)
+                        .collect(),
+                ),
             );
         }
 
