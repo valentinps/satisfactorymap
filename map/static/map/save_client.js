@@ -278,28 +278,38 @@ const SaveClient = (() => {
          return parsed;
       }
       const invoke = window.__TAURI__.core.invoke;
+      // The generation binds every slice pull to the payload that produced
+      // these ranges: if a newer load/edit replaces the stash mid-assembly,
+      // payload_slice rejects instead of serving bytes from the wrong
+      // payload. payload_done runs in finally so an error mid-pull still
+      // frees the (>200MB by definition) Rust-side stash; it is
+      // generation-checked, so it can't free a successor's payload.
+      const generation = spec.generation;
       const out = {};
-      for (const range of spec.ranges) {
-         const start = range[0];
-         const len = range[1];
-         const buf = new Uint8Array(len + 2);
-         buf[0] = 0x7b; // '{'
-         let got = 0;
-         while (got < len) {
-            const n = Math.min(PAYLOAD_SLICE_BYTES, len - got);
-            const part = new Uint8Array(
-               await invoke("payload_slice", { offset: start + got, len: n }),
-            );
-            if (part.length === 0) {
-               throw new Error("Empty payload slice");
+      try {
+         for (const range of spec.ranges) {
+            const start = range[0];
+            const len = range[1];
+            const buf = new Uint8Array(len + 2);
+            buf[0] = 0x7b; // '{'
+            let got = 0;
+            while (got < len) {
+               const n = Math.min(PAYLOAD_SLICE_BYTES, len - got);
+               const part = new Uint8Array(
+                  await invoke("payload_slice", { generation: generation, offset: start + got, len: n }),
+               );
+               if (part.length === 0) {
+                  throw new Error("Empty payload slice");
+               }
+               buf.set(part, 1 + got);
+               got += part.length;
             }
-            buf.set(part, 1 + got);
-            got += part.length;
+            buf[len + 1] = 0x7d; // '}'
+            Object.assign(out, JSON.parse(new TextDecoder().decode(buf)));
          }
-         buf[len + 1] = 0x7d; // '}'
-         Object.assign(out, JSON.parse(new TextDecoder().decode(buf)));
+      } finally {
+         await invoke("payload_done", { generation: generation }).catch(() => {});
       }
-      await invoke("payload_done").catch(() => {});
       return out;
    }
 
