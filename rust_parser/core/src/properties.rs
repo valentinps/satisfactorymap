@@ -90,6 +90,21 @@ fn check_size(property_size: u32, property_start: usize, pos: usize, ptype: &str
     Ok(())
 }
 
+
+/// Borrow a type-name StrRef as &str without allocating. Property/array/set/
+/// map type names drive `match`es in the hottest loop of the whole parser
+/// (parse_properties re-runs for every object during payload builds), and
+/// each used to allocate a String just to be matched and dropped. UTF-8 was
+/// validated when the string was parsed, so the borrow is exact; wide
+/// strings (never real type names) take the owned fallback inside the Cow.
+#[inline]
+fn type_str<'a>(r: StrRef, data: &'a [u8]) -> std::borrow::Cow<'a, str> {
+    if r.wide {
+        std::borrow::Cow::Owned(r.to_string(data))
+    } else {
+        String::from_utf8_lossy(r.bytes(data))
+    }
+}
 pub fn parse_properties(
     c: &mut Cursor,
     current_entity_save_version: u32,
@@ -114,8 +129,8 @@ pub fn parse_properties(
             break;
         }
         let property_type = c.string()?;
-        let ptype_string = property_type.to_string(c.data);
-        let ptype = ptype_string.as_str();
+        let ptype_string = type_str(property_type, c.data);
+        let ptype = ptype_string.as_ref();
         let mut meta: Vec<Meta> = vec![Meta::Str(property_name), Meta::Str(property_type)];
 
         let property_header_flag = object_ue5_version >= 1012;
@@ -372,8 +387,8 @@ pub fn parse_properties(
                 let start = c.pos;
                 let array_count = c.u32()?;
                 let at = array_type.ok_or_else(|| perr!("ArrayProperty without arrayType"))?;
-                let at_s = at.to_string(c.data);
-                let av: ArrayValue = match at_s.as_str() {
+                let at_s = type_str(at, c.data);
+                let av: ArrayValue = match at_s.as_ref() {
                     "IntProperty" => {
                         let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 4));
                         for _ in 0..array_count {
@@ -464,8 +479,8 @@ pub fn parse_properties(
                         let struct_start = c.pos;
                         let sst = structure_sub_type
                             .ok_or_else(|| perr!("ArrayProperty StructProperty without structureSubType"))?;
-                        let sst_s = sst.to_string(c.data);
-                        let inner: ArrayValue = match sst_s.as_str() {
+                        let sst_s = type_str(sst, c.data);
+                        let inner: ArrayValue = match sst_s.as_ref() {
                             "LinearColor" => {
                                 let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 16));
                                 for _ in 0..array_count {
@@ -621,8 +636,8 @@ pub fn parse_properties(
                 let start = c.pos;
                 let spt = struct_property_type
                     .ok_or_else(|| perr!("StructProperty without structPropertyType"))?;
-                let spt_s = spt.to_string(c.data);
-                let sv: StructValue = match spt_s.as_str() {
+                let spt_s = type_str(spt, c.data);
+                let sv: StructValue = match spt_s.as_ref() {
                     "InventoryItem" => {
                         c.confirm_u32(0)?;
                         let item_name = c.string()?;
@@ -746,18 +761,18 @@ pub fn parse_properties(
                 let n = c.u32()?;
                 let kt = key_type.ok_or_else(|| perr!("MapProperty without keyType"))?;
                 let vt = value_type.ok_or_else(|| perr!("MapProperty without valueType"))?;
-                let kt_s = kt.to_string(c.data);
-                let vt_s = vt.to_string(c.data);
+                let kt_s = type_str(kt, c.data);
+                let vt_s = type_str(vt, c.data);
                 let mut entries = Vec::with_capacity(c.capped_capacity(n as usize, 4));
                 for _ in 0..n {
-                    let k = match kt_s.as_str() {
+                    let k = match kt_s.as_ref() {
                         "StructProperty" => MapKey::IntVector([c.i32()?, c.i32()?, c.i32()?]),
                         "ObjectProperty" => MapKey::Ref(parse_object_reference(c)?),
                         "IntProperty" => MapKey::I32(c.i32()?),
                         "NameProperty" | "EnumProperty" | "StrProperty" => MapKey::Str(c.string()?),
                         other => return Err(perr!("Unsupported map keyType {}", other)),
                     };
-                    let v = match vt_s.as_str() {
+                    let v = match vt_s.as_ref() {
                         "StructProperty" => MapVal::Props(parse_properties(
                             c,
                             current_entity_save_version,

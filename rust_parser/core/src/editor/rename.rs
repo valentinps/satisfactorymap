@@ -223,14 +223,6 @@ impl<'a> SubstMatcher<'a> {
     }
 }
 
-/// One-shot convenience over SubstMatcher (small maps).
-pub fn substitute_names(span: &mut [u8], map: &HashMap<Vec<u8>, Vec<u8>>) {
-    if map.is_empty() || span.is_empty() {
-        return;
-    }
-    SubstMatcher::new(map).substitute(span);
-}
-
 /// Visit every ObjectRef inside an object's parsed model (associations,
 /// properties, actor-specific trailing data). Used to find external
 /// references that need tombstoning -- the substitution itself is byte-based.

@@ -63,29 +63,6 @@ pub fn stack_item<'a>(pl: &PropList, data: &'a [u8]) -> Option<(&'a [u8], i64)> 
 /// to every extractor call.
 pub type InstanceSlots<'a> = (Vec<(&'a [u8], (usize, usize))>, HashMap<&'a [u8], usize>);
 
-/// objectsByInstanceName with Python dict semantics: last value wins, first
-/// insertion position kept. Slots are (nameBytes, (levelIdx, objectIdx)).
-pub fn build_instance_slots(
-    store: &SaveStore,
-) -> (Vec<(&[u8], (usize, usize))>, HashMap<&[u8], usize>) {
-    let data: &[u8] = &store.data;
-    let mut slots: Vec<(&[u8], (usize, usize))> = Vec::new();
-    let mut slot_by_name: HashMap<&[u8], usize> = HashMap::new();
-    for (li, level) in store.levels.iter().enumerate() {
-        for oi in 0..level.headers.len() {
-            let name = level.headers[oi].instance_name().bytes(data);
-            match slot_by_name.get(name) {
-                Some(&idx) => slots[idx].1 = (li, oi),
-                None => {
-                    slot_by_name.insert(name, slots.len());
-                    slots.push((name, (li, oi)));
-                }
-            }
-        }
-    }
-    (slots, slot_by_name)
-}
-
 struct ItemIndex<'a> {
     /// shortName -> rows, insertion-ordered.
     order: Vec<(&'a [u8], Vec<(usize, i64)>)>, // (shortName, [(objectSlot, count)])

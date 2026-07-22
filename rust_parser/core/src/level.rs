@@ -471,21 +471,30 @@ fn parse_body(
     )?;
     levels.push(level);
 
-    // "Missing final array count" quirk: 4 zero bytes get appended.
-    let mut padded = false;
-    let padded_data: Vec<u8>;
+    // "Missing final array count" quirk (satisfactory-calculator re-saves):
+    // 4 zero bytes get appended by the caller. Every remaining read consumes
+    // ONLY those 4 zeros -- a zero-length a_level_name (which is not
+    // "Persistent_Level", so no drop-pod/extra refs are read) and then the
+    // exact-consumption check passes at data.len() + 4. Synthesize that
+    // outcome directly: the previous implementation copied the entire body
+    // just to append 4 bytes and read them (2x peak memory -- a guaranteed
+    // wasm OOM for calculator re-saves of large worlds).
     if c.pos == data.len() {
         calculator_extras.push("Missing final array count".to_string());
-        padded = true;
-        let mut v = Vec::with_capacity(data.len() + 4);
-        v.extend_from_slice(data);
-        v.extend_from_slice(&[0, 0, 0, 0]);
-        padded_data = v;
-        c = Cursor::new(&padded_data, c.pos);
-    } else {
-        padded_data = Vec::new();
-        let _ = &padded_data;
+        if let Some(cb) = progress.as_deref_mut() {
+            cb(1, progress_total, progress_total);
+        }
+        return Ok((
+            persistent_level_version_data,
+            partitions,
+            levels,
+            crate::reader::EMPTY_STR,
+            Vec::new(),
+            Vec::new(),
+            true,
+        ));
     }
+    let padded = false;
 
     let a_level_name = c.string()?;
     let mut drop_pod_refs = Vec::new();
