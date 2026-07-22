@@ -66,11 +66,25 @@ pub fn decompress_save_file(
         if uncomp1 != uncomp2 {
             return Err(perr!("Uncompressed size mismatch {} != {}", uncomp1, uncomp2));
         }
-        let comp_len = comp1 as usize;
-        if c.pos + comp_len > data.len() {
+        // Compare in u64: on wasm32 `comp1 as usize` truncates, and pos + len
+        // can wrap, so a hostile 64-bit length could pass a usize check.
+        let remaining = (data.len() - c.pos) as u64;
+        if comp1 > remaining {
             return Err(perr!(
                 "Chunk compressed length exceeds end of file by {}",
-                c.pos + comp_len - data.len()
+                comp1 - remaining
+            ));
+        }
+        let comp_len = comp1 as usize;
+        // zlib's maximum expansion is ~1032:1, so an uncompressed claim beyond
+        // that is corrupt. Without this bound the corrupt value flows into
+        // `vec![0u8; total_uncomp]` below -- a tiny damaged file claiming
+        // terabytes aborts the process on allocation instead of erroring.
+        if uncomp1 > comp1.saturating_mul(1032).max(64) || uncomp1 > usize::MAX as u64 {
+            return Err(perr!(
+                "Chunk uncompressed size {} implausible for {} compressed bytes",
+                uncomp1,
+                comp1
             ));
         }
         chunks.push(Chunk { file_off: c.pos, comp_len, uncomp_len: uncomp1 as usize });

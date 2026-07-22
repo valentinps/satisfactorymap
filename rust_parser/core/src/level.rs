@@ -94,9 +94,9 @@ fn parse_headers_and_level(
     let header_start = c.pos;
     let actor_and_component_count = c.u32()?;
 
-    let mut headers: Vec<Header> = Vec::with_capacity(actor_and_component_count as usize);
-    let mut header_spans: Vec<(usize, u32)> =
-        Vec::with_capacity(actor_and_component_count as usize);
+    let capped = c.capped_capacity(actor_and_component_count as usize, 12);
+    let mut headers: Vec<Header> = Vec::with_capacity(capped);
+    let mut header_spans: Vec<(usize, u32)> = Vec::with_capacity(capped);
     let mut last_report = c.pos;
     for _ in 0..actor_and_component_count {
         let header_record_start = c.pos;
@@ -187,10 +187,9 @@ fn parse_headers_and_level(
             actor_and_component_count
         ));
     }
-    let mut objects =
-        Vec::with_capacity(if lean { 0 } else { actor_and_component_count as usize });
-    let mut object_spans: Vec<(usize, u32)> =
-        Vec::with_capacity(actor_and_component_count as usize);
+    let capped = c.capped_capacity(actor_and_component_count as usize, 8);
+    let mut objects = Vec::with_capacity(if lean { 0 } else { capped });
+    let mut object_spans: Vec<(usize, u32)> = Vec::with_capacity(capped);
     let mut last_report = oc.pos;
     for idx in 0..actor_and_component_count as usize {
         let object_record_start = oc.pos;
@@ -426,7 +425,7 @@ fn parse_body(
         let i = c.u32()?;
         let grid_hex = c.u32()?;
         let n = c.u32()?;
-        let mut levels = Vec::with_capacity(n as usize);
+        let mut levels = Vec::with_capacity(c.capped_capacity(n as usize, 4));
         for _ in 0..n {
             let level_name = c.string()?;
             let lhex = c.u32()?;

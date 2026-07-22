@@ -38,7 +38,7 @@ pub fn parse_text_property(c: &mut Cursor) -> PResult<TextValue> {
             let uuid = c.string()?;
             let format = c.string()?;
             let arg_count = c.u32()?;
-            let mut args = Vec::with_capacity(arg_count as usize);
+            let mut args = Vec::with_capacity(c.capped_capacity(arg_count as usize, 4));
             for _ in 0..arg_count {
                 let arg_name = c.string()?;
                 c.confirm_u8(4)?;
@@ -322,13 +322,13 @@ pub fn parse_properties(
                 let type_count = c.u32()?;
                 let st = set_type.ok_or_else(|| perr!("SetProperty without setType"))?;
                 let values = if st.eq_ascii(c.data, "UInt32Property") {
-                    let mut v = Vec::with_capacity(type_count as usize);
+                    let mut v = Vec::with_capacity(c.capped_capacity(type_count as usize, 4));
                     for _ in 0..type_count {
                         v.push(c.u32()?);
                     }
                     SetValues::U32(v)
                 } else if st.eq_ascii(c.data, "StructProperty") {
-                    let mut v = Vec::with_capacity(type_count as usize);
+                    let mut v = Vec::with_capacity(c.capped_capacity(type_count as usize, 16));
                     for _ in 0..type_count {
                         let a = c.u64()?;
                         let b = c.u64()?;
@@ -336,7 +336,7 @@ pub fn parse_properties(
                     }
                     SetValues::Guid(v)
                 } else if st.eq_ascii(c.data, "ObjectProperty") {
-                    let mut v = Vec::with_capacity(type_count as usize);
+                    let mut v = Vec::with_capacity(c.capped_capacity(type_count as usize, 8));
                     for _ in 0..type_count {
                         v.push(parse_object_reference(c)?);
                     }
@@ -375,49 +375,49 @@ pub fn parse_properties(
                 let at_s = at.to_string(c.data);
                 let av: ArrayValue = match at_s.as_str() {
                     "IntProperty" => {
-                        let mut v = Vec::with_capacity(array_count as usize);
+                        let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 4));
                         for _ in 0..array_count {
                             v.push(c.i32()?);
                         }
                         ArrayValue::I32(v)
                     }
                     "Int64Property" => {
-                        let mut v = Vec::with_capacity(array_count as usize);
+                        let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 8));
                         for _ in 0..array_count {
                             v.push(c.i64()?);
                         }
                         ArrayValue::I64(v)
                     }
                     "ByteProperty" => {
-                        let mut v = Vec::with_capacity(array_count as usize);
+                        let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 1));
                         for _ in 0..array_count {
                             v.push(c.u8()?);
                         }
                         ArrayValue::U8(v)
                     }
                     "FloatProperty" => {
-                        let mut v = Vec::with_capacity(array_count as usize);
+                        let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 4));
                         for _ in 0..array_count {
                             v.push(c.f32()?);
                         }
                         ArrayValue::F32(v)
                     }
                     "DoubleProperty" => {
-                        let mut v = Vec::with_capacity(array_count as usize);
+                        let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 8));
                         for _ in 0..array_count {
                             v.push(c.f64()?);
                         }
                         ArrayValue::F64(v)
                     }
                     "StrProperty" | "EnumProperty" => {
-                        let mut v = Vec::with_capacity(array_count as usize);
+                        let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 4));
                         for _ in 0..array_count {
                             v.push(c.string()?);
                         }
                         ArrayValue::Str(v)
                     }
                     "SoftObjectProperty" => {
-                        let mut v = Vec::with_capacity(array_count as usize);
+                        let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 8));
                         for _ in 0..array_count {
                             let r = parse_object_reference(c)?;
                             let x = c.u32()?;
@@ -426,14 +426,14 @@ pub fn parse_properties(
                         ArrayValue::SoftObj(v)
                     }
                     "InterfaceProperty" | "ObjectProperty" => {
-                        let mut v = Vec::with_capacity(array_count as usize);
+                        let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 8));
                         for _ in 0..array_count {
                             v.push(parse_object_reference(c)?);
                         }
                         ArrayValue::Refs(v)
                     }
                     "TextProperty" => {
-                        let mut v = Vec::with_capacity(array_count as usize);
+                        let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 4));
                         for _ in 0..array_count {
                             v.push(parse_text_property(c)?);
                         }
@@ -467,21 +467,21 @@ pub fn parse_properties(
                         let sst_s = sst.to_string(c.data);
                         let inner: ArrayValue = match sst_s.as_str() {
                             "LinearColor" => {
-                                let mut v = Vec::with_capacity(array_count as usize);
+                                let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 16));
                                 for _ in 0..array_count {
                                     v.push([c.f32()?, c.f32()?, c.f32()?, c.f32()?]);
                                 }
                                 ArrayValue::LinearColor(v)
                             }
                             "Vector" => {
-                                let mut v = Vec::with_capacity(array_count as usize);
+                                let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 12));
                                 for _ in 0..array_count {
                                     v.push([c.f64()?, c.f64()?, c.f64()?]);
                                 }
                                 ArrayValue::Vector(v)
                             }
                             "Guid" => {
-                                let mut v = Vec::with_capacity(array_count as usize);
+                                let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 16));
                                 for _ in 0..array_count {
                                     v.push([c.u64()?, c.u64()?]);
                                 }
@@ -548,7 +548,7 @@ pub fn parse_properties(
                             | "SignComponentVariableMetaData"
                             | "SwatchGroupData"
                             | "USSSwatchSaveInfo" => {
-                                let mut v = Vec::with_capacity(array_count as usize);
+                                let mut v = Vec::with_capacity(c.capped_capacity(array_count as usize, 4));
                                 for _ in 0..array_count {
                                     v.push(parse_properties(c, current_entity_save_version, object_ue5_version)?);
                                 }
@@ -670,7 +670,7 @@ pub fn parse_properties(
                     "ClientIdentityInfo" => {
                         let uuid = c.string()?;
                         let identity_count = c.u32()?;
-                        let mut identities = Vec::with_capacity(identity_count as usize);
+                        let mut identities = Vec::with_capacity(c.capped_capacity(identity_count as usize, 4));
                         for _ in 0..identity_count {
                             let client_type = c.u8()?;
                             let client_size = c.u32()?;
@@ -748,7 +748,7 @@ pub fn parse_properties(
                 let vt = value_type.ok_or_else(|| perr!("MapProperty without valueType"))?;
                 let kt_s = kt.to_string(c.data);
                 let vt_s = vt.to_string(c.data);
-                let mut entries = Vec::with_capacity(n as usize);
+                let mut entries = Vec::with_capacity(c.capped_capacity(n as usize, 4));
                 for _ in 0..n {
                     let k = match kt_s.as_str() {
                         "StructProperty" => MapKey::IntVector([c.i32()?, c.i32()?, c.i32()?]),

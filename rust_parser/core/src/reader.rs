@@ -144,10 +144,17 @@ impl<'a> Cursor<'a> {
         }
         if strlen > 0 {
             let n = strlen as usize;
-            if self.data.len() < self.pos + n {
-                return Err(perr!("String length too large, size {} at offset {}.", strlen, len_off));
-            }
-            let content = &self.data[self.pos..self.pos + n - 1];
+            // checked_add: on wasm32 (release = wrapping) a hostile length
+            // near usize::MAX would wrap self.pos + n past the bounds check
+            // and turn a parse error into an uncatchable trap.
+            let end = self
+                .pos
+                .checked_add(n)
+                .filter(|&e| e <= self.data.len())
+                .ok_or_else(|| {
+                    perr!("String length too large, size {} at offset {}.", strlen, len_off)
+                })?;
+            let content = &self.data[self.pos..end - 1];
             if std::str::from_utf8(content).is_err() {
                 return Err(perr!(
                     "String decode failure at offset {} of length {}",
@@ -160,11 +167,18 @@ impl<'a> Cursor<'a> {
             Ok(r)
         } else {
             let n = (-(strlen as i64)) as usize; // number of UTF-16 code units incl. null
+            // checked_mul/checked_add: strlen == i32::MIN makes n == 2^31,
+            // whose *2 wraps to 0 on wasm32 in release builds -- the bounds
+            // check would pass and byte_len - 2 would underflow into a trap.
+            let end = n
+                .checked_mul(2)
+                .and_then(|b| self.pos.checked_add(b))
+                .filter(|&e| e <= self.data.len())
+                .ok_or_else(|| {
+                    perr!("String length too large, size {} at offset {}.", strlen, len_off)
+                })?;
             let byte_len = n * 2;
-            if self.data.len() < self.pos + byte_len {
-                return Err(perr!("String length too large, size {} at offset {}.", strlen, len_off));
-            }
-            let content = &self.data[self.pos..self.pos + byte_len - 2];
+            let content = &self.data[self.pos..end - 2];
             let units: Vec<u16> = content
                 .chunks_exact(2)
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
@@ -183,7 +197,9 @@ impl<'a> Cursor<'a> {
     }
 
     pub fn data_ref(&mut self, len: usize) -> PResult<DataRef> {
-        if self.pos + len > self.data.len() {
+        // checked_add: see string() -- wrapping would defeat the bounds check.
+        let end = self.pos.checked_add(len).filter(|&e| e <= self.data.len());
+        if end.is_none() {
             return Err(perr!(
                 "Offset {} too large for data of length {} in {}-byte data.",
                 self.pos,
@@ -194,6 +210,19 @@ impl<'a> Cursor<'a> {
         let r = DataRef { off: self.pos, len: len as u32 };
         self.pos += len;
         Ok(r)
+    }
+
+    /// Capacity to pre-reserve for a count read from the wire. Counts are
+    /// attacker-controlled: passing one straight to `Vec::with_capacity` lets
+    /// a single corrupted u32 request tens of GB and abort the process before
+    /// any element parse can fail. Each element consumes at least
+    /// `min_elem_bytes` of remaining input, so any count beyond
+    /// remaining / min_elem_bytes is corrupt; the parse loop still reads the
+    /// full count and returns the normal error, just without pre-reserving.
+    #[inline]
+    pub fn capped_capacity(&self, count: usize, min_elem_bytes: usize) -> usize {
+        let remaining = self.data.len().saturating_sub(self.pos);
+        count.min(remaining / min_elem_bytes.max(1))
     }
 
     pub fn confirm_u8(&mut self, expected: u8) -> PResult<()> {
