@@ -30,14 +30,13 @@ arboard = { version = "3", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Dedicated-server save fetch (src/server_api.rs). Blocking on purpose: the
-# calls run on spawn_blocking threads, keeping the lib runtime-free.
-# rustls-tls because the TOFU certificate pinning below needs a custom rustls
-# verifier (native-tls has no hook for "accept self-signed but pin it").
-reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
-# TOFU pinning for the dedicated-server API: the server's cert is self-signed
-# by design, so instead of accepting anything forever, the first successful
-# login pins its SHA-256 and later fetches require the same cert.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# calls run on spawn_blocking threads, keeping the lib runtime-free. Platform
+# TLS (default-tls / schannel), NOT rustls: the server cert is X.509 v1, which
+# rustls refuses to parse. tls_info exposes the peer cert so server_api can
+# pin its SHA-256 on an unauthenticated HealthCheck before sending the
+# password.
+reqwest = { version = "0.12", features = ["blocking", "json", "default-tls"] }
+# SHA-256 for the certificate pin (trust-on-first-use, see server_api).
 sha2 = "0.10"
 # The remembered admin password lives in the OS credential store (Windows
 # Credential Manager / macOS Keychain), not the webview's localStorage.

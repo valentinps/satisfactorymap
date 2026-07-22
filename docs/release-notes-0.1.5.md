@@ -5,10 +5,11 @@ a much smaller/faster map payload, parser robustness, and a batch of editor
 and UI fixes.
 
 ## Security
-- **Dedicated-server fetch now pins the server's TLS certificate** on the
-  first successful login (trust-on-first-use). A changed certificate is
-  reported and requires explicit confirmation before trusting it, instead of
-  silently accepting any certificate.
+- **Dedicated-server fetch now pins the server's TLS certificate** the first
+  time you connect (trust-on-first-use), and verifies it before sending the
+  admin password on every later fetch. A changed certificate is reported and
+  requires explicit confirmation before trusting it, instead of silently
+  accepting any certificate.
 - **The remembered admin password moved to the Windows Credential Manager**
   (from plaintext local storage). An existing saved password is migrated
   automatically on first launch.

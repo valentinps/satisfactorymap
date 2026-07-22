@@ -5,20 +5,24 @@
 //! `PasswordLogin` -> `EnumerateSessions` -> `DownloadSaveGame`.
 //!
 //! Two protocol quirks shape this module:
-//! - The server's TLS certificate is self-signed by design (generated on
-//!   first boot), so chain verification is impossible. Instead of accepting
-//!   anything forever (which hands the admin password to any MITM), the
-//!   cert presented on the first SUCCESSFUL login is pinned by SHA-256
-//!   (trust-on-first-use, like SSH) and every later fetch requires the same
-//!   cert; `forget_pin` clears it when a server legitimately regenerates.
+//! - The server's TLS certificate is self-signed AND X.509 v1 (Coffee Stain
+//!   generates it on first boot). Chain verification is impossible, and
+//!   rustls refuses to parse v1 certs at all, so this uses the platform TLS
+//!   (native-tls / schannel) with verification disabled. To still protect
+//!   the admin password from a MITM, the cert is pinned by SHA-256
+//!   trust-on-first-use: an unauthenticated HealthCheck runs FIRST, its peer
+//!   certificate (read back via reqwest's TlsInfo) is pinned or compared,
+//!   and only if it matches does the password go out -- over the same pooled
+//!   connection. `forget_pin` clears the pin when a server legitimately
+//!   regenerates its certificate.
 //! - Response-key casing differs between the shipped docs (PascalCase) and
 //!   what servers actually send (camelCase for at least some fields), so
 //!   every deserialized field carries aliases for both.
 
 use serde::Deserialize;
+use sha2::Digest;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const DEFAULT_PORT: u16 = 7777;
@@ -27,91 +31,13 @@ pub const DEFAULT_PORT: u16 = 7777;
 // Trust-on-first-use certificate pinning
 // ---------------------------------------------------------------------------
 
-/// Marker embedded in the rustls error on a pin mismatch so `fetch_latest`
-/// (and the frontend) can tell "certificate changed" apart from ordinary
-/// connection failures.
+/// Returned inside the error when a pinned certificate no longer matches, so
+/// the frontend can offer to trust the new one instead of treating it as an
+/// ordinary failure.
 pub const PIN_MISMATCH_MARKER: &str = "TOFU_PIN_MISMATCH";
-
-/// Accepts any server certificate (self-signed by design) but records its
-/// SHA-256; when a pinned fingerprint is supplied, only that exact cert
-/// passes. Handshake signatures are still verified against the presented
-/// cert -- pinning without that would let a replayed cert pass without its
-/// private key (TLS 1.3 authenticates via CertificateVerify only).
-#[derive(Debug)]
-struct TofuVerifier {
-    expected: Option<[u8; 32]>,
-    seen: Mutex<Option<[u8; 32]>>,
-    provider: Arc<rustls::crypto::CryptoProvider>,
-}
-
-impl rustls::client::danger::ServerCertVerifier for TofuVerifier {
-    fn verify_server_cert(
-        &self,
-        end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        use sha2::Digest;
-        let fp: [u8; 32] = sha2::Sha256::digest(end_entity.as_ref()).into();
-        *self.seen.lock().unwrap() = Some(fp);
-        if let Some(expected) = self.expected {
-            if fp != expected {
-                return Err(rustls::Error::General(format!(
-                    "{PIN_MISMATCH_MARKER}: the server presented a different TLS certificate than the pinned one"
-                )));
-            }
-        }
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.provider.signature_verification_algorithms,
-        )
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &self.provider.signature_verification_algorithms,
-        )
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
-    }
-}
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn unhex32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
-        out[i] = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
-    }
-    Some(out)
 }
 
 /// Pin store: a small JSON object { "<base_url>": "<sha256 hex>" } in the
@@ -123,9 +49,9 @@ fn load_pins(path: &Path) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
-fn save_pin(path: &Path, key: &str, fp: &[u8; 32]) {
+fn save_pin(path: &Path, key: &str, fingerprint_hex: &str) {
     let mut pins = load_pins(path);
-    pins.insert(key.to_string(), hex(fp));
+    pins.insert(key.to_string(), fingerprint_hex.to_string());
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -146,6 +72,14 @@ pub fn forget_pin(pin_path: &Path, host_input: &str) -> Result<(), String> {
             .map_err(|e| format!("Failed to write {}: {}", pin_path.display(), e))?;
     }
     Ok(())
+}
+
+/// SHA-256 of the peer's leaf certificate for the response that just came
+/// back (reqwest exposes it via TlsInfo when the client sets `tls_info(true)`).
+fn peer_cert_fingerprint(resp: &reqwest::blocking::Response) -> Option<String> {
+    let info = resp.extensions().get::<reqwest::tls::TlsInfo>()?;
+    let der = info.peer_certificate()?;
+    Some(hex(&sha2::Sha256::digest(der)))
 }
 
 /// One entry of a session's save list, as returned by `EnumerateSessions`.
@@ -195,10 +129,7 @@ pub fn base_url(input: &str) -> Result<String, String> {
     if rest.is_empty() {
         return Err("Enter the server's host name or IP.".to_string());
     }
-    let parse_port = |p: &str| {
-        p.parse::<u16>()
-            .map_err(|_| format!("Invalid port: {p}"))
-    };
+    let parse_port = |p: &str| p.parse::<u16>().map_err(|_| format!("Invalid port: {p}"));
     // Bracketed IPv6 first, then host:port, then bare host. A bare IPv6
     // address (multiple ':') needs brackets to carry a port, matching URLs.
     let (host, port) = if let Some(after) = rest.strip_prefix('[') {
@@ -212,31 +143,62 @@ pub fn base_url(input: &str) -> Result<String, String> {
         (format!("[{addr}]"), port)
     } else {
         match rest.rsplit_once(':') {
-            Some((h, p)) if !h.is_empty() && !h.contains(':') => {
-                (h.to_string(), parse_port(p)?)
-            }
+            Some((h, p)) if !h.is_empty() && !h.contains(':') => (h.to_string(), parse_port(p)?),
             _ => (rest.to_string(), DEFAULT_PORT),
         }
     };
     Ok(format!("https://{host}:{port}/api/v1"))
 }
 
-fn http_client(verifier: Arc<TofuVerifier>) -> Result<reqwest::blocking::Client, String> {
-    let tls = rustls::ClientConfig::builder_with_provider(verifier.provider.clone())
-        .with_safe_default_protocol_versions()
-        .map_err(|e| format!("TLS config failed: {e}"))?
-        .dangerous()
-        .with_custom_certificate_verifier(verifier)
-        .with_no_client_auth();
+fn http_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
-        // Self-signed server certificate: the TOFU verifier above decides.
-        .use_preconfigured_tls(tls)
+        // The server cert is self-signed and X.509 v1: platform TLS accepts
+        // it (rustls cannot even parse v1). The password is protected by the
+        // SHA-256 cert pin checked before login, not by chain validation.
+        .danger_accept_invalid_certs(true)
+        // Expose the peer certificate on each response so the pin can be
+        // computed/verified (see peer_cert_fingerprint).
+        .tls_info(true)
+        // Reuse one connection across HealthCheck -> login -> download so the
+        // password rides the exact connection whose cert was just pinned.
+        .pool_max_idle_per_host(4)
         .connect_timeout(Duration::from_secs(10))
         // No overall timeout -- DownloadSaveGame bodies can be hundreds of
         // MB over slow links (reqwest's blocking default would cap at 30s).
         .timeout(None)
         .build()
         .map_err(|e| format!("HTTP client init failed: {e}"))
+}
+
+/// HealthCheck (no auth) FIRST, then pin/verify its peer certificate before
+/// any credential is sent. On a pin mismatch the error carries
+/// PIN_MISMATCH_MARKER so the UI can offer an explicit re-trust.
+fn healthcheck_and_pin(
+    client: &reqwest::blocking::Client,
+    base_url: &str,
+    pin_path: &Path,
+) -> Result<(), String> {
+    let resp = call(client, base_url, None, "HealthCheck",
+                    serde_json::json!({ "clientCustomData": "" }))?;
+    let fingerprint = peer_cert_fingerprint(&resp)
+        .ok_or("Could not read the server's TLS certificate to pin it.")?;
+    // Drain/validate the HealthCheck envelope too (a non-server endpoint
+    // would fail here rather than pinning a stranger's cert).
+    json_data("HealthCheck", resp)?;
+    let key = base_url.to_string();
+    match load_pins(pin_path).get(&key) {
+        Some(pinned) if *pinned == fingerprint => Ok(()),
+        Some(_) => Err(format!(
+            "{PIN_MISMATCH_MARKER}: The server's TLS certificate is different from the one \
+             pinned on first login. If the server was reinstalled or regenerated its \
+             certificate this is expected; otherwise someone may be intercepting the \
+             connection."
+        )),
+        None => {
+            save_pin(pin_path, &key, &fingerprint); // trust on first use
+            Ok(())
+        }
+    }
 }
 
 fn call(
@@ -398,33 +360,12 @@ pub fn fetch_latest(
     progress: &dyn Fn(String),
 ) -> Result<FetchedSave, String> {
     let base_url = base_url(host_input)?;
-    let expected = load_pins(pin_path).get(&base_url).and_then(|s| unhex32(s));
-    let verifier = Arc::new(TofuVerifier {
-        expected,
-        seen: Mutex::new(None),
-        provider: Arc::new(rustls::crypto::ring::default_provider()),
-    });
-    let client = http_client(verifier.clone())?;
+    let client = http_client()?;
     progress("Connecting…".to_string());
-    let token = login(&client, &base_url, password).map_err(|e| {
-        if e.contains(PIN_MISMATCH_MARKER) {
-            format!(
-                "{PIN_MISMATCH_MARKER}: The server's TLS certificate is different from the one \
-                 pinned on first login. If the server was reinstalled or regenerated its \
-                 certificate this is expected; otherwise someone may be intercepting the \
-                 connection."
-            )
-        } else {
-            e
-        }
-    })?;
-    // Trust-on-first-use: the password was accepted over this connection, so
-    // pin the certificate it presented for every future fetch.
-    if expected.is_none() {
-        if let Some(fp) = *verifier.seen.lock().unwrap() {
-            save_pin(pin_path, &base_url, &fp);
-        }
-    }
+    // Pin/verify the certificate on an unauthenticated HealthCheck BEFORE the
+    // password is sent; the pooled connection is then reused for login.
+    healthcheck_and_pin(&client, &base_url, pin_path)?;
+    let token = login(&client, &base_url, password)?;
     progress("Listing saves…".to_string());
     let sessions = enumerate_sessions(&client, &base_url, &token)?;
     let header =
