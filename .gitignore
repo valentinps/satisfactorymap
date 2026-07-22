@@ -46,3 +46,8 @@ rust_parser/target/
 dist/
 LAUNCH.md
 .wrangler
+
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
