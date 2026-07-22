@@ -36,7 +36,9 @@ The weaknesses cluster in four themes, systematic rather than sloppy:
    `cargo test` or the wasm build before Cloudflare deployed every push to
    `main`. CI now fetches the public test-saves corpus (release
    `test-saves-v1`, via `tools/fetch_test_saves.py`) and runs the Rust suite
-   plus the wasm build.
+   plus the wasm build. The Rust tests now reference the published corpus
+   (`All_080726-163150.sav`, `solo_autosave_1.sav`,
+   `BuildITBIIIIIG_210726-231135.sav`), so a clean clone is testable.
 3. ✅ **`release.py` refuses a dirty/out-of-sync tree** — it built from the
    local tree but tagged remote `main` HEAD, so uncommitted or unpushed
    state silently shipped (this is exactly how #1 happened).

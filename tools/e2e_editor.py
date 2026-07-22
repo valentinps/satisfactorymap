@@ -21,7 +21,7 @@ import pathlib
 from playwright.sync_api import sync_playwright
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-SAVE = sys.argv[1] if len(sys.argv) > 1 else str(REPO / "map/uploads/All_autosave_0.sav")
+SAVE = sys.argv[1] if len(sys.argv) > 1 else str(REPO / "map/uploads/All_080726-163150.sav")
 BASE_URL = sys.argv[2] if len(sys.argv) > 2 else "http://127.0.0.1:8791/"
 BUCKETS_READY = "window.MapApp && MapApp.layer && MapApp.layer.buckets && MapApp.layer.buckets.length > 0"
 

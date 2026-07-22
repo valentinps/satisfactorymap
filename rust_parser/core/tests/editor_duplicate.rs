@@ -54,7 +54,7 @@ fn actors_of_type<'a>(store: &'a SaveStore, prefix: &str) -> Vec<(usize, usize, 
 
 #[test]
 fn duplicate_constructor_renames_components_consistently() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
     let prefix = "/Game/FactoryGame/Buildable/Factory/ConstructorMk1/";
     let before = actors_of_type(&store, prefix);
@@ -124,7 +124,7 @@ fn duplicate_constructor_renames_components_consistently() {
 
 #[test]
 fn duplicate_powered_pair_includes_and_remaps_wire() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
     let data: &[u8] = &store.data;
 
@@ -217,7 +217,7 @@ fn duplicate_powered_pair_includes_and_remaps_wire() {
 
 #[test]
 fn duplicate_lightweight_appends_instance() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
 
     let mut target: Option<(String, usize, [f64; 3])> = None;
@@ -269,7 +269,7 @@ fn duplicate_lightweight_appends_instance() {
 
 #[test]
 fn duplicate_replay_is_deterministic() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
     let (_, _, name) = actors_of_type(&store, "/Game/FactoryGame/Buildable/Factory/SmelterMk1/")[0].clone();
     let ops = vec![

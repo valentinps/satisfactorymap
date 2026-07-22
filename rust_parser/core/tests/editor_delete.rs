@@ -31,7 +31,7 @@ fn find_actor(store: &SaveStore, prefix: &str) -> (usize, usize, String) {
 
 #[test]
 fn delete_machine_removes_actor_and_components() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
     let (li, oi, name) = find_actor(&store, "/Game/FactoryGame/Buildable/Factory/ConstructorMk1/");
     let components: Vec<String> = match &store.levels[li].parsed_objects()[oi].actor_reference_associations {
@@ -57,7 +57,7 @@ fn delete_machine_removes_actor_and_components() {
 
 #[test]
 fn delete_pole_removes_attached_wires() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
     let data: &[u8] = &store.data;
 
@@ -109,7 +109,7 @@ fn delete_pole_removes_attached_wires() {
 /// line in game.
 #[test]
 fn delete_chained_belt_removes_chain_actor() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
 
     // A chain with 2+ belts: delete one, the other must survive. Prefer a
@@ -179,7 +179,7 @@ fn delete_chained_belt_removes_chain_actor() {
 
 #[test]
 fn delete_lightweight_instance() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
 
     let mut target: Option<(String, usize, [f64; 3])> = None;
@@ -225,7 +225,7 @@ fn delete_lightweight_instance() {
 
 #[test]
 fn delete_then_undo_replay_restores_pristine() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
     let (_, _, name) = find_actor(&store, "/Game/FactoryGame/Buildable/Factory/SmelterMk1/");
     let pristine = effective_body(&store).to_vec();

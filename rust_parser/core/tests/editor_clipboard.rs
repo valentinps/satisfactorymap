@@ -58,8 +58,8 @@ fn op_from_blob(blob_json: &str, delta: [f64; 3]) -> sav_core::editor::EditOp {
 
 #[test]
 fn paste_constructor_into_another_save() {
-    let source = load("All_autosave_0.sav");
-    let target = load("All_autosave_1.sav");
+    let source = load("All_080726-163150.sav");
+    let target = load("solo_autosave_1.sav");
     let tables = ClassTables::embedded();
     let prefix = "/Game/FactoryGame/Buildable/Factory/ConstructorMk1/";
     let (_, _, name) = find_actor(&source, prefix);
@@ -121,8 +121,8 @@ fn paste_constructor_into_another_save() {
 
 #[test]
 fn paste_lightweight_into_another_save() {
-    let source = load("All_autosave_0.sav");
-    let target = load("All_autosave_1.sav");
+    let source = load("All_080726-163150.sav");
+    let target = load("solo_autosave_1.sav");
     let tables = ClassTables::embedded();
 
     // First lightweight type that exists in BOTH saves.
@@ -172,8 +172,8 @@ fn paste_lightweight_into_another_save() {
 /// records, and check the new group parses back with both instances.
 #[test]
 fn paste_lightweight_type_absent_from_target() {
-    let source = load("All_autosave_0.sav");
-    let target = load("All_autosave_1.sav");
+    let source = load("All_080726-163150.sav");
+    let target = load("solo_autosave_1.sav");
     let tables = ClassTables::embedded();
 
     let groups_of = |s: &SaveStore| -> Vec<(String, usize)> {
@@ -242,8 +242,8 @@ fn paste_lightweight_type_absent_from_target() {
 /// subsystem builds fresh networks on load, like for newly built pipes.
 #[test]
 fn pasted_pipe_network_id_is_reset() {
-    let source = load("All_autosave_0.sav");
-    let target = load("All_autosave_1.sav");
+    let source = load("All_080726-163150.sav");
+    let target = load("solo_autosave_1.sav");
     let tables = ClassTables::embedded();
     let prefix = "/Game/FactoryGame/Buildable/Factory/Pipeline/Build_Pipeline";
 
@@ -332,8 +332,8 @@ fn pasted_pipe_network_id_is_reset() {
 /// a dangling instance ref -- that was the "pasted signs are blank" bug.
 #[test]
 fn pasted_sign_keeps_layout_ref() {
-    let source = load("All_autosave_0.sav");
-    let target = load("All_autosave_1.sav");
+    let source = load("All_080726-163150.sav");
+    let target = load("solo_autosave_1.sav");
     let tables = ClassTables::embedded();
 
     let mut found: Option<(usize, usize, String)> = None;
@@ -391,7 +391,7 @@ fn pasted_sign_keeps_layout_ref() {
 #[ignore]
 fn paste_100k_objects_scale() {
     let t0 = std::time::Instant::now();
-    let source = load("BuildITBIIIIIG_autosave_0.sav");
+    let source = load("BuildITBIIIIIG_210726-231135.sav");
     println!("source parsed: {:?}", t0.elapsed());
 
     // Every buildable actor, capped at 100k selected names (component
@@ -426,7 +426,7 @@ fn paste_100k_objects_scale() {
     .len();
     println!("blob holds {} records (incl components)", n_records);
 
-    let target = load("BuildITBIIIIIG_autosave_0.sav");
+    let target = load("BuildITBIIIIIG_210726-231135.sav");
     let count_before: usize = target.levels.iter().map(|l| l.headers.len()).sum();
     let op = op_from_blob(&blob_json, [50000.0, 0.0, 0.0]);
     let tables = ClassTables::embedded();
@@ -500,8 +500,8 @@ fn pasted_miner_node_ref(
 /// the relink gate instead of being tombstoned.
 #[test]
 fn pasted_miner_relinks_to_the_same_node() {
-    let source = load("All_autosave_0.sav");
-    let target = load("All_autosave_1.sav");
+    let source = load("All_080726-163150.sav");
+    let target = load("solo_autosave_1.sav");
     let tables = ClassTables::embedded();
     // Matches MinerMK1/MinerMk2/MinerMk3 paths, not other buildings.
     let prefix = "/Game/FactoryGame/Buildable/Factory/MinerM";
@@ -535,8 +535,8 @@ fn pasted_miner_relinks_to_the_same_node() {
 /// a tombstone, not the real node.
 #[test]
 fn miner_ref_is_severed_when_node_resource_differs() {
-    let source = load("All_autosave_0.sav");
-    let target = load("All_autosave_1.sav");
+    let source = load("All_080726-163150.sav");
+    let target = load("solo_autosave_1.sav");
     let tables = ClassTables::embedded();
     let prefix = "/Game/FactoryGame/Buildable/Factory/MinerM";
     let (name, node_path) = find_miner_on_node(&source, prefix);
@@ -568,8 +568,8 @@ fn base64_std(bytes: &[u8]) -> String {
 
 #[test]
 fn paste_refuses_version_mismatch() {
-    let source = load("All_autosave_0.sav");
-    let target = load("All_autosave_1.sav");
+    let source = load("All_080726-163150.sav");
+    let target = load("solo_autosave_1.sav");
     let tables = ClassTables::embedded();
     let (_, _, name) = find_actor(&source, "/Game/FactoryGame/Buildable/Factory/SmelterMk1/");
     let blob_json = extract_clipboard(&source, &[name], &[]).unwrap();
@@ -587,8 +587,8 @@ fn paste_refuses_version_mismatch() {
 
 #[test]
 fn paste_is_deterministic_for_replay() {
-    let source = load("All_autosave_0.sav");
-    let target = load("All_autosave_1.sav");
+    let source = load("All_080726-163150.sav");
+    let target = load("solo_autosave_1.sav");
     let tables = ClassTables::embedded();
     let (_, _, name) = find_actor(&source, "/Game/FactoryGame/Buildable/Factory/SmelterMk1/");
     let blob_json = extract_clipboard(&source, &[name], &[]).unwrap();

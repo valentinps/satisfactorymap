@@ -39,7 +39,7 @@ fn actor_position(store: &SaveStore, li: usize, oi: usize) -> [f32; 3] {
 
 #[test]
 fn move_actor_translates_header_position() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let (li, oi, name) = find_actor(&store, "/Game/FactoryGame/Buildable/Factory/ConstructorMk1/");
     let before = actor_position(&store, li, oi);
 
@@ -78,7 +78,7 @@ fn move_actor_translates_header_position() {
 
 #[test]
 fn rotate_actor_about_own_position_changes_only_quat() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let (li, oi, name) = find_actor(&store, "/Game/FactoryGame/Buildable/Factory/SmelterMk1/");
     let (before_pos, before_rot) = match &store.levels[li].headers[oi] {
         Header::Actor(a) => (a.position, a.rotation),
@@ -111,7 +111,7 @@ fn rotate_actor_about_own_position_changes_only_quat() {
 
 #[test]
 fn move_chained_belt_moves_chain_splines() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
 
     // Find a belt that appears in some chain actor.
     let mut target: Option<(String, Vec<[[f64; 3]; 3]>)> = None;
@@ -168,7 +168,7 @@ fn move_chained_belt_moves_chain_splines() {
 
 #[test]
 fn move_lightweight_instance() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
 
     let mut target: Option<(String, [f64; 3])> = None;
     for level in &store.levels {
@@ -218,7 +218,7 @@ fn move_both_wire_owners_moves_the_wire() {
     use sav_core::mapdata::scan::SaveScan;
     use sav_core::store::{PropertyValue, StructValue};
 
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
     let data: &[u8] = &store.data;
 
@@ -302,7 +302,7 @@ fn move_both_wire_owners_moves_the_wire() {
 
 #[test]
 fn replay_is_deterministic() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let (_, _, name) = find_actor(&store, "/Game/FactoryGame/Buildable/Factory/ConstructorMk1/");
     let tables = ClassTables::embedded();
     let ops = vec![
