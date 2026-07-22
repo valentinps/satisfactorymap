@@ -40,9 +40,9 @@ fn main() {
     // per class covers every describe branch) plus a stride sample over all
     // instance names (odd one-off objects, components).
     let mut describe_names: Vec<String> = Vec::new();
-    for names in index.instance_names_by_type_path.values() {
-        if let Some(first) = names.first() {
-            describe_names.push(first.clone());
+    for tp in index.instance_slots_by_type_path.keys() {
+        if let Some(first) = index.instance_names_for_type_path(&store, tp).into_iter().next() {
+            describe_names.push(first);
         }
     }
     for (i, name) in index.by_instance_name.keys().enumerate() {
@@ -81,9 +81,12 @@ fn main() {
     // buildingInfo per type path: the 100 first type paths in index order
     // plus the 20 most-populated ones (recipes/power/inventory coverage).
     let mut building_tps: Vec<String> =
-        index.instance_names_by_type_path.keys().take(100).cloned().collect();
-    let mut by_count: Vec<(&String, usize)> =
-        index.instance_names_by_type_path.iter().map(|(tp, ns)| (tp, ns.len())).collect();
+        index.instance_slots_by_type_path.keys().take(100).cloned().collect();
+    let mut by_count: Vec<(&String, usize)> = index
+        .instance_slots_by_type_path
+        .iter()
+        .map(|(tp, b)| (tp, b.actor_slots.len() + b.lightweight_count))
+        .collect();
     by_count.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     for (tp, _) in by_count.into_iter().take(20) {
         if !building_tps.contains(tp) {
@@ -99,7 +102,7 @@ fn main() {
 
     // vehicleInfo over the vehicle classes present; trainInfo is global.
     let vehicle_tps: Vec<String> = index
-        .instance_names_by_type_path
+        .instance_slots_by_type_path
         .keys()
         .filter(|tp| tp.contains("/Buildable/Vehicle/"))
         .cloned()

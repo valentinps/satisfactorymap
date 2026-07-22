@@ -315,6 +315,11 @@ var EditorTool = (function() {
         SaveLoadFlow.setStatus(message + " — recovery incomplete ("
           + (replayError && replayError.message || replayError)
           + "); " + actions.length + " of " + backup.length + " edits were restored.");
+        // The action list is now a truncated prefix of what redoStack was
+        // derived from -- a redo would replay against the wrong baseline.
+        // Drop it (onSaveLoaded already cleared it before replay; this guards
+        // the case where replay pushed then a later op failed).
+        redoStack = [];
         updateToolbar();
       });
   }
@@ -1016,8 +1021,17 @@ var EditorTool = (function() {
     document.addEventListener("keydown", function(e) {
       var inInput = e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
       if (e.key === "Escape") {
+        // Peel one layer per press (see finditem.js): only claim the event
+        // if a placement or the offset dialog was actually open.
+        if (e.defaultPrevented) {
+          return;
+        }
+        var acted = placement !== null || offsetOverlay.style.display !== "none";
         cancelPlacement();
         closeOffsetDialog();
+        if (acted) {
+          e.preventDefault();
+        }
         return;
       }
       if (placement && !inInput && (e.key === "r" || e.key === "R")) {
@@ -1090,5 +1104,9 @@ var EditorTool = (function() {
     redo: redo,
     opCount: function() { return actions.length; },
     isPlacing: function() { return placement !== null; },
+    // filters.js derives tooltip world coordinates from bucket points with
+    // this since the payload no longer ships worldPositions arrays (see
+    // slim_payload_value in mapdata/mod.rs).
+    mapPxToWorldXY: mapPxToWorldXY,
   };
 })();

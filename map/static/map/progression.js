@@ -76,8 +76,9 @@
     }
   });
   document.addEventListener("keydown", function(e) {
-    if (e.key === "Escape" && overlay.style.display !== "none") {
+    if (e.key === "Escape" && !e.defaultPrevented && overlay.style.display !== "none") {
       closeModal();
+      e.preventDefault(); // One layer per press -- see finditem.js.
     }
   });
 

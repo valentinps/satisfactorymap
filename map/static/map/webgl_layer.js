@@ -260,9 +260,10 @@
     // -- and a building drawn over a foundation needs the extra contrast
     // against its own fill-over-fill background to read at all.
     "    if (t <= 0.004) { discard; }",               // interior: keep the fill as-is
-    "    outColor = vec4(v_color.rgb * 0.65, 0.7 * t);",
+    "    float a = 0.7 * t;",
+    "    outColor = vec4(v_color.rgb * 0.65 * a, a);", // premultiplied
     "  } else {",
-    "    outColor = v_color;",
+    "    outColor = vec4(v_color.rgb * v_color.a, v_color.a);", // premultiplied
     "  }",
     "}",
   ].join("\n");
@@ -319,7 +320,7 @@
     "precision mediump float;",
     "flat in vec4 v_color;",
     "out vec4 outColor;",
-    "void main() { outColor = v_color; }", // straight alpha; the blend state does source-over
+    "void main() { outColor = vec4(v_color.rgb * v_color.a, v_color.a); }", // premultiplied source-over
   ].join("\n");
 
   var CIRCLE_VS = [
@@ -355,7 +356,7 @@
     "void main() {",
     "  float alpha = 1.0 - smoothstep(u_radiusPx - 0.5, u_radiusPx + 0.5, length(v_local));",
     "  if (alpha <= 0.0) { discard; }",
-    "  outColor = vec4(u_color.rgb, alpha);", // opaque body, half-px AA rim
+    "  outColor = vec4(u_color.rgb * alpha, alpha);", // premultiplied; opaque body, half-px AA rim
     "}",
   ].join("\n");
 
@@ -611,10 +612,13 @@
       try {
         gl = this._glCanvas.getContext("webgl2", {
           alpha: true,
-          // Straight (non-premultiplied) alpha so the browser composites the
-          // drawing buffer over the base-map image with the same source-over
-          // semantics as the 2D canvas this replaces.
-          premultipliedAlpha: false,
+          // Premultiplied alpha: shaders output rgb pre-scaled by a and the
+          // blend state is (ONE, ONE_MINUS_SRC_ALPHA). The old straight-alpha
+          // setup (premultipliedAlpha:false + SRC_ALPHA blending) applied
+          // alpha twice wherever destination alpha was < 1 -- translucent
+          // fills over bare map rendered at ~0.30 effective opacity instead
+          // of RECT_ALPHA's 0.55, visibly darker than the 2D reference.
+          premultipliedAlpha: true,
           antialias: wantAA,
           // Depth carries each primitive's ALTITUDE (see u_zRange): draw
           // order stays pure painter's algorithm (test ALWAYS), but the
@@ -656,10 +660,10 @@
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); // 1-byte rows for the R8 uploads
 
       gl.enable(gl.BLEND);
-      // Classic source-over for color; the separate alpha factors keep the
-      // destination-alpha math right so the transparent-cleared buffer
-      // composites correctly over the page underneath.
-      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      // Premultiplied source-over: shaders emit rgb already scaled by alpha
+      // (see RECT_FS/FLAT_FS/CIRCLE_FS), so one factor pair is exact for
+      // both the color and alpha channels.
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       // DEPTH_TEST stays enabled so depth WRITES happen; ALWAYS keeps the
       // painter's-order passes unaffected by it (see the depth note above).
       gl.enable(gl.DEPTH_TEST);
@@ -1733,6 +1737,10 @@
         gl.bindVertexArray(rect.vao);
         gl.drawElements(gl.TRIANGLES, rect.count * 6, gl.UNSIGNED_INT, 0);
         gl.depthFunc(gl.ALWAYS);
+        // clear() honors the depth write mask -- without this restore the
+        // next frame's depth clear is a silent no-op and stale altitudes
+        // survive at uncovered pixels.
+        gl.depthMask(true);
       }
 
       gl.bindVertexArray(null);

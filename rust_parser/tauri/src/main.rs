@@ -22,8 +22,13 @@ struct AppState {
     /// Payload bytes mid-transfer when too big for one IPC response (WebView2
     /// truncates very large bodies and V8 caps strings at ~512MB, so the
     /// frontend pulls byte slices and parses per top-level chunk). Cleared by
-    /// `payload_done` or replaced by the next load/edit.
-    chunked_payload: Mutex<Option<Vec<u8>>>,
+    /// `payload_done` or replaced by the next load/edit. The u64 is a
+    /// generation counter binding slice requests to the payload that produced
+    /// their ranges: the frontend assembles across many awaits, and a
+    /// load/edit completing in that window would otherwise swap the stash
+    /// under the old ranges -- best case a parse error, worst case a chunk
+    /// boundary that happens to parse and merges wrong data silently.
+    chunked_payload: Mutex<(u64, Option<Vec<u8>>)>,
     /// Native clipboard slots: big copy blobs stay HERE and only a small
     /// pointer JSON crosses the webview/OS clipboard (WebView2 truncates
     /// huge IPC strings -- an 800k-object blob runs to ~100MB+). Keyed by a
@@ -105,14 +110,17 @@ fn chunk_ranges(payload: &[u8]) -> Vec<(u64, u64)> {
 /// `payload_slice` calls.
 fn payload_response(payload: Vec<u8>, state: &AppState) -> Response {
     let mut stash = state.chunked_payload.lock().unwrap();
+    stash.0 += 1; // Any new payload invalidates in-flight slice pulls.
     if payload.len() <= DIRECT_PAYLOAD_MAX {
-        *stash = None;
+        stash.1 = None;
         return Response::new(payload);
     }
     let ranges = chunk_ranges(&payload);
-    let marker = serde_json::json!({ "__chunkedPayload": { "ranges": ranges } });
+    let marker = serde_json::json!({
+        "__chunkedPayload": { "generation": stash.0, "ranges": ranges }
+    });
     let bytes = serde_json::to_vec(&marker).expect("marker json");
-    *stash = Some(payload);
+    stash.1 = Some(payload);
     Response::new(bytes)
 }
 
@@ -446,19 +454,25 @@ async fn mem_stats(_state: State<'_, AppState>) -> Result<MemStats, String> {
 #[tauri::command]
 async fn reset(state: State<'_, AppState>) -> Result<(), String> {
     *state.session.lock().unwrap() = None;
-    *state.chunked_payload.lock().unwrap() = None;
+    let mut stash = state.chunked_payload.lock().unwrap();
+    stash.0 += 1;
+    stash.1 = None;
     Ok(())
 }
 
 /// One byte slice of the stashed chunked payload (see `payload_response`).
 #[tauri::command]
 async fn payload_slice(
+    generation: u64,
     offset: u64,
     len: u64,
     state: State<'_, AppState>,
 ) -> Result<Response, String> {
     let stash = state.chunked_payload.lock().unwrap();
-    let payload = stash.as_ref().ok_or("No chunked payload pending")?;
+    if generation != stash.0 {
+        return Err("Chunked payload superseded by a newer load/edit".into());
+    }
+    let payload = stash.1.as_ref().ok_or("No chunked payload pending")?;
     let (o, l) = (offset as usize, len as usize);
     let end = o
         .checked_add(l)
@@ -467,10 +481,14 @@ async fn payload_slice(
     Ok(Response::new(payload[o..end].to_vec()))
 }
 
-/// Frontend finished assembling the chunked payload; free the stash.
+/// Frontend finished (or abandoned) assembling the chunked payload; free the
+/// stash. Generation-checked so a stale done can't free a newer payload.
 #[tauri::command]
-async fn payload_done(state: State<'_, AppState>) -> Result<(), String> {
-    *state.chunked_payload.lock().unwrap() = None;
+async fn payload_done(generation: u64, state: State<'_, AppState>) -> Result<(), String> {
+    let mut stash = state.chunked_payload.lock().unwrap();
+    if generation == stash.0 {
+        stash.1 = None;
+    }
     Ok(())
 }
 
@@ -497,8 +515,9 @@ async fn server_fetch_latest(
     on_progress: Channel<String>,
     app: tauri::AppHandle,
 ) -> Result<ServerFetchResult, String> {
+    let pin_path = cert_pin_path(&app)?;
     let fetched = tauri::async_runtime::spawn_blocking(move || {
-        server_api::fetch_latest(&host, &password, &|stage| {
+        server_api::fetch_latest(&host, &password, &pin_path, &|stage| {
             let _ = on_progress.send(stage);
         })
     })
@@ -530,6 +549,65 @@ async fn server_fetch_latest(
         session_name: fetched.header.session_name,
         save_date_time: fetched.header.save_date_time,
     })
+}
+
+/// Where the TOFU certificate pins live (see server_api::fetch_latest).
+fn cert_pin_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("No app data dir: {e}"))?
+        .join("server-cert-pins.json"))
+}
+
+/// The user confirmed the server legitimately changed certificates (e.g. a
+/// reinstall) -- drop the pin so the next login re-pins.
+#[tauri::command]
+async fn server_forget_pin(host: String, app: tauri::AppHandle) -> Result<(), String> {
+    let pin_path = cert_pin_path(&app)?;
+    server_api::forget_pin(&pin_path, &host)
+}
+
+/// Remembered dedicated-server admin passwords live in the OS credential
+/// store (Windows Credential Manager / macOS Keychain), keyed by the host the
+/// user typed -- never in the webview's localStorage.
+const KEYRING_SERVICE: &str = "satisfactorymap dedicated server";
+
+#[tauri::command]
+async fn server_password_store(host: String, password: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        keyring::Entry::new(KEYRING_SERVICE, &host)
+            .and_then(|entry| entry.set_password(&password))
+            .map_err(|e| format!("Could not store the password in the OS credential store: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Keyring task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn server_password_get(host: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        match keyring::Entry::new(KEYRING_SERVICE, &host).and_then(|entry| entry.get_password()) {
+            Ok(password) => Ok(Some(password)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(format!("Could not read the OS credential store: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("Keyring task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn server_password_forget(host: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        match keyring::Entry::new(KEYRING_SERVICE, &host).and_then(|entry| entry.delete_credential())
+        {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(format!("Could not update the OS credential store: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("Keyring task failed: {e}"))?
 }
 
 #[cfg(test)]
@@ -636,7 +714,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             session: Mutex::new(None),
-            chunked_payload: Mutex::new(None),
+            chunked_payload: Mutex::new((0, None)),
             clipboard_slots: Mutex::new((0, std::collections::HashMap::new())),
         })
         .invoke_handler(tauri::generate_handler![
@@ -658,6 +736,10 @@ fn main() {
             payload_slice,
             payload_done,
             server_fetch_latest,
+            server_forget_pin,
+            server_password_store,
+            server_password_get,
+            server_password_forget,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

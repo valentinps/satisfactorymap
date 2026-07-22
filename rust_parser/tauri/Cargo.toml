@@ -31,4 +31,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Dedicated-server save fetch (src/server_api.rs). Blocking on purpose: the
 # calls run on spawn_blocking threads, keeping the lib runtime-free.
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+# rustls-tls because the TOFU certificate pinning below needs a custom rustls
+# verifier (native-tls has no hook for "accept self-signed but pin it").
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
+# TOFU pinning for the dedicated-server API: the server's cert is self-signed
+# by design, so instead of accepting anything forever, the first successful
+# login pins its SHA-256 and later fetches require the same cert.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+sha2 = "0.10"
+# The remembered admin password lives in the OS credential store (Windows
+# Credential Manager / macOS Keychain), not the webview's localStorage.
+keyring = { version = "3", features = ["windows-native", "apple-native"] }

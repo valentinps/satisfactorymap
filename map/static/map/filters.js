@@ -284,6 +284,17 @@ var Filters = {};
     });
   }
 
+  // Raw world-space [x, y] for the tooltip's Coordinates row, recovered from
+  // a stride-3 [x, y, z] points array. The payload used to ship parallel
+  // worldPositions arrays; the projection is exactly invertible, so they were
+  // dropped from the payload (slim_payload_value in mapdata/mod.rs).
+  function worldPositionAt(points, index) {
+    if (!points) {
+      return undefined;
+    }
+    return EditorTool.mapPxToWorldXY(points[index * 3], points[index * 3 + 1]);
+  }
+
   function makeIconBucket(key, label, color, points, ids, tooltipKind, tooltipInfo, url, opacity, pinFillColor, pointStride) {
     return MapApp.layer.addBucket({
       key: key, label: label, color: color, visible: true,
@@ -311,9 +322,11 @@ var Filters = {};
       key: key, label: label, color: color, visible: true,
       renderType: "line",
       // 3 = [x, y, z] per vertex (power lines, plain straight segments); 7 =
-      // [x, y, z, arriveTangentX, arriveTangentY, leaveTangentX, leaveTangentY]
+      // [x, y, arriveTangentX, arriveTangentY, leaveTangentX, leaveTangentY, z]
       // (belts/pipelines/railroads/hypertubes -- enough to draw the real
-      // curve through each spline point, see map.js's _drawLineBucket).
+      // curve through each spline point). z is LAST so altitude reads at
+      // stride-1 work for both strides; see map.js line ~22 and the tangent
+      // reads in _drawLineBucket -- do NOT reorder to put z third.
       pointStride: pointStride || 3,
       lines: polylines.map(function(line) { return new Float32Array(line); }),
       ids: ids || null,
@@ -735,15 +748,9 @@ var Filters = {};
           }
           var purityColor = PURITY_COLORS[purityName] || PURITY_COLORS.UNKNOWN;
           var purityLabel = PURITY_LABELS[purityName] || purityName;
-          // worldPositions is a flat [x0,y0,x1,y1,...] array, same order/
-          // length as points/ids -- the raw world-space position sav_map_data
-          // already computed for this exact point (see collectResourceNodes),
-          // used for the tooltip's Coordinates row/copy button without
-          // needing a live-actor lookup.
           var tooltipInfo = function(index) {
-            var worldPositions = purityData.worldPositions;
-            var position = worldPositions ? [worldPositions[index * 2], worldPositions[index * 2 + 1]] : undefined;
-            return { title: resourceEntry.label, rows: [["Purity", purityLabel], ["Status", stateLabel]], position: position };
+            return { title: resourceEntry.label, rows: [["Purity", purityLabel], ["Status", stateLabel]],
+                     position: worldPositionAt(purityData.points, index) };
           };
           var bucket = makeIconBucket(
             "node:" + resourceEntry.resourceType + ":" + state + ":" + purityName, resourceEntry.label,
@@ -821,7 +828,6 @@ var Filters = {};
       var color = HARD_DRIVE_COLORS[stateKey];
       var points = hardDrives[stateKey];
       var ids = hardDrives[stateKey + "Ids"];
-      var worldPositions = hardDrives[stateKey + "WorldPositions"];
       // What a crash site demands before it hands over its hard drive --
       // either an item stack or a power hookup (see
       // sav_map_data.collectHardDrives) -- always shown, explicitly as
@@ -840,7 +846,7 @@ var Filters = {};
       // See sav_map_data.collectHardDrives -- needed even once dismantled,
       // since the actor itself is gone from the save by then.
       var tooltipInfo = function(index) {
-        var position = worldPositions ? [worldPositions[index * 2], worldPositions[index * 2 + 1]] : undefined;
+        var position = worldPositionAt(points, index);
         var requirement = requirements ? requirements[index] : null;
         var rows = [["Status", HARD_DRIVE_LABELS[stateKey]], ["Requirement", requirementText(requirement)]];
         return { title: "Hard Drive", rows: rows, position: position };
@@ -895,12 +901,10 @@ var Filters = {};
         // actually removed from the save, so a live lookup would never
         // find a position for it, but this static reference data still has it.
         var remainingInfo = function(index) {
-          var wp = data.remainingWorldPositions;
-          return { title: kind.label, rows: [["Status", "Remaining"]], position: wp ? [wp[index * 2], wp[index * 2 + 1]] : undefined };
+          return { title: kind.label, rows: [["Status", "Remaining"]], position: worldPositionAt(data.remaining, index) };
         };
         var collectedInfo = function(index) {
-          var wp = data.collectedWorldPositions;
-          return { title: kind.label, rows: [["Status", "Collected"]], position: wp ? [wp[index * 2], wp[index * 2 + 1]] : undefined };
+          return { title: kind.label, rows: [["Status", "Collected"]], position: worldPositionAt(data.collected, index) };
         };
         var remainingBucket = makeIconBucket(
           "collectable:" + kind.key + ":remaining", kind.label, kind.color, data.remaining,
@@ -954,11 +958,10 @@ var Filters = {};
       // sav_map_data.collectDroppedItems) -- static tooltip, everything's
       // already in the payload.
       var tooltipInfo = function(index) {
-        var wp = itemEntry.worldPositions;
         return {
           title: itemEntry.label,
           rows: [["Amount", itemEntry.counts[index]], ["Status", "On the ground"]],
-          position: wp ? [wp[index * 2], wp[index * 2 + 1]] : undefined,
+          position: worldPositionAt(itemEntry.points, index),
         };
       };
       var bucket = url
@@ -1442,12 +1445,20 @@ var Filters = {};
   // other toggle (see the row/parent checkbox handlers above), so it
   // survives a reload. Both live in the nav column's header (not the detail
   // pane) since they act globally, across every category -- not just
-  // whichever one happens to be selected. Excludes the save-file <select>
-  // etc. in the footer, which have no checkboxes, so scoping to #sidebar is
-  // safe even though the footer now lives inside the nav panel.
+  // whichever one happens to be selected. Scoped to the nav column + detail
+  // pane, NOT all of #sidebar: #sidebarFooter also holds checkboxes that are
+  // not visibility toggles (the server-fetch "Remember password" box), and a
+  // bulk pass flipping that one would silently store/keep the admin password
+  // without firing its change handler.
   function setAllVisibility(checked) {
-    var sidebar = document.getElementById("sidebar");
-    var checkboxes = sidebar.querySelectorAll("input[type=checkbox]");
+    var scopes = [document.getElementById("categoryNavColumn"),
+                  document.getElementById("categoryDetailPane")];
+    var checkboxes = [];
+    scopes.forEach(function(scope) {
+      if (!scope) return;
+      var found = scope.querySelectorAll("input[type=checkbox]");
+      for (var i = 0; i < found.length; i++) checkboxes.push(found[i]);
+    });
     for (var i = 0; i < checkboxes.length; i++) {
       checkboxes[i].checked = checked;
       checkboxes[i].indeterminate = false;

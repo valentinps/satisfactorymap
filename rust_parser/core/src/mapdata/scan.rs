@@ -35,6 +35,15 @@ pub struct SaveScan<'a> {
     /// and three consumers read it, so parse it once and hand out borrows --
     /// never clone.
     lightweight_subsystem: OnceCell<Option<Object>>,
+    /// Memoized collector outputs consumed by BOTH the payload build and
+    /// the save-index build (see build_all_json): collectables, hard drives,
+    /// depot contents, and the uncollected-catalog-drop list. Without these
+    /// each ran twice per full load -- and collect_collectables alone walks
+    /// every level's (huge) collectables lists five times per call.
+    collectables: OnceCell<serde_json::Value>,
+    hard_drives: OnceCell<serde_json::Value>,
+    depot_contents: OnceCell<serde_json::Value>,
+    catalog_drops: OnceCell<Vec<(&'static str, i64, [f64; 3], &'static str)>>,
     /// First on-demand re-parse failure seen during a build. Re-parsing bytes
     /// that already parsed cannot fail, but once the pipeline is lean the
     /// build IS the deep validation of an edited body -- so build_all_json
@@ -73,8 +82,34 @@ impl<'a> SaveScan<'a> {
             game_state_objects,
             instance_slots: OnceCell::new(),
             lightweight_subsystem: OnceCell::new(),
+            collectables: OnceCell::new(),
+            hard_drives: OnceCell::new(),
+            depot_contents: OnceCell::new(),
+            catalog_drops: OnceCell::new(),
             parse_error: RefCell::new(None),
         }
+    }
+
+    /// collectors::world::collect_collectables, computed once per scan.
+    pub fn collectables(&self) -> &serde_json::Value {
+        self.collectables.get_or_init(|| super::collectors::world::collect_collectables(self))
+    }
+
+    /// collectors::world::collect_hard_drives, computed once per scan.
+    pub fn hard_drives(&self) -> &serde_json::Value {
+        self.hard_drives.get_or_init(|| super::collectors::world::collect_hard_drives(self))
+    }
+
+    /// collectors::simple::collect_dimensional_depot_contents, once per scan.
+    pub fn depot_contents(&self) -> &serde_json::Value {
+        self.depot_contents
+            .get_or_init(|| super::collectors::simple::collect_dimensional_depot_contents(self))
+    }
+
+    /// collectors::world::uncollected_catalog_drops, computed once per scan.
+    pub fn uncollected_catalog_drops(&self) -> &[(&'static str, i64, [f64; 3], &'static str)] {
+        self.catalog_drops
+            .get_or_init(|| super::collectors::world::uncollected_catalog_drops(self))
     }
 
     /// The extractor-shaped (slots, slotIndexByName) pair, derived from

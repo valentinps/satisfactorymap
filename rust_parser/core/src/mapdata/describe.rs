@@ -138,12 +138,12 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
     let data: &[u8] = &store.data;
 
     // Lightweight buildables resolve from their own synthetic index.
-    if let Some(lightweight_info) = index.lightweight_instances_by_id.get(instance_name) {
+    if let Some((type_path, position)) = index.lightweight_entry(instance_name) {
         return json!({
             "instanceName": instance_name,
-            "typePath": lightweight_info.type_path,
-            "label": readable_label(&lightweight_info.type_path),
-            "position": position_value(&lightweight_info.position),
+            "typePath": type_path,
+            "label": readable_label(type_path),
+            "position": position_value(&position),
         });
     }
 

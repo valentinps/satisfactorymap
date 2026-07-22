@@ -138,7 +138,7 @@ pub fn parse_object(
     if is_actor {
         let parent = parse_object_reference(c)?;
         let n = c.u32()?;
-        let mut components = Vec::with_capacity(n as usize);
+        let mut components = Vec::with_capacity(c.capped_capacity(n as usize, 8));
         for _ in 0..n {
             components.push(parse_object_reference(c)?);
         }
@@ -162,7 +162,7 @@ pub fn parse_object(
             if tables.conveyor_belts.iter().any(|b| b == tp) {
                 let count_field_off = c.pos;
                 let count = c.u32()?;
-                let mut items = Vec::with_capacity(count as usize);
+                let mut items = Vec::with_capacity(c.capped_capacity(count as usize, 8));
                 // Items only sit on belts in saves that predate chain actors
                 // (chain actors own all belt items since 1.0), so this loop is
                 // dormant on current saves. The InventoryItem wire format
@@ -192,7 +192,7 @@ pub fn parse_object(
                     ActorSpecific::ConveyorBelt { items, count_field_off, end_off: c.pos };
             } else if GAME_MODE_STATE.contains(&tp) {
                 let count = c.u32()?;
-                let mut refs = Vec::with_capacity(count as usize);
+                let mut refs = Vec::with_capacity(c.capped_capacity(count as usize, 8));
                 for _ in 0..count {
                     refs.push(parse_object_reference(c)?);
                 }
@@ -216,7 +216,7 @@ pub fn parse_object(
                 actor_specific = ActorSpecific::RawBytes(data);
             } else if tp == CIRCUIT_SUBSYSTEM {
                 let n = c.u32()?;
-                let mut circuits = Vec::with_capacity(n as usize);
+                let mut circuits = Vec::with_capacity(c.capped_capacity(n as usize, 12));
                 for _ in 0..n {
                     let id = c.u32()?;
                     let r = parse_object_reference(c)?;
@@ -241,7 +241,7 @@ pub fn parse_object(
                 actor_specific = ActorSpecific::Train { previous, next };
             } else if VEHICLES.contains(&tp) {
                 let n = c.u32()?;
-                let mut vehicles = Vec::with_capacity(n as usize);
+                let mut vehicles = Vec::with_capacity(c.capped_capacity(n as usize, 8));
                 for _ in 0..n {
                     let name = c.string()?;
                     let data = c.data_ref(105)?;
@@ -252,13 +252,13 @@ pub fn parse_object(
                 let lightweight_version = c.u32()?;
                 let group_count_field_off = c.pos;
                 let count1 = c.u32()?;
-                let mut items = Vec::with_capacity(count1 as usize);
+                let mut items = Vec::with_capacity(c.capped_capacity(count1 as usize, 8));
                 for _ in 0..count1 {
                     c.confirm_u32(0)?;
                     let build_item_path = c.string()?;
                     let count_field_off = c.pos;
                     let count2 = c.u32()?;
-                    let mut instances = Vec::with_capacity(count2 as usize);
+                    let mut instances = Vec::with_capacity(c.capped_capacity(count2 as usize, 8));
                     for _ in 0..count2 {
                         let record_off = c.pos;
                         let rotation = [c.f64()?, c.f64()?, c.f64()?, c.f64()?];
@@ -369,13 +369,13 @@ pub fn parse_object(
                     level_name: crate::reader::EMPTY_STR,
                     path_name: crate::reader::EMPTY_STR,
                 };
-                let mut belts = Vec::with_capacity(num_belts as usize);
+                let mut belts = Vec::with_capacity(c.capped_capacity(num_belts as usize, 12));
                 for idx in 0..num_belts {
                     chain_actor = parse_object_reference(c)?;
                     let belt = parse_object_reference(c)?;
                     let num_elements = c.u32()?;
                     let elements_off = c.pos;
-                    let mut elements = Vec::with_capacity(num_elements as usize);
+                    let mut elements = Vec::with_capacity(c.capped_capacity(num_elements as usize, 4));
                     for _ in 0..num_elements {
                         let mut nine = [[0f64; 3]; 3];
                         for row in nine.iter_mut() {
@@ -398,7 +398,7 @@ pub fn parse_object(
                 let chain_lead = c.i32()?;
                 let chain_tail = c.i32()?;
                 let num_items = c.u32()?;
-                let mut items = Vec::with_capacity(num_items as usize);
+                let mut items = Vec::with_capacity(c.capped_capacity(num_items as usize, 8));
                 for _ in 0..num_items {
                     c.confirm_u32(0)?;
                     let item_path = c.string()?;

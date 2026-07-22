@@ -278,36 +278,80 @@ const SaveClient = (() => {
          return parsed;
       }
       const invoke = window.__TAURI__.core.invoke;
+      // The generation binds every slice pull to the payload that produced
+      // these ranges: if a newer load/edit replaces the stash mid-assembly,
+      // payload_slice rejects instead of serving bytes from the wrong
+      // payload. payload_done runs in finally so an error mid-pull still
+      // frees the (>200MB by definition) Rust-side stash; it is
+      // generation-checked, so it can't free a successor's payload.
+      const generation = spec.generation;
       const out = {};
-      for (const range of spec.ranges) {
-         const start = range[0];
-         const len = range[1];
-         const buf = new Uint8Array(len + 2);
-         buf[0] = 0x7b; // '{'
-         let got = 0;
-         while (got < len) {
-            const n = Math.min(PAYLOAD_SLICE_BYTES, len - got);
-            const part = new Uint8Array(
-               await invoke("payload_slice", { offset: start + got, len: n }),
-            );
-            if (part.length === 0) {
-               throw new Error("Empty payload slice");
+      try {
+         for (const range of spec.ranges) {
+            const start = range[0];
+            const len = range[1];
+            const buf = new Uint8Array(len + 2);
+            buf[0] = 0x7b; // '{'
+            let got = 0;
+            while (got < len) {
+               const n = Math.min(PAYLOAD_SLICE_BYTES, len - got);
+               const part = new Uint8Array(
+                  await invoke("payload_slice", { generation: generation, offset: start + got, len: n }),
+               );
+               if (part.length === 0) {
+                  throw new Error("Empty payload slice");
+               }
+               buf.set(part, 1 + got);
+               got += part.length;
             }
-            buf.set(part, 1 + got);
-            got += part.length;
+            buf[len + 1] = 0x7d; // '}'
+            Object.assign(out, JSON.parse(new TextDecoder().decode(buf)));
          }
-         buf[len + 1] = 0x7d; // '}'
-         Object.assign(out, JSON.parse(new TextDecoder().decode(buf)));
+      } finally {
+         await invoke("payload_done", { generation: generation }).catch(() => {});
       }
-      await invoke("payload_done").catch(() => {});
       return out;
+   }
+
+   // The payload ships bulk id arrays with this ubiquitous prefix stripped
+   // (see slim_payload_value in mapdata/mod.rs). Mirror rule: string arrays
+   // under a key named "ids" or ending in "Ids", elements without a ':' get
+   // the prefix back -- full instance names always contain ':' (their level
+   // part), stripped suffixes never do, and lightweight ids
+   // ("LightweightBuildable:...") keep their ':' and pass through untouched.
+   const ID_PREFIX = "Persistent_Level:PersistentLevel.";
+
+   function expandPayloadIds(value) {
+      if (Array.isArray(value)) {
+         for (const item of value) {
+            expandPayloadIds(item);
+         }
+         return value;
+      }
+      if (value && typeof value === "object") {
+         for (const key of Object.keys(value)) {
+            const v = value[key];
+            if ((key === "ids" || key.endsWith("Ids")) && Array.isArray(v)) {
+               for (let i = 0; i < v.length; i++) {
+                  if (typeof v[i] === "string" && v[i].indexOf(":") === -1) {
+                     v[i] = ID_PREFIX + v[i];
+                  }
+               }
+            } else {
+               expandPayloadIds(v);
+            }
+         }
+      }
+      return value;
    }
 
    // Payload bytes -> payload object, transport-agnostic: the worker path is a
    // plain parse; the Tauri path may indirect through the chunk protocol.
    function parsePayloadBytes(payloadBytes) {
       const parsed = JSON.parse(new TextDecoder().decode(payloadBytes));
-      return IS_TAURI ? resolveChunkedPayload(parsed) : Promise.resolve(parsed);
+      return IS_TAURI
+         ? resolveChunkedPayload(parsed).then(expandPayloadIds)
+         : Promise.resolve(expandPayloadIds(parsed));
    }
 
    function request(msg, transfer) {

@@ -372,30 +372,62 @@ fn first_recipe_product_item(entry: &Value) -> Value {
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
+    // First-byte gate before the slice compare: this runs against every
+    // instance name in the save (600k+ on big worlds), and a memcmp call
+    // per window position dominated the manager lookups below.
+    let (Some(&first), Some(end)) = (needle.first(), haystack.len().checked_sub(needle.len()))
+    else {
+        return needle.is_empty();
+    };
+    (0..=end).any(|i| haystack[i] == first && &haystack[i..i + needle.len()] == needle)
 }
 
-/// sav_map_data._findObjectByTypePathSubstring.
-fn find_object_by_type_path_substring(scan: &SaveScan<'_>, substring: &str) -> Option<Object> {
+/// sav_map_data._findObjectByTypePathSubstring, generalized to resolve
+/// several needles in ONE pass over the headers (each call used to walk the
+/// whole save; collect_progression needs two managers). Per-needle result is
+/// the first match in save order -- identical to running the scans
+/// separately.
+fn find_objects_by_type_path_substrings(
+    scan: &SaveScan<'_>,
+    substrings: &[&str],
+) -> Vec<Option<Object>> {
     let data = scan.data();
-    let needle = substring.as_bytes();
-    for (li, level) in scan.store.levels.iter().enumerate() {
+    let mut found: Vec<Option<Object>> = substrings.iter().map(|_| None).collect();
+    let mut remaining = substrings.len();
+    'outer: for (li, level) in scan.store.levels.iter().enumerate() {
         for (oi, header) in level.headers.iter().enumerate() {
-            // object.instanceName == the index-aligned header's instanceName.
-            if find_subslice(header.instance_name().bytes(data), needle) {
-                return scan.parse_object((li, oi));
+            let name = header.instance_name().bytes(data);
+            for (slot, substring) in substrings.iter().enumerate() {
+                // object.instanceName == the index-aligned header's instanceName.
+                if found[slot].is_none() && find_subslice(name, substring.as_bytes()) {
+                    found[slot] = scan.parse_object((li, oi));
+                    remaining -= 1;
+                    if remaining == 0 {
+                        break 'outer;
+                    }
+                }
             }
         }
     }
     // Fallback: match the ActorHeader's typePath and resolve that header's
     // instanceName (typePath buckets are keyed in first-encounter order).
-    for (type_path, seq_headers) in &scan.actor_seqs_by_type_path {
-        if find_subslice(type_path, needle) {
-            let name = scan.header(seq_headers[0].1).instance_name().bytes(data);
-            return scan.parse_object_by_name(name);
+    for (slot, substring) in substrings.iter().enumerate() {
+        if found[slot].is_some() {
+            continue;
+        }
+        for (type_path, seq_headers) in &scan.actor_seqs_by_type_path {
+            if find_subslice(type_path, substring.as_bytes()) {
+                let name = scan.header(seq_headers[0].1).instance_name().bytes(data);
+                found[slot] = scan.parse_object_by_name(name);
+                break;
+            }
         }
     }
-    None
+    found
+}
+
+fn find_object_by_type_path_substring(scan: &SaveScan<'_>, substring: &str) -> Option<Object> {
+    find_objects_by_type_path_substrings(scan, &[substring]).pop().flatten()
 }
 
 /// sav_map_data._shortNamesFromObjectReferenceList (the input is always an
@@ -458,8 +490,12 @@ pub fn collect_progression(scan: &SaveScan) -> Value {
 
     // Owned re-parse; kept alive for the whole fn so `purchased` (which
     // borrows through it) stays valid -- it drops after `purchased` does.
-    let schematic_manager =
-        find_object_by_type_path_substring(scan, SCHEMATIC_MANAGER_TYPE_PATH_SUBSTRING);
+    let mut managers = find_objects_by_type_path_substrings(
+        scan,
+        &[SCHEMATIC_MANAGER_TYPE_PATH_SUBSTRING, RESEARCH_MANAGER_TYPE_PATH_SUBSTRING],
+    );
+    let research_manager = managers.pop().flatten();
+    let schematic_manager = managers.pop().flatten();
     let purchased: HashSet<&[u8]> = match &schematic_manager {
         Some(object) => short_names_from_object_reference_list(
             find_prop(&object.properties, data, b"mPurchasedSchematics"),
@@ -468,8 +504,6 @@ pub fn collect_progression(scan: &SaveScan) -> Value {
         None => HashSet::new(),
     };
 
-    let research_manager =
-        find_object_by_type_path_substring(scan, RESEARCH_MANAGER_TYPE_PATH_SUBSTRING);
     let unlocked_trees: HashSet<String> = match &research_manager {
         Some(object) => short_names_from_object_reference_list(
             find_prop(&object.properties, data, b"mUnlockedResearchTrees"),

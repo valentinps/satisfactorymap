@@ -94,9 +94,9 @@ fn parse_headers_and_level(
     let header_start = c.pos;
     let actor_and_component_count = c.u32()?;
 
-    let mut headers: Vec<Header> = Vec::with_capacity(actor_and_component_count as usize);
-    let mut header_spans: Vec<(usize, u32)> =
-        Vec::with_capacity(actor_and_component_count as usize);
+    let capped = c.capped_capacity(actor_and_component_count as usize, 12);
+    let mut headers: Vec<Header> = Vec::with_capacity(capped);
+    let mut header_spans: Vec<(usize, u32)> = Vec::with_capacity(capped);
     let mut last_report = c.pos;
     for _ in 0..actor_and_component_count {
         let header_record_start = c.pos;
@@ -187,10 +187,9 @@ fn parse_headers_and_level(
             actor_and_component_count
         ));
     }
-    let mut objects =
-        Vec::with_capacity(if lean { 0 } else { actor_and_component_count as usize });
-    let mut object_spans: Vec<(usize, u32)> =
-        Vec::with_capacity(actor_and_component_count as usize);
+    let capped = c.capped_capacity(actor_and_component_count as usize, 8);
+    let mut objects = Vec::with_capacity(if lean { 0 } else { capped });
+    let mut object_spans: Vec<(usize, u32)> = Vec::with_capacity(capped);
     let mut last_report = oc.pos;
     for idx in 0..actor_and_component_count as usize {
         let object_record_start = oc.pos;
@@ -426,7 +425,7 @@ fn parse_body(
         let i = c.u32()?;
         let grid_hex = c.u32()?;
         let n = c.u32()?;
-        let mut levels = Vec::with_capacity(n as usize);
+        let mut levels = Vec::with_capacity(c.capped_capacity(n as usize, 4));
         for _ in 0..n {
             let level_name = c.string()?;
             let lhex = c.u32()?;
@@ -472,21 +471,30 @@ fn parse_body(
     )?;
     levels.push(level);
 
-    // "Missing final array count" quirk: 4 zero bytes get appended.
-    let mut padded = false;
-    let padded_data: Vec<u8>;
+    // "Missing final array count" quirk (satisfactory-calculator re-saves):
+    // 4 zero bytes get appended by the caller. Every remaining read consumes
+    // ONLY those 4 zeros -- a zero-length a_level_name (which is not
+    // "Persistent_Level", so no drop-pod/extra refs are read) and then the
+    // exact-consumption check passes at data.len() + 4. Synthesize that
+    // outcome directly: the previous implementation copied the entire body
+    // just to append 4 bytes and read them (2x peak memory -- a guaranteed
+    // wasm OOM for calculator re-saves of large worlds).
     if c.pos == data.len() {
         calculator_extras.push("Missing final array count".to_string());
-        padded = true;
-        let mut v = Vec::with_capacity(data.len() + 4);
-        v.extend_from_slice(data);
-        v.extend_from_slice(&[0, 0, 0, 0]);
-        padded_data = v;
-        c = Cursor::new(&padded_data, c.pos);
-    } else {
-        padded_data = Vec::new();
-        let _ = &padded_data;
+        if let Some(cb) = progress.as_deref_mut() {
+            cb(1, progress_total, progress_total);
+        }
+        return Ok((
+            persistent_level_version_data,
+            partitions,
+            levels,
+            crate::reader::EMPTY_STR,
+            Vec::new(),
+            Vec::new(),
+            true,
+        ));
     }
+    let padded = false;
 
     let a_level_name = c.string()?;
     let mut drop_pod_refs = Vec::new();

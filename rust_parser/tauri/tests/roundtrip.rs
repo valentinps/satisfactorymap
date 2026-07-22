@@ -7,7 +7,7 @@
 use sav_tauri_lib::session::AppSession;
 
 fn sample_save() -> Vec<u8> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../map/uploads/All_autosave_0.sav");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../map/uploads/All_080726-163150.sav");
     std::fs::read(path).unwrap_or_else(|e| panic!("read sample save {}: {}", path, e))
 }
 

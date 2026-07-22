@@ -89,7 +89,7 @@ var MapApp = {};
 
   var BucketedCanvasLayer = L.Layer.extend({
     initialize: function() {
-      this.buckets = []; // Public: filters.js pushes/reads bucket objects here directly.
+      this.buckets = []; // Public: read by filters.js et al.; mutated only via addBucket/clearBuckets (which keep the grid, sort order and GL streams in sync).
       // Reused across redraws/hit-tests to avoid allocating a fresh array for
       // every bucket on every frame (see _collectGridIndices) -- safe since
       // everything here runs synchronously on the main thread, one bucket at
@@ -384,7 +384,13 @@ var MapApp = {};
       if (!bucket || !bucket.ids) {
         return;
       }
-      var idx = bucket.ids.indexOf(MapApp.highlightedId);
+      // Index cached by setHighlight -- the hit-test already knew it, so this
+      // avoids an O(n) indexOf over a 100k+-id bucket on every pan/zoom frame
+      // while a tooltip is pinned.
+      var idx = MapApp.highlightedIndex;
+      if (idx == null || bucket.ids[idx] !== MapApp.highlightedId) {
+        idx = bucket.ids.indexOf(MapApp.highlightedId);
+      }
       if (idx === -1) {
         return;
       }
@@ -2009,7 +2015,10 @@ var MapApp = {};
   // every hover change, so it must not touch the full bucket redraw.
   MapApp.highlightedBucket = null;
   MapApp.highlightedId = null;
-  MapApp.setHighlight = function(bucket, id) {
+  MapApp.setHighlight = function(bucket, id, index) {
+    // index (optional): the hit-test already located id in bucket.ids;
+    // caching it lets _redrawHighlight skip a per-frame indexOf.
+    MapApp.highlightedIndex = (index == null ? null : index);
     MapApp.highlightedBucket = bucket || null;
     MapApp.highlightedId = bucket ? id : null;
     if (MapApp.layer) {
@@ -2263,7 +2272,7 @@ var MapApp = {};
       var hit = MapApp.layer.hitTest(e.latlng.lng, e.latlng.lat, toleranceMapUnits);
       if (hit) {
         window.Tooltip.show(e.originalEvent.clientX, e.originalEvent.clientY, hit);
-        MapApp.setHighlight(hit.bucket, hit.id);
+        MapApp.setHighlight(hit.bucket, hit.id, hit.index);
       } else {
         window.Tooltip.hide();
         MapApp.setHighlight(null, null);
@@ -2289,7 +2298,7 @@ var MapApp = {};
       var hit = MapApp.layer.hitTest(e.latlng.lng, e.latlng.lat, toleranceMapUnits); // MapApp.layer, not `layer` -- see the hover handler.
       if (hit) {
         window.Tooltip.pin(e.originalEvent.clientX, e.originalEvent.clientY, hit);
-        MapApp.setHighlight(hit.bucket, hit.id);
+        MapApp.setHighlight(hit.bucket, hit.id, hit.index);
       } else {
         window.Tooltip.unpin();
         MapApp.setHighlight(null, null);

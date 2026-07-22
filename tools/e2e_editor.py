@@ -21,7 +21,7 @@ import pathlib
 from playwright.sync_api import sync_playwright
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-SAVE = sys.argv[1] if len(sys.argv) > 1 else str(REPO / "map/uploads/All_autosave_0.sav")
+SAVE = sys.argv[1] if len(sys.argv) > 1 else str(REPO / "map/uploads/All_080726-163150.sav")
 BASE_URL = sys.argv[2] if len(sys.argv) > 2 else "http://127.0.0.1:8791/"
 BUCKETS_READY = "window.MapApp && MapApp.layer && MapApp.layer.buckets && MapApp.layer.buckets.length > 0"
 
@@ -115,6 +115,11 @@ def main():
         print(f"undo OK ({time.time() - t0:.1f}s)")
 
         # -- Export + re-import ------------------------------------------------
+        # The download button lives inside the "Save details" disclosure,
+        # which starts collapsed on every load -- expand it first.
+        page.evaluate(
+            "if (document.getElementById('saveDetails').style.display === 'none')"
+            "  document.getElementById('saveDetailsToggle').click()")
         with page.expect_download() as dl_info:
             page.click("#downloadSaveBtn")
         out = pathlib.Path(tempfile.mkdtemp()) / dl_info.value.suggested_filename

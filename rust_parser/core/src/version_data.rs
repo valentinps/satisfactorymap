@@ -30,8 +30,9 @@ pub fn parse_save_object_version_data(c: &mut Cursor) -> PResult<VersionData> {
     let engine_changelist = c.u32()?;
     let engine_branch = c.string()?;
     let count = c.u32()?;
-    let mut custom_versions = Vec::with_capacity(count as usize);
-    let mut custom_version_numbers = Vec::with_capacity(count as usize);
+    let capped = c.capped_capacity(count as usize, 20);
+    let mut custom_versions = Vec::with_capacity(capped);
+    let mut custom_version_numbers = Vec::with_capacity(capped);
     for _ in 0..count {
         let a = c.u64()?;
         let b = c.u64()?;

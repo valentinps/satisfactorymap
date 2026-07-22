@@ -107,6 +107,48 @@ pub fn build_payload_json(
     build_payload_json_with_scan(&scan, requested, progress)
 }
 
+/// Instance names in bulk id arrays overwhelmingly share this prefix; the
+/// serializer strips it and save_client.js's expandPayloadIds re-adds it
+/// (mirror rule: string arrays under a key named "ids" or ending in "Ids",
+/// elements without a ':' get the prefix back; full names always contain
+/// ':', stripped suffixes never do). Keep the two sides in step.
+const ID_PREFIX: &str = "Persistent_Level:PersistentLevel.";
+
+/// Serialization-boundary payload diet (post-parity-gate): drop the
+/// worldPositions arrays -- raw world X/Y is exactly derivable client-side
+/// from the projected points via editor.js's mapPxToWorldXY -- and strip
+/// ID_PREFIX from bulk id arrays. Together with jnum's 2-decimal rounding
+/// this roughly halves the payload. Only the JSON leaving for the frontend
+/// is slimmed; the index build reads the unslimmed collector output.
+fn slim_payload_value(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.retain(|key, _| key != "worldPositions" && !key.ends_with("WorldPositions"));
+            for (key, v) in map.iter_mut() {
+                if key == "ids" || key.ends_with("Ids") {
+                    if let Value::Array(items) = v {
+                        for item in items.iter_mut() {
+                            if let Value::String(s) = item {
+                                if let Some(stripped) = s.strip_prefix(ID_PREFIX) {
+                                    *item = Value::String(stripped.to_string());
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                }
+                slim_payload_value(v);
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                slim_payload_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// build_payload_json over an existing SaveScan (shared with the index build
 /// -- see build_all_json).
 fn build_payload_json_with_scan(
@@ -135,9 +177,31 @@ fn build_payload_json_with_scan(
 
     let mut done: u64 = 0;
     for key in requested {
-        let (_, collector) = registry.iter().find(|(k, _)| *k == key).unwrap();
-        let value = collector(scan);
-        write_entry(&mut out, &mut first, key, &value);
+        // The steps the save-index build consumes too are memoized on the
+        // scan (SaveScan::collectables etc.) -- write those by reference so
+        // a full load computes each exactly once, clone-free.
+        let cached: Option<&Value> = match key {
+            "collectables" => Some(scan.collectables()),
+            "hardDrives" => Some(scan.hard_drives()),
+            "dimensionalDepot" => Some(scan.depot_contents()),
+            _ => None,
+        };
+        match cached {
+            Some(value) => {
+                // The cache is shared with the index build, which needs the
+                // unslimmed names/positions -- slim a copy (these three are
+                // small; the big steps take the owned branch below).
+                let mut value = value.clone();
+                slim_payload_value(&mut value);
+                write_entry(&mut out, &mut first, key, &value);
+            }
+            None => {
+                let (_, collector) = registry.iter().find(|(k, _)| *k == key).unwrap();
+                let mut value = collector(scan);
+                slim_payload_value(&mut value);
+                write_entry(&mut out, &mut first, key, &value);
+            }
+        }
         done += 1;
         if let Some(cb) = progress.as_deref_mut() {
             cb(done, BUILD_STEP_COUNT);

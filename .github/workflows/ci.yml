@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rust-tests:
+    name: Rust core tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_parser
+      - name: Cache game data
+        id: game-data
+        uses: actions/cache@v4
+        with:
+          path: |
+            game_data/generated
+            map/static/map/icons
+          key: game-data-v1
+      - name: Fetch game data
+        # sav_core embeds game_data/generated/*.json at compile time.
+        if: steps.game-data.outputs.cache-hit != 'true'
+        run: |
+          wget -q -O game_data.zip https://github.com/valentinps/satisfactorymap/releases/download/game-data-v1/game_data.zip
+          python3 game_data/package_game_data.py unpack game_data.zip
+      - name: Cache test saves
+        uses: actions/cache@v4
+        with:
+          path: map/uploads
+          key: test-saves-v1
+      - name: Fetch test saves
+        run: python3 tools/fetch_test_saves.py
+      - name: cargo test (release)
+        run: cargo test -p sav_core --release
+        working-directory: rust_parser
+
+  wasm-build:
+    name: WASM build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_parser
+      - name: Cache game data
+        id: game-data
+        uses: actions/cache@v4
+        with:
+          path: |
+            game_data/generated
+            map/static/map/icons
+          key: game-data-v1
+      - name: Fetch game data
+        if: steps.game-data.outputs.cache-hit != 'true'
+        run: |
+          wget -q -O game_data.zip https://github.com/valentinps/satisfactorymap/releases/download/game-data-v1/game_data.zip
+          python3 game_data/package_game_data.py unpack game_data.zip
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: wasm-pack build
+        # Same flags as tools/build_site.py so CI catches what production hits.
+        run: wasm-pack build rust_parser/wasm --release --target no-modules --no-typescript
+        env:
+          RUSTFLAGS: -C target-feature=+simd128,+bulk-memory

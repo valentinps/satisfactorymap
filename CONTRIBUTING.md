@@ -87,11 +87,27 @@ same `dist/` still serves in the browser via `serve_site.py`.
 | `game_data/sav_data/` | *(committed)* static world tables (resource nodes, slugs, crash sites...) converted from the upstream parser project |
 | `game_data/docs.json` | *(not committed)* the game's own data dump, input to `extract_docs_json.py` |
 | `game_data/generated/` | *(generated)* item/building/recipe/schematic JSONs + `map_highres.png` |
-| `tools/` | `build_site.py` / `serve_site.py` / `benchmark.py` |
+| `tools/` | `build_site.py` / `serve_site.py` / `benchmark.py` / `fetch_test_saves.py` / `e2e_editor.py` / `release.py` |
 | `dist/` | *(generated)* the assembled static site |
 
 Everything marked *(generated)* is git-ignored and produced by the steps
 below — or restored from an archive via `package_game_data.py unpack`.
+
+## Running the tests
+
+The Rust suite reads real save files from `map/uploads/` (gitignored — saves
+are tens of MB). Fetch the public corpus first, then test:
+
+```bash
+py tools/fetch_test_saves.py     # downloads the test-saves-v1 release assets
+cd rust_parser
+cargo test -p sav_core --release # release: debug parses of 50MB saves crawl
+```
+
+The same corpus feeds `tools/e2e_editor.py` (browser-driven editor
+regression, needs `pip install playwright`) and the CI workflow in
+`.github/workflows/ci.yml`, which runs the Rust suite and the wasm build on
+every push to `main` and on pull requests.
 
 Note: `sav_core` embeds `game_data/generated/*.json` and the icon manifest at
 compile time, so building the Rust crates also requires the game data to be

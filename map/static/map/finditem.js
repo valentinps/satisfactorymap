@@ -606,7 +606,12 @@ var FindItem = {};
     // rich tooltip. Icons paint above the boxes, so pins keep hover priority.
     var pinPoints = [], pinIds = [];
     entry.row.buckets.forEach(function(b) {
-      if (!b.ids) {
+      // Rect (box) buckets only: they are the real per-instance geometry and
+      // are always stride-4. Vehicle rows also carry icon pin buckets that
+      // share the boxes' ids (trains' pin bucket is even stride-3, [x, y, z])
+      // -- reading those with the stride-4 layout produced NaN/mismatched
+      // pins, and duplicated every road vehicle's pin on top of itself.
+      if (!b.ids || b.renderType !== "rect") {
         return;
       }
       for (var i = 0; i < b.ids.length; i++) {
@@ -781,15 +786,22 @@ var FindItem = {};
   });
 
   document.addEventListener("keydown", function(e) {
-    if (e.key !== "Escape") {
+    // One layer per Escape press: every module's Escape handler lives on
+    // document, so without this the same keypress would close a modal AND
+    // cancel a placement AND clear a highlight at once. The first handler to
+    // act calls preventDefault(); the rest bail on e.defaultPrevented.
+    if (e.key !== "Escape" || e.defaultPrevented) {
       return;
     }
     if (overlay.style.display !== "none") {
       closeItemModal();
+      e.preventDefault();
     } else if (buildingOverlay.style.display !== "none") {
       closeBuildingModal();
+      e.preventDefault();
     } else if (highlighting) {
       clearHighlight(); // No modal open, but a filter is live on the map -- Esc reverts it.
+      e.preventDefault();
     }
   });
 
@@ -913,9 +925,17 @@ var FindItem = {};
     buildingModalHighlightToggle.style.display = info.count > 0 ? "block" : "none";
   }
 
+  // Monotonic request token: every new search bumps it, and a resolving
+  // promise only touches the DOM while it is still the newest request.
+  // FindItem.build bumps it too, so an in-flight query from the previous
+  // save can never re-open a modal over the new one. (Same guard pattern as
+  // tooltip.js's requestedId/currentId.)
+  var searchGeneration = 0;
+
   // Blanks every modal section, fetches, then fills via the given fill
   // function -- the shared skeleton of runBuildingSearchFor/runVehicleSearchFor.
   function runInfoSearchFor(entry, infoPromise, fillFromInfo) {
+    var generation = ++searchGeneration;
     openBuildingModal(entry);
     buildingModalSummary.textContent = "Loading…";
     buildingModalStats.innerHTML = "";
@@ -925,6 +945,9 @@ var FindItem = {};
     buildingModalHighlightToggle.style.display = "none";
     infoPromise
       .then(function(info) {
+        if (generation !== searchGeneration) {
+          return; // A newer search (or save load) superseded this one.
+        }
         if (info.error) {
           buildingModalSummary.textContent = info.error;
           return;
@@ -936,6 +959,9 @@ var FindItem = {};
         buildingModalHighlightToggle.textContent = "Show only this on map";
       })
       .catch(function(error) {
+        if (generation !== searchGeneration) {
+          return;
+        }
         buildingModalSummary.textContent = "Search failed: " + error;
       });
   }
@@ -960,6 +986,7 @@ var FindItem = {};
     if (!window.MapApp.currentFile) {
       return;
     }
+    var generation = ++searchGeneration;
     openModal(label);
     attachIconWithFallback(modalIcon, "item", itemPath);
     modalSummary.textContent = "Searching...";
@@ -967,6 +994,9 @@ var FindItem = {};
     modalHighlightToggle.style.display = "none";
     SaveClient.findItem(itemPath)
       .then(function(result) {
+        if (generation !== searchGeneration) {
+          return; // A newer search (or save load) superseded this one.
+        }
         if (result.error) {
           modalSummary.textContent = result.error;
           return;
@@ -974,6 +1004,9 @@ var FindItem = {};
         showResult(result);
       })
       .catch(function(error) {
+        if (generation !== searchGeneration) {
+          return;
+        }
         modalSummary.textContent = "Search failed: " + error;
       });
   }
@@ -1279,6 +1312,7 @@ var FindItem = {};
     // old highlight bucket is gone and savedVisibility is stale), so just drop
     // all find-item state rather than trying to "revert" against buckets that
     // no longer exist.
+    searchGeneration++; // Orphan any in-flight search from the old save.
     overlay.style.display = "none";
     buildingOverlay.style.display = "none";
     banner.style.display = "none";

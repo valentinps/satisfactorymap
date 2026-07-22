@@ -1,0 +1,215 @@
+# Full codebase review — July 22, 2026
+
+Seven parallel deep-review passes over the whole repo (~35k lines): Rust
+parser core, save editor, mapdata collectors, Tauri & WASM shells, frontend
+render core, frontend UI, and Python/build/CI. Every finding was verified
+against source. Severity: **H**igh / **M**edium / **L**ow. Items marked ✅
+were fixed on the `review-fixes` branch alongside this document.
+
+## Verdict
+
+The codebase is in good shape: deliberate architecture, comments that match
+reality, and real byte-level round-trip tests where they matter most. The
+hardest engineering (byte-splice editing, wasm 4 GB memory discipline,
+WebView2 IPC truncation workarounds, float32 anchor math) is the best code
+in the repo. Verified clean: no structural offset bug in the editor's splice
+bookkeeping, no XSS path from save-file strings to the DOM, no GPU/WASM
+memory leaks, tight Tauri capability surface, tight git tracking hygiene.
+
+The weaknesses cluster in four themes, systematic rather than sloppy:
+
+1. **Trusting data at the boundaries** — corrupt saves and regenerated
+   game-data tables could crash the parser/worker instead of erroring.
+2. **No CI** in front of an auto-deploying `main` and a signed updater.
+3. **Hand-synchronized duplication** — several subsystems stay consistent
+   only via "keep in sync" comments.
+4. **The Python bit-exact parity gate is now vestigial** and freezes real
+   payload wins (2–3× shrink available: float precision, instance-path
+   interning, derivable world positions).
+
+## Fix-first list
+
+1. ✅ **Commit the regenerated `Cargo.lock`** — v0.1.4 was published from a
+   lock state that existed in no commit; with loose version reqs the signed
+   updater artifact was not reproducible from its tag.
+2. ✅ **Add CI** — `.github/` had no workflows at all; nothing ran
+   `cargo test` or the wasm build before Cloudflare deployed every push to
+   `main`. CI now fetches the public test-saves corpus (release
+   `test-saves-v1`, via `tools/fetch_test_saves.py`) and runs the Rust suite
+   plus the wasm build. The Rust tests now reference the published corpus
+   (`All_080726-163150.sav`, `solo_autosave_1.sav`,
+   `BuildITBIIIIIG_210726-231135.sav`), so a clean clone is testable.
+3. ✅ **`release.py` refuses a dirty/out-of-sync tree** — it built from the
+   local tree but tagged remote `main` HEAD, so uncommitted or unpushed
+   state silently shipped (this is exactly how #1 happened).
+4. ✅ **`filters.js` "Check all/Uncheck all" scoping** — the query matched
+   every checkbox under `#sidebar`, including the server-fetch "Remember
+   password" box: bulk-toggling could silently opt the user into storing
+   the dedicated-server admin password (or visually clear it without
+   deleting the stored copy).
+5. ✅ **Tauri CSP** — `tauri.conf.json` had `"csp": null` next to a `load`
+   IPC command that reads arbitrary paths; any future DOM injection would
+   have been arbitrary-file-read + exfiltration. Now `default-src 'self'`.
+6. ✅ **Parser: clamp untrusted counts** — ~25 sites fed raw u32 counts into
+   `Vec::with_capacity`; one corrupted count requested 100+ GB and aborted
+   the process instead of returning a parse error. Wrapping arithmetic in
+   the `reader.rs` string paths could also trap wasm32 release builds.
+7. ✅ **Mapdata: NaN-safe sorts** — NaN fluid amounts from modded/corrupt
+   saves panicked `sort_by(...partial_cmp().expect())` comparators and
+   killed the worker (`queries.rs`, `geometry.rs` hull).
+8. ✅ **WebGL alpha compositing mismatch** — `webgl_layer.js` used
+   `premultipliedAlpha:false` with straight-alpha blending, so translucent
+   fills over bare map rendered at ~0.30 effective opacity instead of 0.55
+   (alpha applied twice at page composite). Fixed with premultiplied shader
+   output + `(ONE, ONE_MINUS_SRC_ALPHA)`; A/B against `?renderer=canvas`
+   dropped the mean per-pixel difference from 11.55 to 0.46 (AA noise).
+   The stale `depthMask` after the outline pass was fixed alongside.
+9. ✅ **Tauri chunked-payload generation token** — `payload_slice` served
+   whatever the stash currently held; a load/edit completing between slice
+   pulls could interleave two payloads. The stash now carries a generation
+   counter that slice/done requests must match, and the JS side frees the
+   stash in a `finally`.
+10. ✅ **Dedicated-server password protection** — a custom rustls verifier
+    now pins the self-signed cert's SHA-256 on first successful login
+    (TOFU); a changed cert requires explicit user confirmation. The
+    remembered password moved from plaintext localStorage to the OS
+    credential store (with migration of the old copy).
+
+## Remaining findings by area
+
+### Rust parser core (`rust_parser/core/src/`) — solid
+
+- ✅ The "missing final array count" quirk path no longer copies the whole
+  decompressed body (it synthesized the empty-tail read directly).
+- ✅ Per-property type names are borrowed as `&str` in the hot loop, not
+  allocated as `String`s per property.
+- ✅ Adversarial-input test suite (`tests/corrupt_input.rs`): truncations,
+  hostile length/count fields, byte flips, terabyte-uncompressed claims —
+  each must Err, never panic/abort.
+- ✅ Dead `decompressed_size`, `build_instance_slots`, `substitute_names`
+  removed.
+- **L** `u64→usize as` truncation on wasm32 size fields (misleading error,
+  not silent success); `store.rs` `parsed_objects()` is a pub `.expect()`
+  accessor.
+
+### Save editor (`rust_parser/core/src/editor/`) — solid
+
+- ✅ `apply_plan` now validates the whole plan (bounds, disjoint removes,
+  patches outside removed spans) before mutating a byte — closing both the
+  silent-corruption class and the mid-apply-error partial mutation.
+- ✅ The sign asset-scoped soft-ref exemption now exists in the duplicate
+  path too (was paste-only — the one confirmed drift between the two
+  rename/tombstone passes).
+- ✅ `plan_move` only parses conveyor chains when the moved set contains a
+  Conveyor-typed actor.
+- **M** Wire "Locations" rewrite finds the vector by 24-byte f64 pattern
+  search (`apply.rs`); a numerically-equal other vector (zero-length
+  wire) gets silently rewritten — the one corruption class the re-parse
+  gate cannot catch.
+- **M** `plan_duplicate_actors` / `plan_paste_external` remain ~70% the
+  same algorithm (the known drift is fixed; full unification still open).
+- **L** Power-line sweeps still parse every wire per move/duplicate/delete;
+  delete errors say "Cannot copy"; machines with missing component records
+  can't be deleted on modded saves; tombstone names aren't checked against
+  concurrently generated names.
+
+### Mapdata (`rust_parser/core/src/mapdata/`) — good, fragile edges
+
+- ✅ The four collectors that ran twice per load (depot contents,
+  collectables, hard drives, drops) are now OnceCell-memoized on the
+  SaveScan; payload writes them by reference, the index reuses them.
+- ✅ Resource nodes missing from the static tables are kept visible under
+  the actor's own class name instead of dropped (was ~700 vanishing nodes).
+- ✅ MapIndex stores instance Slots + a lightweight count instead of
+  materializing every name as a String (names build on demand); the
+  progression manager lookup does one header pass with a first-byte gate
+  instead of ~1.8M naive substring searches.
+- ✅ Payload diet (parity gate retired): floats round to 2 decimals,
+  worldPositions dropped (client derives via inverse projection), id
+  prefixes stripped on the wire and re-expanded in save_client.js.
+  Measured 36.1MB → 20.8MB (−42%) on the 15MB test save; rendering
+  pixel-identical. Remaining levers if ever needed: id-stem interning /
+  handle-based ids (a further ~25–40%).
+- **L** Malformed regenerated `buildings.json` (clearance/power-range
+  shapes) panics table init for *all* saves — degrade per-class instead;
+  hardcoded belt/pipe-rate tables silently exclude modded marks; belt
+  ring-buffer slice truncates wrapped windows (inherited Python quirk);
+  `find_subslice`/camel-split/`f3`/`f4` utilities triplicated;
+  `POWER_CLOCK_SPEED_EXPONENT = 1.321929` deserves a "log₂ 2.5" comment.
+
+### Tauri & WASM shells — good, security gaps closed above
+
+- **M** Session orchestration (~200 lines: load, apply_edits dry-run,
+  pristine capture, teardown ordering) is maintained twice — natively in
+  `tauri/src/session.rs` and in `wasm/src/lib.rs`. Currently in step and
+  documented, but nothing enforces parity.
+- **L** wasm query-path traps leave a possibly-corrupt session serving
+  (edit paths are defended via `store.take()`); treat any `RuntimeError`
+  as fatal and respawn the worker. Failed chunk pulls leak the Rust-side
+  stash until the next load; `load`/`apply_edits` run minutes-long work on
+  tokio workers without `spawn_blocking`; clipboard slots grow unbounded
+  per copy; server-supplied save names aren't checked for Windows reserved
+  device names.
+
+### Frontend render core (`map.js`, `webgl_layer.js`) — good
+
+- **H** (accepted) The 2D canvas fallback still carries the unchunked ~2s
+  full-map redraw at zoom −1; after a real GL context loss users land on
+  it with no warning.
+- ✅ `_redrawHighlight` caches the hit-test's index instead of an O(n)
+  `ids.indexOf` every frame with a pinned tooltip.
+- **M** hitTest's line phase walks every polyline
+  per hover tick (grid-index line bboxes); no devicePixelRatio handling in
+  the 2D layer, and the pin-sprite DPR bake is negated by a CSS-resolution
+  canvas; `depthMask` left false after the outline pass makes next frame's
+  depth clear a no-op — ✅ fixed (depthMask restored); GL stream rebuild is
+  the synchronous per-edit latency floor.
+- ✅ The two bug-inviting stale comments (`map.js` bucket-push, `filters.js`
+  stride-7 layout) and the altitude Reset sentinel are fixed.
+- **L** Renderer constants duplicated between canvas and GL with "keep in
+  sync" notes; script-tag load order is a silent perf cliff; probe GL
+  contexts never released.
+
+### Frontend UI (filters/finditem/editor/selection/…) — solid
+
+- ✅ Train/vehicle isolate now builds lens pins from rect buckets only
+  (fixes the stride-3 misread and the duplicated road-vehicle pins).
+- ✅ Find-item and building/vehicle searches carry a generation token;
+  stale responses (older query, previous save) are dropped.
+- **M** Sidebar toggles made while a highlight is active are reverted by
+  the snapshot restore without resyncing checkboxes.
+- ✅ `editor.js` clears `redoStack` after a partial session recovery.
+- ✅ The five document-level Escape handlers now peel one layer per press
+  (via `defaultPrevented`).
+- **L** Label-keyed catalogs collide on duplicate labels;
+  `savedVisibility` localStorage grows unboundedly; `el()` helper
+  duplicated in six files; lightweight-ID logic duplicated between
+  editor.js and selection.js; accent-button CSS recipe copy-pasted ~6×.
+
+### Python / build / CI — weakest layer, largely addressed above
+
+- ✅ Fresh-setup tile re-cut fixed: the tile-cache stamp is now a content
+  hash, so it survives the `game_data.zip` round-trip (mtime didn't).
+  Pillow and playwright are now declared in `requirements.txt`.
+- ✅ `build.sh` hardened: `set -o pipefail`, wasm-pack pinned to a prebuilt
+  v0.15.0 binary, `game_data.zip` verified against a hardcoded SHA-256.
+- **L** `package_game_data.py`'s traversal-guard comment is wrong (safety
+  actually rests on `ZipFile.extract`); updater signing key sits
+  unencrypted at a well-known path; `extract_map_image.py` tells
+  you to update a deleted file; two scripts hardcode the local Windows
+  username as defaults; CONTRIBUTING points at a Google Drive
+  `game_data.zip` while production pulls the GitHub release; 19 upstream
+  v1.x tags sit locally (an accidental `git push --tags` would spray
+  them); no local `v0.1.4` tag exists despite the published release;
+  `.gitignore` says `LAUNCH.md` but the file is `LAUNCH.MD`
+  (case-sensitive clones won't ignore it).
+
+## Repo hygiene notes
+
+- Tracking is tight (183 files; all artifact classes gitignored), but the
+  working tree carries ~250 MB of ignored residue: personal saves in
+  `map/uploads/`, `__pycache__` remnants of the deleted Flask server, and
+  `sftp_config.json` with live credentials.
+- Local branches `client-side`, `rust-rewrite`, `save-editor`, `tauri-app`,
+  `webgl` are fully merged into `main` and deletable; only
+  `sav-data-from-save` diverges (1 commit).

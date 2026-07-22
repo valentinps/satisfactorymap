@@ -18,28 +18,6 @@ struct Chunk {
     uncomp_len: usize,
 }
 
-/// Total decompressed body size from the chunk table alone (no inflation) --
-/// the wasm loader uses it to pre-grow the heap in one step (thousands of
-/// incremental memory.grows during parse are quadratically slow in V8).
-pub fn decompressed_size(data: &[u8], start: usize) -> PResult<u64> {
-    let mut c = Cursor::new(data, start);
-    let mut total: u64 = 0;
-    while c.pos < data.len() {
-        c.confirm_u32(0x9e2a83c1)?;
-        c.confirm_u32(0x22222222)?;
-        c.confirm_u8(0)?;
-        let _maximum_chunk_size = c.u32()?;
-        c.confirm_u32(0x03000000)?;
-        let comp = c.u64()?;
-        let uncomp = c.u64()?;
-        let _comp2 = c.u64()?;
-        let _uncomp2 = c.u64()?;
-        total = total.checked_add(uncomp).ok_or_else(|| perr!("Total uncompressed size overflow"))?;
-        c.pos += comp as usize;
-    }
-    Ok(total)
-}
-
 /// Mirrors decompressSaveFile(offset, data) including its confirm checks.
 /// `progress(bytes_of_file_consumed, total_file_bytes)` fires as chunks finish.
 pub fn decompress_save_file(
@@ -66,11 +44,25 @@ pub fn decompress_save_file(
         if uncomp1 != uncomp2 {
             return Err(perr!("Uncompressed size mismatch {} != {}", uncomp1, uncomp2));
         }
-        let comp_len = comp1 as usize;
-        if c.pos + comp_len > data.len() {
+        // Compare in u64: on wasm32 `comp1 as usize` truncates, and pos + len
+        // can wrap, so a hostile 64-bit length could pass a usize check.
+        let remaining = (data.len() - c.pos) as u64;
+        if comp1 > remaining {
             return Err(perr!(
                 "Chunk compressed length exceeds end of file by {}",
-                c.pos + comp_len - data.len()
+                comp1 - remaining
+            ));
+        }
+        let comp_len = comp1 as usize;
+        // zlib's maximum expansion is ~1032:1, so an uncompressed claim beyond
+        // that is corrupt. Without this bound the corrupt value flows into
+        // `vec![0u8; total_uncomp]` below -- a tiny damaged file claiming
+        // terabytes aborts the process on allocation instead of erroring.
+        if uncomp1 > comp1.saturating_mul(1032).max(64) || uncomp1 > usize::MAX as u64 {
+            return Err(perr!(
+                "Chunk uncompressed size {} implausible for {} compressed bytes",
+                uncomp1,
+                comp1
             ));
         }
         chunks.push(Chunk { file_off: c.pos, comp_len, uncomp_len: uncomp1 as usize });
@@ -80,16 +72,20 @@ pub fn decompress_save_file(
         c.pos += comp_len;
     }
 
-    // StrRef/DataRef (and the store's span/offset fields) index this buffer
-    // with `usize` offsets. On 64-bit native builds (the desktop app) that's
-    // 64-bit, so there is no size cap. On wasm32 `usize` is `u32`, so the body
-    // must stay within a 32-bit address space -- and wasm can't hold >4GB
-    // anyway. Only that build enforces the cap.
+    // The whole body is retained as one contiguous Vec<u8> (`out` below), and
+    // StrRef/DataRef index it with `usize` offsets. On 64-bit native builds
+    // (the desktop app) there is no practical cap. On wasm32 the hard limit is
+    // isize::MAX (~2.14GB), NOT the 4GB address space: Rust requires every
+    // single allocation's size to fit in isize, so `vec![0u8; total_uncomp]`
+    // panics with "capacity overflow" (an uncatchable wasm trap -> the app
+    // showed a raw "unreachable") the moment the body exceeds ~2.14GB. Return
+    // the actionable error instead -- the desktop app has no such limit. The
+    // +8 leaves room for the editor's quirk-padding append.
     #[cfg(target_pointer_width = "32")]
-    if total_uncomp as u64 + 8 > u32::MAX as u64 {
+    if total_uncomp as u64 + 8 > isize::MAX as u64 {
         return Err(perr!(
-            "Decompressed save is {} bytes; saves over 4GB are not supported in the browser (wasm32); use the desktop app.",
-            total_uncomp
+            "This save decompresses to {:.2} GB. The browser build can load saves up to about 2 GB; use the desktop app for larger ones.",
+            total_uncomp as f64 / 1e9
         ));
     }
 

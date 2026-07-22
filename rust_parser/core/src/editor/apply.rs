@@ -34,10 +34,45 @@ impl EditPlan {
 /// copy_within instead of building a second body; the leading u64
 /// uncompressedSize is refreshed at the end.
 pub fn apply_plan(body: &mut Vec<u8>, mut plan: EditPlan) -> PResult<()> {
-    for (at, bytes) in &plan.patches {
-        if at + bytes.len() > body.len() {
-            return Err(perr!("Edit patch out of range"));
+    // Pre-flight: validate the WHOLE plan before touching a byte. Two
+    // reasons. (1) A mid-apply error would leave the body half-mutated, and
+    // recovery from that is a full multi-second replay from the pristine
+    // copy. (2) The splice logic below assumes removes are disjoint and
+    // patches never target removed bytes -- a planner bug violating either
+    // used to corrupt silently (same-length wrong bytes pass the strict
+    // re-parse) or underflow; now it aborts loudly with the body intact.
+    plan.removes.sort_by_key(|(at, _)| *at);
+    let mut prev_end = 0usize;
+    for &(at, len) in &plan.removes {
+        let end = at
+            .checked_add(len)
+            .filter(|&e| e <= body.len())
+            .ok_or_else(|| perr!("Edit plan remove out of range"))?;
+        if at < prev_end {
+            return Err(perr!("Edit plan removes overlap"));
         }
+        prev_end = end;
+    }
+    let overlaps_remove = |start: usize, end: usize| {
+        let idx = plan.removes.partition_point(|&(at, len)| at + len <= start);
+        idx < plan.removes.len() && plan.removes[idx].0 < end
+    };
+    for (at, bytes) in &plan.patches {
+        let end = at
+            .checked_add(bytes.len())
+            .filter(|&e| e <= body.len())
+            .ok_or_else(|| perr!("Edit patch out of range"))?;
+        if overlaps_remove(*at, end) {
+            return Err(perr!("Edit patch overlaps a removed span"));
+        }
+    }
+    for (at, _) in &plan.inserts {
+        if *at > body.len() {
+            return Err(perr!("Edit plan insert out of range"));
+        }
+    }
+
+    for (at, bytes) in &plan.patches {
         body[*at..at + bytes.len()].copy_from_slice(bytes);
     }
 
@@ -45,7 +80,6 @@ pub fn apply_plan(body: &mut Vec<u8>, mut plan: EditPlan) -> PResult<()> {
     // surviving belts): removes run first, so shift each insert offset left
     // by the removed bytes before it. Inserts never target removed spans.
     if !plan.removes.is_empty() && !plan.inserts.is_empty() {
-        plan.removes.sort_by_key(|(at, _)| *at);
         for (at, _) in &mut plan.inserts {
             let mut shift = 0usize;
             for &(r, len) in &plan.removes {
@@ -62,7 +96,6 @@ pub fn apply_plan(body: &mut Vec<u8>, mut plan: EditPlan) -> PResult<()> {
     }
 
     if !plan.removes.is_empty() {
-        plan.removes.sort_by_key(|(at, _)| *at);
         let mut write = plan.removes[0].0;
         let mut read = write;
         for &(at, len) in &plan.removes {
@@ -369,7 +402,24 @@ fn plan_move_actors(
         return Err(perr!("rotate requires a pivot"));
     }
     let data: &[u8] = &store.data;
-    let chains = chain_splines_by_belt(store)?;
+    // Chain actors hold the belts' full item rings -- the biggest objects in
+    // a late-game save -- and chain_splines_by_belt parses every one of
+    // them. Only pay that when something being moved can actually be a
+    // chained belt: every chainable belt/lift type path contains "Conveyor"
+    // (gamedata's tests assert it for the belt table), so a move set without
+    // one can never hit the `chains` map below.
+    let moving_conveyor = names.iter().any(|name| {
+        scan.by_instance_name
+            .get(name.as_bytes())
+            .is_some_and(|&(li, oi)| match &store.levels[li].headers[oi] {
+                Header::Actor(a) => {
+                    a.type_path.bytes(data).windows(8).any(|w| w == b"Conveyor")
+                }
+                Header::Component(_) => false,
+            })
+    });
+    let chains =
+        if moving_conveyor { chain_splines_by_belt(store)? } else { HashMap::new() };
 
     let mut move_one = |li: usize, oi: usize, object: &Object| -> PResult<()> {
         let header = &store.levels[li].headers[oi];
@@ -685,6 +735,15 @@ fn plan_duplicate_actors(
         let mut err: Option<crate::error::PError> = None;
         rename::visit_object_refs(&object, &mut |r: &ObjectRef| {
             if err.is_some() || r.path_name.is_empty() {
+                return;
+            }
+            // Asset-scoped refs (SoftObjectProperty with the asset path in
+            // the LEVEL part, e.g. level "/Game/.../BPW_Sign4x1_2", path
+            // "BPW_Sign4x1_2_C" -- a sign layout's widget class) are static
+            // data, not save instances: tombstoning one blanks every
+            // duplicated sign. Same exemption as the paste path
+            // (clipboard.rs) -- keep the two in step.
+            if r.level_name.bytes(data).starts_with(b"/") {
                 return;
             }
             let path = r.path_name.bytes(data);

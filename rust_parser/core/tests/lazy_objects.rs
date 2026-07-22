@@ -31,7 +31,7 @@ fn load_lean(name: &str) -> SaveStore {
 /// re-parses, this equivalence is what guarantees query parity.
 #[test]
 fn span_reparse_matches_eager_parse() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let mut checked = 0usize;
     for (li, level) in store.levels.iter().enumerate() {
         let objects = level.parsed_objects();
@@ -52,7 +52,7 @@ fn span_reparse_matches_eager_parse() {
 /// re-parse still works.
 #[test]
 fn drop_then_reparse_on_demand() {
-    let mut store = load("All_autosave_0.sav");
+    let mut store = load("All_080726-163150.sav");
     assert!(store.has_object_model());
 
     // Remember one actor with associations to spot-check after the drop.
@@ -86,7 +86,7 @@ fn drop_then_reparse_on_demand() {
 /// from those spans must match the eager ones.
 #[test]
 fn lean_parse_spans_match_full_parse() {
-    let full = load("All_autosave_0.sav");
+    let full = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
 
     // Feed the lean parser the full parse's own body (bytes start at the u64
@@ -133,7 +133,7 @@ fn lean_parse_spans_match_full_parse() {
 /// session.
 #[test]
 fn cbor_index_roundtrip_preserves_queries() {
-    let full = load("All_autosave_0.sav");
+    let full = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
     let (_payload, index) = sav_core::mapdata::build_all_json(&full, None).unwrap();
 
@@ -173,10 +173,10 @@ fn cbor_index_roundtrip_preserves_queries() {
 /// on the resident model.
 #[test]
 fn build_all_json_on_lean_store_matches_full() {
-    let full = load("All_autosave_0.sav");
+    let full = load("All_080726-163150.sav");
     let (payload_full, index_full) = sav_core::mapdata::build_all_json(&full, None).unwrap();
 
-    let lean = load_lean("All_autosave_0.sav");
+    let lean = load_lean("All_080726-163150.sav");
     assert!(!lean.has_object_model(), "lean parse must not build the object model");
     let (payload_lean, index_lean) = sav_core::mapdata::build_all_json(&lean, None).unwrap();
 
@@ -193,7 +193,7 @@ fn build_all_json_on_lean_store_matches_full() {
 /// for byte.
 #[test]
 fn edit_after_drop_matches_direct_edit() {
-    let store = load("All_autosave_0.sav");
+    let store = load("All_080726-163150.sav");
     let tables = ClassTables::embedded();
 
     // First movable actor of a machine class.
@@ -221,7 +221,7 @@ fn edit_after_drop_matches_direct_edit() {
     let direct = session::step(&store, &op, &tables).unwrap();
 
     // Dropped store: edit directly, without ever rebuilding the model.
-    let mut dropped = load("All_autosave_0.sav");
+    let mut dropped = load("All_080726-163150.sav");
     dropped.drop_object_model();
     assert!(!dropped.has_object_model());
     let edited = session::step_owned(dropped, &op, &tables).unwrap();

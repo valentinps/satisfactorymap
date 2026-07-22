@@ -241,7 +241,11 @@ var Altitude = {};
     maxSlider.value = hi;
     updateLabel(lo, hi);
     updateTrackFill(lo, hi, lo, hi);
-    savedRange = { min: lo, max: hi };
+    // Sentinel, not a concrete {lo,hi}: a later save with a wider altitude
+    // span would otherwise clamp to these old bounds and silently re-apply a
+    // finite filter to a user who explicitly reset (build() treats null as
+    // "open to the full range").
+    savedRange = null;
     MapApp.setAltitudeRange(-Infinity, Infinity);
   });
 })();
