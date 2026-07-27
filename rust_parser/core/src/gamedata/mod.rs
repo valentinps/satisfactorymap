@@ -76,6 +76,10 @@ pub struct GameData {
     pub category_overrides: serde_json::Map<String, serde_json::Value>,
     pub buildings: serde_json::Map<String, serde_json::Value>,
     pub items: serde_json::Map<String, serde_json::Value>,
+    /// Raw resources (ore, water, oil, nitrogen, SAM). Disjoint from
+    /// `items` -- an extractable resource has no entry there, so the Modeler
+    /// export needs both maps to name every item.
+    pub resources: serde_json::Map<String, serde_json::Value>,
     pub recipes: serde_json::Map<String, serde_json::Value>,
     pub schematics: serde_json::Map<String, serde_json::Value>,
     pub game_phases: serde_json::Map<String, serde_json::Value>,
@@ -121,6 +125,7 @@ pub fn get() -> &'static GameData {
         category_overrides: parse("categoryOverrides.json", embed!("categoryOverrides.json")),
         buildings: parse("buildings.json", embed!("generated/buildings.json")),
         items: parse("items.json", embed!("generated/items.json")),
+        resources: parse("resources.json", embed!("generated/resources.json")),
         recipes: parse("recipes.json", embed!("generated/recipes.json")),
         schematics: parse("schematics.json", embed!("generated/schematics.json")),
         game_phases: parse("gamePhases.json", embed!("generated/gamePhases.json")),
@@ -174,6 +179,7 @@ mod tests {
         assert!(d.crash_sites.len() > 90);
         assert!(d.free_dropped_items.len() >= 50);
         assert!(d.buildings.len() > 400);
+        assert_eq!(d.resources.len(), 13);
         assert!(d.recipes.len() > 300);
         assert!(d.schematics.len() > 200);
         assert!(!d.game_phases.is_empty());

@@ -10,6 +10,7 @@ pub mod extract;
 pub mod gamedata;
 pub mod level;
 pub mod mapdata;
+pub mod modeler;
 pub mod object;
 pub mod properties;
 pub mod reader;
