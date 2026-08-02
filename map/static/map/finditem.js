@@ -8,9 +8,10 @@
 // trains are searchable only as one whole-consist "Train" entry, matching
 // the sidebar, never as individual locomotives/freight cars).
 //
-// Item search looks up one item across every inventory in the save (see
+// Item search looks up one item across every inventory in the save -- plus
+// the items riding the belts, which are stock like any other (see
 // sav_map_data.findItemLocations / collectItemLocationIndex, queried via
-// /api/find-item) and lists everything that holds it, grouped by building
+// /api/find-item) -- and lists everything that holds it, grouped by building
 // type (one expandable summed row per type, most first -- see
 // buildDisplayGroups/renderGroupedLocations), with an optional toggle to
 // highlight (and hide everything else) just those buildings on the map.

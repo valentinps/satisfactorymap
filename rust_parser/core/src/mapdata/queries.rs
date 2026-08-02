@@ -193,10 +193,36 @@ fn add_item(
 // Conveyor chain ring buffer (sav_map_data 2284-2309)
 // ---------------------------------------------------------------------------
 
+/// One member belt's own contiguous window `[start, start + count)` into its
+/// chain's ring-buffer item list, or None when the chain's/belt's indices say
+/// there is nothing to read. Python's `%` on possibly negative operands ==
+/// rem_euclid. Shared by every consumer of a chain's items (the belt tooltip
+/// below, the item-location index in extract.rs) so the ring arithmetic lives
+/// in exactly one place.
+pub fn conveyor_chain_segment_window(
+    chain_belt: &ChainBelt,
+    maximum_items: i32,
+    chain_lead_item_index: i32,
+) -> Option<(usize, usize)> {
+    if maximum_items <= 0
+        || chain_lead_item_index < 0
+        || chain_belt.lead_item_index < 0
+        || chain_belt.tail_item_index < 0
+    {
+        return None;
+    }
+    let maximum = maximum_items as i64;
+    let start = (chain_belt.lead_item_index as i64 - chain_lead_item_index as i64)
+        .rem_euclid(maximum) as usize;
+    let count = (chain_belt.tail_item_index as i64 - chain_belt.lead_item_index as i64)
+        .rem_euclid(maximum) as usize
+        + 1;
+    Some((start, count))
+}
+
 /// sav_map_data._conveyorChainSegmentItemPaths: this belt's own contiguous
-/// slice of the chain's ring-buffer item window. Python's `%` on possibly
-/// negative operands == rem_euclid; the slice `chainItems[start:start+count]`
-/// clamps at the end like Python slicing.
+/// slice of the chain's ring-buffer item window. The slice
+/// `chainItems[start:start+count]` clamps at the end like Python slicing.
 pub fn conveyor_chain_segment_item_paths<'a>(
     // NOT tied to 'a: the returned slices borrow only `data` (StrRefs are
     // offsets), so an owned re-parsed chain actor can be a short-lived local.
@@ -209,22 +235,18 @@ pub fn conveyor_chain_segment_item_paths<'a>(
     else {
         return Vec::new();
     };
-    if items.is_empty() || *maximum_items <= 0 || *chain_lead_item_index < 0 {
+    if items.is_empty() {
         return Vec::new();
     }
     for chain_belt in belts {
         if chain_belt.belt.path_name.bytes(data) != belt_instance_name {
             continue;
         }
-        if chain_belt.lead_item_index < 0 || chain_belt.tail_item_index < 0 {
+        let Some((start, count)) =
+            conveyor_chain_segment_window(chain_belt, *maximum_items, *chain_lead_item_index)
+        else {
             return Vec::new();
-        }
-        let maximum = *maximum_items as i64;
-        let start = (chain_belt.lead_item_index as i64 - *chain_lead_item_index as i64)
-            .rem_euclid(maximum) as usize;
-        let count = (chain_belt.tail_item_index as i64 - chain_belt.lead_item_index as i64)
-            .rem_euclid(maximum) as usize
-            + 1;
+        };
         return items.iter().skip(start).take(count).map(|(path, _)| path.bytes(data)).collect();
     }
     Vec::new()
