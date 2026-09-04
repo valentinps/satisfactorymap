@@ -566,7 +566,7 @@ pub fn describe_instance(store: &SaveStore, index: &MapIndex, instance_name: &st
             }
             if belts.len() > 1 {
                 let line_items =
-                    counted_item_list(items.iter().map(|(path, _)| path.bytes(data)));
+                    counted_item_list(items.iter().map(|item| item.item_path.bytes(data)));
                 if !line_items.is_empty() {
                     result.insert("itemsOnLine".into(), Value::Array(line_items));
                     result.insert("lineSegmentCount".into(), Value::from(belts.len() as i64));

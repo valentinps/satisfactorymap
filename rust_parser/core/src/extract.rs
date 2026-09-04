@@ -4,6 +4,7 @@
 //! (named in the doc comment); tools/diff_payload.py compares the two
 //! implementations and is the regression gate.
 
+use crate::mapdata::queries::conveyor_chain_segment_window;
 use crate::mapdata::scan::SaveScan;
 use crate::store::*;
 use std::collections::{HashMap, HashSet};
@@ -69,10 +70,33 @@ struct ItemIndex<'a> {
     by_name: HashMap<&'a [u8], usize>,
 }
 
-/// Exact port of sav_map_data._collectItemLocationIndex (+ its helpers
-/// _inventoryComponentObjects / the stack walk). Returns
-/// [(itemShortName, [(instanceName, count)])] in the same insertion order the
-/// Python implementation's dict produces.
+impl<'a> ItemIndex<'a> {
+    fn push(&mut self, short: &'a [u8], slot: usize, count: i64) {
+        match self.by_name.get(short) {
+            Some(&idx) => self.order[idx].1.push((slot, count)),
+            None => {
+                self.by_name.insert(short, self.order.len());
+                self.order.push((short, vec![(slot, count)]));
+            }
+        }
+    }
+}
+
+/// `countByItem[short] += n` over one object's insertion-ordered assoc list
+/// (a handful of distinct items per object -- a linear scan beats a map).
+fn add_item_count<'a>(counts: &mut Vec<(&'a [u8], i64)>, short: &'a [u8], n: i64) {
+    match counts.iter_mut().find(|(s, _)| *s == short) {
+        Some((_, total)) => *total += n,
+        None => counts.push((short, n)),
+    }
+}
+
+/// Port of sav_map_data._collectItemLocationIndex (+ its helpers
+/// _inventoryComponentObjects / the stack walk), extended with the items
+/// riding the belt lines -- stock the Python version never counted, so an
+/// item search under-reported a running factory by everything in transit.
+/// Returns [(itemShortName, [(instanceName, count)])] in the same insertion
+/// order the Python implementation's dict produces.
 pub fn item_location_index(scan: &SaveScan) -> Vec<(Vec<u8>, Vec<(Vec<u8>, i64)>)> {
     let store = scan.store;
     let data: &[u8] = &store.data;
@@ -124,11 +148,7 @@ pub fn item_location_index(scan: &SaveScan) -> Vec<(Vec<u8>, Vec<(Vec<u8>, i64)>
             };
             for stack in stacks {
                 if let Some((item_path, n)) = stack_item(stack, data) {
-                    let short = short_name(item_path);
-                    match count_by_item.iter_mut().find(|(s, _)| *s == short) {
-                        Some((_, total)) => *total += n,
-                        None => count_by_item.push((short, n)),
-                    }
+                    add_item_count(&mut count_by_item, short_name(item_path), n);
                 }
             }
         }
@@ -138,20 +158,65 @@ pub fn item_location_index(scan: &SaveScan) -> Vec<(Vec<u8>, Vec<(Vec<u8>, i64)>
             find_prop(&object.properties, data, b"mPickupItems")
         {
             if let Some((item_path, n)) = stack_item(pl, data) {
-                let short = short_name(item_path);
-                match count_by_item.iter_mut().find(|(s, _)| *s == short) {
-                    Some((_, total)) => *total += n,
-                    None => count_by_item.push((short, n)),
+                add_item_count(&mut count_by_item, short_name(item_path), n);
+            }
+        }
+
+        // Items riding a conveyor are real stock too -- a late-game belt
+        // network holds a lot of it -- so they count towards the item search
+        // exactly like a machine's or a container's contents. Pre-1.0 saves
+        // (and the chained-belt delete write-back, see editor::apply) keep a
+        // belt's items on the belt itself, one entity per record.
+        if let ActorSpecific::ConveyorBelt { items, .. } = &object.actor_specific {
+            for item in items {
+                let path = item.item_path.bytes(data);
+                if !path.is_empty() {
+                    add_item_count(&mut count_by_item, short_name(path), 1);
                 }
             }
         }
 
         for (short, count) in count_by_item {
-            match index.by_name.get(short) {
-                Some(&idx) => index.order[idx].1.push((slot, count)),
-                None => {
-                    index.by_name.insert(short, index.order.len());
-                    index.order.push((short, vec![(slot, count)]));
+            index.push(short, slot, count);
+        }
+
+        // Since 1.0 a whole belt line's items instead live in one ring buffer
+        // on the shared FGConveyorChainActor, each member belt owning a
+        // contiguous window of it. Counted against the belt the item is
+        // physically on -- not against the chain actor, which is an invisible
+        // bookkeeping object with no footprint -- so every location the search
+        // lists is a real placed building at a real position. Same split the
+        // belt tooltip's "items on this segment" and the selection panel's
+        // combined inventory already show.
+        if let ActorSpecific::ConveyorChain {
+            belts, items, maximum_items, chain_lead_item_index, ..
+        } = &object.actor_specific
+        {
+            // The member belts' windows tile `items` exactly -- no slot
+            // counted twice, none missed -- so a line's total across its
+            // belts is exactly the length of the ring.
+            let mut belt_counts: Vec<(&[u8], i64)> = Vec::new();
+            for chain_belt in belts {
+                let Some((start, count)) = conveyor_chain_segment_window(
+                    chain_belt,
+                    *maximum_items,
+                    *chain_lead_item_index,
+                ) else {
+                    continue;
+                };
+                let Some(&belt_slot) = slot_by_name.get(chain_belt.belt.path_name.bytes(data))
+                else {
+                    continue;
+                };
+                belt_counts.clear();
+                for item in items.iter().skip(start).take(count) {
+                    let path = item.item_path.bytes(data);
+                    if !path.is_empty() {
+                        add_item_count(&mut belt_counts, short_name(path), 1);
+                    }
+                }
+                for &(short, n) in &belt_counts {
+                    index.push(short, belt_slot, n);
                 }
             }
         }

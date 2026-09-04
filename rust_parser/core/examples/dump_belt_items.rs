@@ -33,8 +33,14 @@ fn main() {
                             .instance_name()
                             .to_string(&store.data);
                         println!("{arg}: {name} ({} items):", items.len());
-                        for (len, path, pos) in items.iter().take(10) {
-                            println!("  u32={} pos={} {}", len, pos, path.to_string(&store.data));
+                        for item in items.iter().take(10) {
+                            println!(
+                                "  u32={} pos={} state={} {}",
+                                item.length,
+                                item.position,
+                                item.state.map_or(0, |s| s.len),
+                                item.item_path.to_string(&store.data)
+                            );
                         }
                     }
                 }

@@ -1089,13 +1089,15 @@ pub(crate) fn lightweight_record_bytes(
 /// format -- chain actors only exist in saves past that gate): [u32 0
 /// InventoryItem padding][item class string][u32 0 no item state]
 /// [f32 position along the belt, cm].
-fn belt_item_record(path: &[u8], position: f32) -> Vec<u8> {
-    let mut r = Vec::with_capacity(path.len() + 17);
+fn belt_item_record(path: &[u8], state: &[u8], position: f32) -> Vec<u8> {
+    let mut r = Vec::with_capacity(path.len() + state.len() + 17);
     r.extend_from_slice(&0u32.to_le_bytes());
     r.extend_from_slice(&(path.len() as u32 + 1).to_le_bytes());
     r.extend_from_slice(path);
     r.push(0);
-    r.extend_from_slice(&0u32.to_le_bytes());
+    // itemState: the has-state flag, then that record's bytes unchanged.
+    r.extend_from_slice(&(!state.is_empty() as u32).to_le_bytes());
+    r.extend_from_slice(state);
     r.extend_from_slice(&position.to_le_bytes());
     r
 }
@@ -1175,14 +1177,18 @@ fn plan_delete_actors(
             let count = (cb.tail_item_index as i64 - cb.lead_item_index as i64)
                 .rem_euclid(maximum) as usize
                 + 1;
-            let slots: Vec<(usize, &[u8])> = items
+            let slots: Vec<(usize, &[u8], &[u8])> = items
                 .iter()
                 .skip(start)
                 .take(count)
                 .enumerate()
-                .filter_map(|(j, (p, _))| {
-                    let b = p.bytes(data);
-                    (!b.is_empty() && b.is_ascii()).then_some((j, b))
+                .filter_map(|(j, item)| {
+                    let b = item.item_path.bytes(data);
+                    // The per-item state (a jetpack's fuel, a weapon's
+                    // magazine) rides along verbatim -- same record layout
+                    // on a belt as in the chain's ring.
+                    let st = item.state.map_or(&[][..], |s| s.bytes(data));
+                    (!b.is_empty() && b.is_ascii()).then_some((j, b, st))
                 })
                 .collect();
             if slots.is_empty() {
@@ -1207,9 +1213,9 @@ fn plan_delete_actors(
                 belt_len = 100.0;
             }
             let mut records = Vec::new();
-            for &(j, path) in &slots {
+            for &(j, path, state) in &slots {
                 let position = (belt_len * (j as f64 + 0.5) / count as f64) as f32;
-                records.extend_from_slice(&belt_item_record(path, position));
+                records.extend_from_slice(&belt_item_record(path, state, position));
             }
             belt_writebacks.push((
                 bli,
@@ -1447,6 +1453,36 @@ mod plan_apply_tests {
         plan.inserts.push((2048, vec![0x33; 100])); // same offset, keeps order
         plan.inserts.push((4096, vec![0x44; 50]));  // at end-of-body
         plan
+    }
+
+    /// A written-back belt item mirrors the slot the game itself writes: the
+    /// leading u32, the item class path, the itemState flag and (when the
+    /// item has one) its state record verbatim, then the position. Getting
+    /// the flag wrong here writes a save the game reads as drift -- the same
+    /// mistake that made stated items unreadable in the first place.
+    #[test]
+    fn belt_item_record_writes_the_item_state_slot() {
+        let path = b"/Game/X/Desc_Y.Desc_Y_C";
+
+        let plain = belt_item_record(path, &[], 12.5f32);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&0u32.to_le_bytes());
+        expected.extend_from_slice(&(path.len() as u32 + 1).to_le_bytes());
+        expected.extend_from_slice(path);
+        expected.push(0);
+        expected.extend_from_slice(&0u32.to_le_bytes()); // no state
+        expected.extend_from_slice(&12.5f32.to_le_bytes());
+        assert_eq!(plain, expected);
+
+        // A state record rides along whole, behind a set flag.
+        let state = [0xEFu8; 40];
+        let stated = belt_item_record(path, &state, 12.5f32);
+        assert_eq!(stated.len(), plain.len() + state.len());
+        let flag_at = stated.len() - 4 - state.len() - 4;
+        assert_eq!(&stated[..flag_at], &plain[..flag_at]);
+        assert_eq!(&stated[flag_at..flag_at + 4], &1u32.to_le_bytes());
+        assert_eq!(&stated[flag_at + 4..flag_at + 4 + state.len()], &state);
+        assert_eq!(&stated[stated.len() - 4..], &12.5f32.to_le_bytes());
     }
 
     /// The streamed (compress-free-rebuild) path must produce byte-identical

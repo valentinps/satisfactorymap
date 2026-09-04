@@ -38,7 +38,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: map/uploads
-          key: test-saves-v1
+          key: test-saves-v2
       - name: Fetch test saves
         run: python3 tools/fetch_test_saves.py
       - name: cargo test (release)
