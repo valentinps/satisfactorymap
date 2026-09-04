@@ -17,14 +17,8 @@ geared-up items on a belt load again.
   restore, Escape and stacking: Escape now peels exactly one layer at a time,
   and the hover tooltip paints above a modal instead of under it.
 
-- **The world border, the water limit and the caves are map layers.** A "World"
-  category (hidden by default, like the other world layers) draws the world
-  perimeter in red with the altitudes its damage slabs start at, the water
-  limit in cyan — 8.2 km of real water inside a 70 km ocean — and 84 caves
-  traced from the cooked world export, each with its name, area and altitude
-  range in the tooltip. Nothing in a save records a cave, so the outlines come
-  from the game's own cave atmosphere volumes, tunnel splines and cave
-  foliage, unioned and traced; they are approximate, and the map says so.
+- **A new "World" category on the map**, hidden by default, adding the world
+  border, the water limit and the caves as layers.
 
 - **Optimal network finder.** A planning tool for "where should the belts,
   trains or power actually run". Type its name in the search bar, feed it a
