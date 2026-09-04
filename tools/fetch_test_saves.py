@@ -2,7 +2,7 @@
 
 The Rust test suite (cargo test -p sav_core), tools/e2e_editor.py, and CI all
 read real .sav files from map/uploads/, which is gitignored (saves are tens of
-MB). The corpus lives as assets on the `test-saves-v1` GitHub release -- same
+MB). The corpus lives as assets on the `test-saves-v2` GitHub release -- same
 distribution mechanism as game_data.zip -- so a clean clone becomes testable
 with:
 
@@ -18,13 +18,16 @@ import urllib.request
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEST = os.path.join(REPO, "map", "uploads")
-BASE = "https://github.com/valentinps/satisfactorymap/releases/download/test-saves-v1/"
+BASE = "https://github.com/valentinps/satisfactorymap/releases/download/test-saves-v2/"
 
 # name -> expected size (skip check; also catches truncated downloads)
 SAVES = {
     "All_080726-163150.sav": 263_439,
     "solo_autosave_1.sav": 15_068_544,
     "BuildITBIIIIIG_210726-231135.sav": 50_186_116,
+    # Equipment with per-item state parked on a belt (issue #22): jetpacks,
+    # gas masks, hazmat suits. Gates tests/belt_item_state.rs.
+    "belt_item_state.sav": 419_339,
 }
 
 

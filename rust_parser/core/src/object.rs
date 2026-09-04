@@ -4,7 +4,7 @@
 
 use crate::error::{perr, PResult};
 use crate::properties::{parse_object_reference, parse_properties};
-use crate::reader::Cursor;
+use crate::reader::{Cursor, DataRef};
 use crate::store::*;
 use crate::version_data::parse_save_object_version_data;
 
@@ -12,6 +12,29 @@ use crate::version_data::parse_save_object_version_data;
 #[derive(Clone)]
 pub struct ClassTables {
     pub conveyor_belts: Vec<String>,
+}
+
+/// The optional per-item state record that follows an item's class path in a
+/// conveyor item slot. Save version 44 replaced the old `itemState`
+/// (levelName, pathName) reference pair with a flag plus, when set, an inline
+/// record: an empty level name, the state's type path, and its
+/// length-prefixed properties. Anything that carries state rides belts with
+/// one attached -- a jetpack's fuel (FGJetPackItemState), a weapon's
+/// magazine, a gas mask's filter -- and a save full of geared-up belts is
+/// unreadable without this.
+///
+/// The record is skipped, not decoded; the returned span covers it whole
+/// (flag excluded) so a writer can hand the bytes back verbatim.
+fn parse_item_state(c: &mut Cursor, ctx: &str) -> PResult<Option<DataRef>> {
+    if !c.bool_u32(ctx)? {
+        return Ok(None);
+    }
+    let off = c.pos;
+    c.confirm_u32(0)?; // state ObjectReference.levelName
+    let _state_type = c.string()?;
+    let state_size = c.u32()?;
+    c.data_ref(state_size as usize)?;
+    Ok(Some(DataRef { off, len: (c.pos - off) as u32 }))
 }
 
 const GAME_MODE_STATE: [&str; 2] = [
@@ -172,21 +195,16 @@ pub fn parse_object(
                 let v44_item_format = header_save_version >= 44 && object_game_version >= 44;
                 for _ in 0..count {
                     let length = c.u32()?;
-                    let name = c.string()?;
-                    if v44_item_format {
-                        let has_state = c.bool_u32("ConveyorBelt.itemHasStateFlag")?;
-                        if has_state {
-                            c.confirm_u32(0)?; // state ObjectReference.Level
-                            let _state_type = c.string()?;
-                            let state_size = c.u32()?;
-                            c.data_ref(state_size as usize)?;
-                        }
+                    let item_path = c.string()?;
+                    let state = if v44_item_format {
+                        parse_item_state(c, "ConveyorBelt.itemHasStateFlag")?
                     } else {
                         c.confirm_string("")?;
                         c.confirm_string("")?;
-                    }
+                        None
+                    };
                     let position = c.f32()?;
-                    items.push((length, name, position));
+                    items.push(BeltItem { length, item_path, state, position });
                 }
                 actor_specific =
                     ActorSpecific::ConveyorBelt { items, count_field_off, end_off: c.pos };
@@ -399,12 +417,16 @@ pub fn parse_object(
                 let chain_tail = c.i32()?;
                 let num_items = c.u32()?;
                 let mut items = Vec::with_capacity(c.capped_capacity(num_items as usize, 8));
+                // Same slot layout as a per-belt item record, minus its
+                // leading length: an item class reference, then the optional
+                // state (chain actors only exist in 1.0+ saves, so the v44
+                // format is the only one that can appear here).
                 for _ in 0..num_items {
-                    c.confirm_u32(0)?;
+                    c.confirm_u32(0)?; // item class ObjectReference.levelName
                     let item_path = c.string()?;
-                    c.confirm_u32(0)?;
-                    let item_instance_id = c.u32()?;
-                    items.push((item_path, item_instance_id));
+                    let state = parse_item_state(c, "ConveyorChain.itemHasStateFlag")?;
+                    let chain_offset = c.f32()?;
+                    items.push(ChainItem { item_path, state, chain_offset });
                 }
                 actor_specific = ActorSpecific::ConveyorChain {
                     chain_actor,

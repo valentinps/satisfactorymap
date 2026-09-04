@@ -168,8 +168,8 @@ pub fn item_location_index(scan: &SaveScan) -> Vec<(Vec<u8>, Vec<(Vec<u8>, i64)>
         // (and the chained-belt delete write-back, see editor::apply) keep a
         // belt's items on the belt itself, one entity per record.
         if let ActorSpecific::ConveyorBelt { items, .. } = &object.actor_specific {
-            for (_, item_path, _) in items {
-                let path = item_path.bytes(data);
+            for item in items {
+                let path = item.item_path.bytes(data);
                 if !path.is_empty() {
                     add_item_count(&mut count_by_item, short_name(path), 1);
                 }
@@ -209,8 +209,8 @@ pub fn item_location_index(scan: &SaveScan) -> Vec<(Vec<u8>, Vec<(Vec<u8>, i64)>
                     continue;
                 };
                 belt_counts.clear();
-                for (item_path, _) in items.iter().skip(start).take(count) {
-                    let path = item_path.bytes(data);
+                for item in items.iter().skip(start).take(count) {
+                    let path = item.item_path.bytes(data);
                     if !path.is_empty() {
                         add_item_count(&mut belt_counts, short_name(path), 1);
                     }

@@ -104,7 +104,7 @@ The Rust suite reads real save files from `map/uploads/` (gitignored — saves
 are tens of MB). Fetch the public corpus first, then test:
 
 ```bash
-py tools/fetch_test_saves.py     # downloads the test-saves-v1 release assets
+py tools/fetch_test_saves.py     # downloads the test-saves-v2 release assets
 cd rust_parser
 cargo test -p sav_core --release # release: debug parses of 50MB saves crawl
 ```

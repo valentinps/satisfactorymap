@@ -247,7 +247,12 @@ pub fn conveyor_chain_segment_item_paths<'a>(
         else {
             return Vec::new();
         };
-        return items.iter().skip(start).take(count).map(|(path, _)| path.bytes(data)).collect();
+        return items
+            .iter()
+            .skip(start)
+            .take(count)
+            .map(|item| item.item_path.bytes(data))
+            .collect();
     }
     Vec::new()
 }

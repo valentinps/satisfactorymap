@@ -255,6 +255,32 @@ pub struct ChainBelt {
     pub tail_item_index: i32,
 }
 
+/// One item riding a belt, in the per-belt record format (pre-chain saves and
+/// the chained-belt delete write-back; see `ActorSpecific::ConveyorBelt`).
+#[derive(Debug)]
+pub struct BeltItem {
+    /// The record's leading u32, as the game wrote it.
+    pub length: u32,
+    pub item_path: StrRef,
+    /// Raw per-item state record, as on [`ChainItem`].
+    pub state: Option<DataRef>,
+    /// Distance along the belt, in centimetres.
+    pub position: f32,
+}
+
+/// One slot of a conveyor chain's ring buffer: the item riding it.
+#[derive(Debug)]
+pub struct ChainItem {
+    /// The item's class path (`/Game/.../Desc_IronPlate.Desc_IronPlate_C`).
+    pub item_path: StrRef,
+    /// Raw bytes of the item's per-item state record when it has one -- a
+    /// jetpack's fuel level, a weapon's magazine, a gas mask's filter. Kept
+    /// verbatim (never decoded) so a writer can copy it straight back out.
+    pub state: Option<DataRef>,
+    /// Distance along the chain, in centimetres.
+    pub chain_offset: f32,
+}
+
 #[derive(Debug)]
 pub enum ActorSpecific {
     None,
@@ -264,7 +290,7 @@ pub enum ActorSpecific {
     /// delete engine writes records back here when a chain is deleted -- the
     /// game reads them when it rebuilds chains on load.
     ConveyorBelt {
-        items: Vec<(u32, StrRef, f32)>,
+        items: Vec<BeltItem>,
         /// Offset in `SaveStore.data` of the belt's u32 item count.
         count_field_off: usize,
         /// Offset just past the last item record (insertion point).
@@ -299,7 +325,7 @@ pub enum ActorSpecific {
     ConveyorChain {
         chain_actor: ObjectRef,
         belts: Vec<ChainBelt>,
-        items: Vec<(StrRef, u32)>,
+        items: Vec<ChainItem>,
         cu32: u32,
         maximum_items: i32,
         chain_lead_item_index: i32,
