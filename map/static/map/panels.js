@@ -162,6 +162,7 @@
     el.style.display = "";
     currentTool = el;
     body.classList.add("tool-open");
+    Analytics.toolOpened(el.id);
   };
 
   Panels.closeTool = function(el) {

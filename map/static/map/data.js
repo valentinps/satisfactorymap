@@ -248,6 +248,9 @@
     uploadDropText.textContent = "Loading " + file.name + "…";
     var pinnedSelection = Tooltip.getPinnedSelection();
     showProgress("Reading file", 0);
+    // Measured across the whole visible wait (read + parse + build), which is
+    // what a user would call "how long it took".
+    var startedAt = performance.now();
 
     return file.arrayBuffer()
       .then(function(buffer) {
@@ -271,6 +274,7 @@
         if (pinnedSelection) {
           restorePinnedSelection(pinnedSelection);
         }
+        Analytics.saveLoaded("file", file.size, performance.now() - startedAt);
         setStatus("Loaded: " + payload.sessionName + " (" + payload.saveDatetime + ")");
       })
       .catch(function(error) {
@@ -389,9 +393,12 @@
     uploadDropText.textContent = "Downloading " + name + "…";
     var pinnedSelection = Tooltip.getPinnedSelection();
     showProgress("Downloading", 0);
+    var startedAt = performance.now();
+    var bytes = 0;
 
     return downloadSave(url)
       .then(function(buffer) {
+        bytes = buffer.byteLength;
         return SaveClient.loadSave(buffer, function(phase, current, total) {
           var percent = total > 0 ? (current / total) * 100 : 0;
           showProgress(phase, percent);
@@ -410,6 +417,7 @@
         if (pinnedSelection) {
           restorePinnedSelection(pinnedSelection);
         }
+        Analytics.saveLoaded("url", bytes, performance.now() - startedAt);
         setStatus("Loaded: " + payload.sessionName + " (" + payload.saveDatetime + ")");
       })
       .catch(function(error) {

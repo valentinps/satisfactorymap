@@ -46,7 +46,11 @@ up to **15 seconds at a time** — WebGL rendering instead of DOM markers
   over HTTP). The file downloads directly into your browser — never through
   this site's servers — so its host must allow cross-origin (CORS) requests.
 - **Private by construction** — fully client-side; the save never leaves
-  your machine. Works offline once loaded.
+  your machine. Works offline once loaded. satisfactorymap.net counts
+  anonymous, cookieless usage (page views, and how long a parse took) via
+  PostHog's EU region; nothing about the save itself is sent, and the desktop
+  app and any local build send nothing at all. See `map/static/map/analytics.js`
+  — it is short, and it is the whole of it.
 
 ![Factory detail: production rows, belts and a rail roundabout](docs/screenshot_detail.png)
 
