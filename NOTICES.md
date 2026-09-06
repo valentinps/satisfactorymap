@@ -31,6 +31,18 @@ be distributed under **AGPL-3.0**, with the following scope:
 
 A copy of the exchange is retained by the project author.
 
+## Third-party code bundled in this repository
+
+Vendored under `map/static/map/vendor/` and shipped as-is, each under its own
+license:
+
+- **Leaflet** (`vendor/leaflet.js`, `vendor/leaflet.css`) -- BSD-2-Clause,
+  (c) Volodymyr Agafonkin / CloudMade. <https://leafletjs.com/>
+- **posthog-js** 1.427.2 (`vendor/posthog.js`, the upstream
+  `dist/array.no-external.js` build) -- MIT and Apache-2.0, (c) PostHog Inc.
+  <https://github.com/PostHog/posthog-js>. Loaded only by the hosted site;
+  see `analytics.js` for the gate and for what is sent.
+
 ## Not licensed by this repository
 
 - The **Satisfactory Save Map** name, logo, and the `satisfactorymap.net`
