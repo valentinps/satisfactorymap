@@ -740,6 +740,32 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   cursor: default;
 }
 
+/* Hairline between the app's own controls and the external project link, so
+   the GitHub mark reads as "about this project" rather than one more view to
+   open. Sized off the bar row, not the full bar height. */
+.topBarDivider {
+  flex: none;
+  width: 1px;
+  height: 22px;
+  margin: 0 var(--sp-1);
+  background: var(--border);
+}
+
+/* Icon-only on purpose: it mirrors the menu button at the far left end of the
+   bar, and a labelled pill here would unbalance the two side sections the
+   search field is centred between. */
+#githubLink {
+  flex: none;
+  /* Not .btn-ghost's resting --faint: this is the one wayfinding link in the
+     chrome, so it rests at the same weight as the pill labels beside it and
+     only brightens (plus a raised ground) on hover. */
+  color: var(--text);
+  height: 34px;
+  min-width: 34px;
+  width: 34px;
+  border-radius: var(--r-md);
+}
+
 #statusMenuButton .statusMenuChevron {
   color: var(--muted);
   transition: transform 0.15s ease;
