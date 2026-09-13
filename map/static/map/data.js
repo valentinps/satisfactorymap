@@ -28,11 +28,8 @@
     if (!skipped || !skipped.count) {
       return text;
     }
-    var plural = skipped.count === 1 ? "" : "s";
-    text += " — " + skipped.count + " object" + plural +
-      " could not be read (usually modded buildings); " +
-      (skipped.count === 1 ? "it still shows" : "they still show") +
-      " on the map, without their contents";
+    text += " — " + skipped.count + " object" + (skipped.count === 1 ? "" : "s") +
+      " could not be read (usually modded); shown on the map without contents";
     // The type paths and byte offsets are the useful half of a bug report,
     // but far too much for the status line -- console only.
     if (skipped.samples && skipped.samples.length) {

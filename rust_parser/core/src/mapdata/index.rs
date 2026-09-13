@@ -130,6 +130,43 @@ pub struct MapIndex {
 }
 
 impl MapIndex {
+    /// The edit-path gate, `self` being the index rebuilt after an edit.
+    ///
+    /// A build tolerates objects it cannot re-parse (modded property shapes
+    /// this parser has never seen), but an object that EXISTED and parsed
+    /// before an edit and stops parsing after it is this editor corrupting
+    /// the save -- a mis-computed splice damaging its neighbours looks
+    /// exactly like that -- so the rebuild stays that check and the edit is
+    /// refused.
+    ///
+    /// Deliberately scoped to objects present before the edit. Copy/paste
+    /// splices an object's bytes under a fresh instanceName, so pasting an
+    /// unreadable modded buildable legitimately produces a new unreadable
+    /// object; treating that as corruption would block a working operation.
+    /// Newly created objects are the editor's own output and are covered by
+    /// the editor round-trip tests instead.
+    ///
+    /// `before` is None for a session with nothing to diff against (one
+    /// recovering from a failed edit), which must not read as "all new".
+    pub fn reject_new_parse_failures(&self, before: Option<&MapIndex>) -> Result<(), String> {
+        let Some(before) = before else { return Ok(()) };
+        let broken: Vec<&[u8]> = self
+            .parse_failures
+            .newly_failing(&before.parse_failures)
+            .into_iter()
+            .filter(|name| before.by_instance_name.contains_key(*name))
+            .collect();
+        if broken.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "edit aborted: {} object(s) that parsed before this edit no longer do \
+             (e.g. {}) -- the save was left unchanged",
+            broken.len(),
+            String::from_utf8_lossy(broken[0]),
+        ))
+    }
+
     /// scan.headersByInstanceName.get(name) -- the Header, or None.
     pub fn header_by_name<'a>(&self, store: &'a SaveStore, name: &[u8]) -> Option<&'a Header> {
         self.by_instance_name.get(name).map(|&(li, oi)| &store.levels[li].headers[oi])

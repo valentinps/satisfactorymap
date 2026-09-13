@@ -135,28 +135,6 @@ pub struct SaveSession {
     info: sav_core::save_header::SaveFileInfo,
 }
 
-/// The build tolerates objects it cannot re-parse (modded property shapes),
-/// but an object that parsed BEFORE an edit and stops after it is this
-/// editor corrupting the save -- the rebuild is that check. Refuse the edit
-/// rather than hand back a payload built from a damaged body.
-fn check_no_new_parse_failures(
-    before: Option<&MapIndex>,
-    after: &MapIndex,
-) -> Result<(), JsError> {
-    // No baseline (a session recovering from a failed edit) -- nothing to
-    // diff against, so don't invent a failure.
-    let Some(before) = before else { return Ok(()) };
-    let broken = after.parse_failures.newly_failing(&before.parse_failures);
-    if broken.is_empty() {
-        return Ok(());
-    }
-    Err(JsError::new(&format!(
-        "edit aborted: {} object(s) no longer parse after this edit (e.g. {})          -- the save was left unchanged",
-        broken.len(),
-        String::from_utf8_lossy(broken[0]),
-    )))
-}
-
 const SESSION_LOST: &str =
     "No usable save state (a failed edit was not recovered) -- reload the save file";
 
@@ -188,7 +166,7 @@ impl SaveSession {
         let (payload_json, index) =
             mapdata::build_all_json(&new_store, Some(&mut build_progress))
                 .map_err(|e| JsError::new(&e))?;
-        check_no_new_parse_failures(self.index.as_ref(), &index)?;
+        index.reject_new_parse_failures(self.index.as_ref()).map_err(|e| JsError::new(&e))?;
         self.store = Some(Arc::new(new_store));
         self.index = Some(index);
         Ok(payload_json)
