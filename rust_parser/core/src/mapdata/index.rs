@@ -12,7 +12,7 @@ use super::geometry::{project_xy, world_z_to_meters};
 use super::jsonval::jnum;
 use super::names::readable_label;
 use super::props;
-use super::scan::{SaveScan, Slot};
+use super::scan::{ParseFailures, SaveScan, Slot};
 use crate::extract::find_prop;
 use crate::store::*;
 use indexmap::IndexMap;
@@ -120,6 +120,13 @@ pub struct MapIndex {
     pub item_location_index: IndexMap<Vec<u8>, Vec<(Vec<u8>, i64)>>,
     pub dimensional_depot_by_item: IndexMap<String, i64>,
     pub static_item_locations: IndexMap<String, Vec<StaticItemLocation>>,
+    /// Objects the build could not re-parse and therefore skipped (modded
+    /// property shapes, overwhelmingly). Carried on the index so it survives
+    /// the CBOR handoff to the lean worker, which never runs a build of its
+    /// own yet still has to diff this set when an edit rebuilds (see
+    /// SaveSession::finish_edit). `default` keeps older blobs loadable.
+    #[serde(default)]
+    pub parse_failures: ParseFailures,
 }
 
 impl MapIndex {
@@ -417,6 +424,10 @@ impl MapIndex {
             item_location_index,
             dimensional_depot_by_item,
             static_item_locations,
+            // Last field for a reason: every collector above has run, so this
+            // snapshot covers the whole build (the payload build shares the
+            // scan and runs first -- see build_all_json).
+            parse_failures: scan.parse_failures(),
         }
     }
 }

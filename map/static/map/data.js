@@ -17,6 +17,31 @@
     loadStatus.textContent = text;
   }
 
+  // "Loaded: <session> (<date>)", plus a note when the parser had to skip
+  // objects. Skipping is normal on modded saves -- the parser doesn't know
+  // every mod's property layout -- and buildables still draw, from their
+  // headers, so the note explains a real but narrow gap (their contents and
+  // details) rather than announcing a failure.
+  function loadedStatus(payload) {
+    var text = "Loaded: " + payload.sessionName + " (" + payload.saveDatetime + ")";
+    var skipped = payload.unreadableObjects;
+    if (!skipped || !skipped.count) {
+      return text;
+    }
+    var plural = skipped.count === 1 ? "" : "s";
+    text += " — " + skipped.count + " object" + plural +
+      " could not be read (usually modded buildings); " +
+      (skipped.count === 1 ? "it still shows" : "they still show") +
+      " on the map, without their contents";
+    // The type paths and byte offsets are the useful half of a bug report,
+    // but far too much for the status line -- console only.
+    if (skipped.samples && skipped.samples.length) {
+      console.warn("Skipped " + skipped.count + " unreadable object(s):");
+      skipped.samples.forEach(function(sample) { console.warn("  " + sample); });
+    }
+    return text;
+  }
+
   function showProgress(phase, percent) {
     progressBar.style.display = "block";
     progressFill.style.width = Math.max(0, Math.min(100, percent)) + "%";
@@ -275,7 +300,7 @@
           restorePinnedSelection(pinnedSelection);
         }
         Analytics.saveLoaded("file", file.size, performance.now() - startedAt);
-        setStatus("Loaded: " + payload.sessionName + " (" + payload.saveDatetime + ")");
+        setStatus(loadedStatus(payload));
       })
       .catch(function(error) {
         hideProgress();
@@ -324,7 +349,7 @@
         if (pinnedSelection) {
           restorePinnedSelection(pinnedSelection);
         }
-        setStatus("Loaded: " + payload.sessionName + " (" + payload.saveDatetime + ")");
+        setStatus(loadedStatus(payload));
       })
       .catch(function(error) {
         hideProgress();
@@ -418,7 +443,7 @@
           restorePinnedSelection(pinnedSelection);
         }
         Analytics.saveLoaded("url", bytes, performance.now() - startedAt);
-        setStatus("Loaded: " + payload.sessionName + " (" + payload.saveDatetime + ")");
+        setStatus(loadedStatus(payload));
       })
       .catch(function(error) {
         hideProgress();
