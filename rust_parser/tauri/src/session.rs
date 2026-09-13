@@ -96,6 +96,7 @@ impl AppSession {
         let mut build_progress = |current: u64, total: u64| progress(2, current, total);
         let (payload_json, index) =
             mapdata::build_all_json(&new_store, Some(&mut build_progress))?;
+        index.reject_new_parse_failures(self.index.as_ref())?;
         self.store = Some(new_store);
         self.index = Some(index);
         Ok(payload_json)

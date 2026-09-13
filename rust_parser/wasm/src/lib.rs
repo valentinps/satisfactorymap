@@ -166,6 +166,7 @@ impl SaveSession {
         let (payload_json, index) =
             mapdata::build_all_json(&new_store, Some(&mut build_progress))
                 .map_err(|e| JsError::new(&e))?;
+        index.reject_new_parse_failures(self.index.as_ref()).map_err(|e| JsError::new(&e))?;
         self.store = Some(Arc::new(new_store));
         self.index = Some(index);
         Ok(payload_json)

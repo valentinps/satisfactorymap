@@ -305,12 +305,6 @@ fn build_payload_json_with_scan(
             cb(done, BUILD_STEP_COUNT);
         }
     }
-    // On-demand re-parses can't fail on bytes that already parsed, but once
-    // the pipeline is lean this build validates edited bodies -- fail loud
-    // rather than emit a payload with a silently-skipped object.
-    if let Some(e) = scan.parse_error() {
-        return Err(format!("object re-parse failed during payload build: {e}"));
-    }
     out.push(b'}');
     Ok(out)
 }
@@ -334,10 +328,41 @@ pub fn build_all_json(
         collectors::STEP_ORDER.to_vec(),
         Some(&mut tick),
     )?;
+    // Objects whose bodies would not re-parse are skipped, not fatal: a
+    // modded save serializes property shapes this parser has never seen, and
+    // one such object must not sink a 40k-object save. Every collector
+    // already skips a None object, and buildings render off the header
+    // (position/rotation/typePath), so a skipped buildable still appears on
+    // the map -- only its body-derived detail is missing. The set rides out
+    // on the index; the edit paths diff it to keep catching real corruption.
     let map_index = index::MapIndex::build_with_scan(&scan);
-    if let Some(e) = scan.parse_error() {
-        return Err(format!("object re-parse failed during index build: {e}"));
-    }
+    // The payload is serialized before the index is built, but objects the
+    // INDEX build could not read belong in the same report -- so splice the
+    // key in here, where both halves are in hand, rather than teach every
+    // collector about it.
+    let mut payload = payload;
+    append_unreadable_report(&mut payload, &map_index.parse_failures);
     tick(BUILD_STEP_COUNT, BUILD_STEP_COUNT);
     Ok((payload, map_index))
+}
+
+/// Add `"unreadableObjects": {count, samples}` to a finished payload object,
+/// so the frontend can tell the user what the map is missing. Absent
+/// entirely on a save that parsed cleanly -- which is nearly all of them.
+fn append_unreadable_report(payload: &mut Vec<u8>, failures: &scan::ParseFailures) {
+    if failures.is_empty() {
+        return;
+    }
+    debug_assert_eq!(payload.last(), Some(&b'}'));
+    payload.pop();
+    if payload.last() != Some(&b'{') {
+        payload.push(b',');
+    }
+    let report = serde_json::json!({
+        "count": failures.len(),
+        "samples": failures.samples,
+    });
+    payload.extend_from_slice(b"\"unreadableObjects\":");
+    payload.extend_from_slice(report.to_string().as_bytes());
+    payload.push(b'}');
 }

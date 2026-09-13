@@ -12,7 +12,7 @@ use super::geometry::{project_xy, world_z_to_meters};
 use super::jsonval::jnum;
 use super::names::readable_label;
 use super::props;
-use super::scan::{SaveScan, Slot};
+use super::scan::{ParseFailures, SaveScan, Slot};
 use crate::extract::find_prop;
 use crate::store::*;
 use indexmap::IndexMap;
@@ -120,9 +120,53 @@ pub struct MapIndex {
     pub item_location_index: IndexMap<Vec<u8>, Vec<(Vec<u8>, i64)>>,
     pub dimensional_depot_by_item: IndexMap<String, i64>,
     pub static_item_locations: IndexMap<String, Vec<StaticItemLocation>>,
+    /// Objects the build could not re-parse and therefore skipped (modded
+    /// property shapes, overwhelmingly). Carried on the index so it survives
+    /// the CBOR handoff to the lean worker, which never runs a build of its
+    /// own yet still has to diff this set when an edit rebuilds (see
+    /// SaveSession::finish_edit). `default` keeps older blobs loadable.
+    #[serde(default)]
+    pub parse_failures: ParseFailures,
 }
 
 impl MapIndex {
+    /// The edit-path gate, `self` being the index rebuilt after an edit.
+    ///
+    /// A build tolerates objects it cannot re-parse (modded property shapes
+    /// this parser has never seen), but an object that EXISTED and parsed
+    /// before an edit and stops parsing after it is this editor corrupting
+    /// the save -- a mis-computed splice damaging its neighbours looks
+    /// exactly like that -- so the rebuild stays that check and the edit is
+    /// refused.
+    ///
+    /// Deliberately scoped to objects present before the edit. Copy/paste
+    /// splices an object's bytes under a fresh instanceName, so pasting an
+    /// unreadable modded buildable legitimately produces a new unreadable
+    /// object; treating that as corruption would block a working operation.
+    /// Newly created objects are the editor's own output and are covered by
+    /// the editor round-trip tests instead.
+    ///
+    /// `before` is None for a session with nothing to diff against (one
+    /// recovering from a failed edit), which must not read as "all new".
+    pub fn reject_new_parse_failures(&self, before: Option<&MapIndex>) -> Result<(), String> {
+        let Some(before) = before else { return Ok(()) };
+        let broken: Vec<&[u8]> = self
+            .parse_failures
+            .newly_failing(&before.parse_failures)
+            .into_iter()
+            .filter(|name| before.by_instance_name.contains_key(*name))
+            .collect();
+        if broken.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "edit aborted: {} object(s) that parsed before this edit no longer do \
+             (e.g. {}) -- the save was left unchanged",
+            broken.len(),
+            String::from_utf8_lossy(broken[0]),
+        ))
+    }
+
     /// scan.headersByInstanceName.get(name) -- the Header, or None.
     pub fn header_by_name<'a>(&self, store: &'a SaveStore, name: &[u8]) -> Option<&'a Header> {
         self.by_instance_name.get(name).map(|&(li, oi)| &store.levels[li].headers[oi])
@@ -417,6 +461,10 @@ impl MapIndex {
             item_location_index,
             dimensional_depot_by_item,
             static_item_locations,
+            // Last field for a reason: every collector above has run, so this
+            // snapshot covers the whole build (the payload build shares the
+            // scan and runs first -- see build_all_json).
+            parse_failures: scan.parse_failures(),
         }
     }
 }

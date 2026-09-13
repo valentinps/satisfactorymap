@@ -421,8 +421,25 @@ pub(crate) fn actor_slots_of_types(store: &SaveStore, candidates: &[&str]) -> Ve
 
 /// One object, re-parsed on demand from its span (identical to the eagerly
 /// parsed model; StrRefs point into the same `store.data`).
+///
+/// A body this parser cannot read is no longer fatal at load -- the map
+/// skips such an object and still draws it from its header -- so edits are
+/// where the user now meets one, and the raw "String decode failure at
+/// offset N" says nothing about what they did or what to do. Every editor
+/// op reaches an object through here, so one wrap covers all of them.
 pub(crate) fn fetch(store: &SaveStore, li: usize, oi: usize) -> PResult<Object> {
-    store.parse_object_at(li, oi)
+    store.parse_object_at(li, oi).map_err(|e| {
+        let name = match &store.levels[li].headers[oi] {
+            Header::Actor(a) => a.instance_name,
+            Header::Component(c) => c.instance_name,
+        };
+        perr!(
+            "cannot edit {}: this object is stored in a format this app cannot read \
+             (usually a mod's own data), so it can be viewed on the map but not edited [{}]",
+            String::from_utf8_lossy(name.bytes(&store.data)),
+            e.msg,
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
