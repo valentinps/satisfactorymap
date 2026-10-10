@@ -185,7 +185,7 @@
     clearSaveBtn.style.display = "flex";
   }
 
-  // "Unload" (the eject button next to the Save File header): drop the
+  // "Unload" (the eject button next to the panel header): drop the
   // loaded save entirely -- map, sidebar, editor state, and the parse
   // session's memory (SaveClient.reset terminates the wasm worker; native
   // side frees its session). Pending edits die with the session, so those

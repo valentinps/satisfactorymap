@@ -6,12 +6,30 @@ has — **its OpenSSH server** — rather than by asking it to host the file:
 nothing listens, no port is opened for the app, and the authentication is the
 key and `~/.ssh/config` the user already has.
 
-Two transports, in one dialog (**Save File → From another machine**):
+## The dialog: three steps, one decision each
 
-| Transport | Needs on the game machine | Gives |
-|---|---|---|
-| **SSH / SFTP** | OpenSSH server (built into Windows 10/11 and every Linux) | folder browsing, a cheap change check, rsync when it is installed |
-| **Mounted share** | SMB/NFS/GVFS share mounted by the OS | the same browsing and change check, no protocol code at all |
+**Your save → From another machine.**
+
+![The dialog](remote-save-ssh-dialog.png)
+
+1. **Protocol** — two choices, each explained in a line:
+   | Protocol | Needs on the game machine | Gives |
+   |---|---|---|
+   | **SSH / SFTP** | OpenSSH server (built into Windows 10/11 and every Linux) | folder browsing, a cheap change check, rsync when it is installed |
+   | **Mounted share** | SMB/NFS/GVFS share mounted by the OS | the same browsing and change check, no protocol code at all |
+2. **Connection** — the answers that protocol needs, then *Validate connection*:
+   it reports the login, whether the SFTP subsystem answers (browsing and the
+   change check depend on it), and whether the far side has rsync. A failure
+   shows the ssh client's own words and the one thing to try next — a refused
+   key, an unknown host key, a port nothing answers on, a machine whose own
+   `ssh` is broken, a server with no SFTP subsystem.
+3. **Save to load** — the folder, walked like a file dialog (folders first,
+   `.sav` marked, `Up` for the parent), then the file. *Newest `.sav`* follows
+   the autosave rotation; *Keep it fresh* re-lists the folder and reloads the
+   map only when the fetched bytes actually changed.
+
+The stepper's numbers go back to a step already reached, and a remembered
+source reopens straight at the file it was left on.
 
 ## Setting up the game machine (Windows)
 
@@ -46,24 +64,12 @@ key is not in `known_hosts` is refused until **Trust this host's key the first
 time** is ticked, which adds it once (trust on first use, the same disclosure as
 the dedicated-server certificate pin). A *changed* key is still refused.
 
-## What the dialog does
+## While it is watching
 
-- **Validate connection** answers what the transport can actually do before a
-  path is typed: SSH login, whether the SFTP subsystem answers (browsing and
-  change detection depend on it), whether the far side has rsync, the platform
-  and home directory, and how many `.sav` files are in the folder. A partial
-  answer stays partial — a server with no SFTP subsystem is reported as such
-  rather than as a failed connection.
-- **Save folder** lists the remote directory and walks it (`Up`, folders first,
-  `.sav` files marked). Remote names are rendered as text, never as markup.
-  With SFTP unavailable the listing is disabled and the path is typed by hand.
-- **Always take the newest `.sav`** is the autosave case: the rotation writes a
-  new file every few minutes and the map should follow it.
-- **Watch it and reload** polls the folder's name/size/timestamp and reloads
-  only when the bytes actually changed. While the save is being watched the
-  status line says what each tick saw. Reloading is refused while the editor
-  holds pending edits (a reload discards them), while a parse is already
-  running, and while the window is hidden — polling resumes on its own.
+The status line says what each tick saw. Reloading is refused while the editor
+holds pending edits (a reload discards them), while a parse is already running,
+and while the window is hidden — polling resumes on its own. Remote names are
+rendered as text, never as markup.
 
 A fetched save lands in the app's data directory under `remote-saves/`, written
 to a `.part` file and renamed only when complete, and capped at 8 GiB, so a
@@ -76,7 +82,7 @@ the parser reads.
 
 ```sh
 python3 tools/serve_save_source_demo.py --dir /path/to/SaveGames
-# then open http://127.0.0.1:8793/ and click Save File -> From another machine
+# then open http://127.0.0.1:8793/ and click Your save -> From another machine
 ```
 
 That serves `map/static/map/` with a stubbed desktop bridge: the three commands

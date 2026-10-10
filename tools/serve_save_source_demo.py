@@ -12,8 +12,8 @@ the watch's change check are all real; only the SSH transport is canned.
 
 Loading is where the demo stops: the parser lives in sav_core (desktop build) or
 in dist/pkg (wasm build) and this server has neither, so the dialog's status
-line says so instead of pretending. For the real thing see
-docs/remote-save-ssh.md.
+line says so instead of pretending. Validate against a host containing "fail"
+to see the debug path. For the real thing see docs/remote-save-ssh.md.
 """
 
 import argparse
@@ -36,6 +36,11 @@ STUB = """<script>
   // loadSavePath builds a Channel before it invokes anything.
   function Channel() { this.onmessage = null; }
   window.__TAURI__ = { core: { Channel: Channel, invoke: function (cmd, args) {
+    // A host containing "fail" shows the debug path: the client's own words and
+    // the hint under them. Nothing else here depends on the host name.
+    if (cmd === "source_validate" && /fail/i.test((args.target && args.target.host) || "")) {
+      return Promise.reject(new Error("dion@192.168.1.50: Permission denied (publickey)."));
+    }
     if (cmd === "source_validate") {
       return listing().then(function (l) {
         var saves = l.entries.filter(function (e) { return !e.isDir && /\\.sav$/i.test(e.name); });

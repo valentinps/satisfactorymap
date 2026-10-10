@@ -3076,31 +3076,105 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
 }
 
 /* ===== Save on another machine (save_source.js) ==========================
-   The SSH/SFTP source dialog. Chrome comes from ui.css (.dlg, .btn, .field,
-   .list, .row); only the pieces this dialog adds live here: the transport
-   tabs, the two-column host fields, the validation checklist, and the folder
-   list's fixed height so the dialog itself never scrolls. */
+   A three-step dialog: protocol, connection, file. Only the current step is
+   laid out, so the crowded screen of seven fields, three checkboxes and a
+   folder listing competing for one panel is gone -- each step answers one
+   question. Chrome comes from ui.css (.dlg, .btn, .field, .list, .row). */
 
-.dlg-lg .dlg-inner {
-  width: 760px;
-}
-
-.srcTabs {
+/* The stepper: a progress line that also goes back. */
+.srcSteps {
+  flex: none;
   display: flex;
   gap: var(--sp-1);
-  margin-bottom: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border-sub);
+  padding-bottom: var(--sp-2);
 }
 
-.srcTabs .btn.is-on {
-  background: var(--select-bg);
-  border-color: var(--accent-soft);
+.srcStepBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-15);
+  padding: var(--sp-1) var(--sp-2);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--faint);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.srcStepBtn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.srcStepBtn.is-on {
   color: var(--text-bright);
+  border-color: var(--border-popup);
+  background: var(--raised);
+}
+
+.srcStepBtn.is-done {
+  color: var(--muted);
+}
+
+.srcStepNum {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-pill);
+  border: 1px solid currentColor;
+  font-size: var(--fs-2xs);
+}
+
+/* Step 1: two protocols, each a row you can read and click anywhere on. */
+.srcPick {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-25);
+  margin-bottom: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.srcPick:hover {
+  border-color: var(--border-hover);
+  background: var(--raised);
+}
+
+.srcPick:has(input:checked) {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.srcPickBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-05);
+}
+
+.srcPickName {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.srcPickNote {
+  color: var(--faint);
+  font-size: var(--fs-sm);
 }
 
 /* Host / user / port on one line: three short fields, one question. */
 .srcGrid {
   display: grid;
-  grid-template-columns: 2fr 1fr 1fr;
+  grid-template-columns: 2fr 1fr 0.8fr;
   gap: var(--sp-2);
   margin-bottom: var(--sp-2);
 }
@@ -3115,8 +3189,7 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
 .srcCheckLine {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-1) 0;
+  gap: var(--sp-15);
   font-size: var(--fs-sm);
   color: var(--muted);
   cursor: pointer;
@@ -3128,9 +3201,9 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   color: var(--faint);
 }
 
-/* One line per capability the connection has (or lacks): a tick, what it is,
-   and the detail -- so "SSH works but there is no SFTP subsystem" reads as a
-   partial answer instead of a bare failure. */
+/* One line per capability the connection has. "No rsync on the remote" is not
+   a failure -- SFTP carries the transfer -- so only the SFTP subsystem and the
+   login can go red. */
 .srcChecks {
   margin-top: var(--sp-2);
 }
@@ -3160,7 +3233,7 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
 
 .srcCheckName {
   flex: none;
-  min-width: 150px;
+  min-width: 120px;
   color: var(--text);
 }
 
@@ -3168,6 +3241,28 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   min-width: 0;
   color: var(--faint);
   overflow-wrap: anywhere;
+}
+
+/* Step 2's debug output: the client's own error, then what to try. */
+.srcError {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--r-sm);
+  background: var(--danger-bg);
+}
+
+.srcErrorText {
+  font-family: ui-monospace, monospace;
+  font-size: var(--fs-sm);
+  color: var(--danger-soft);
+  overflow-wrap: anywhere;
+}
+
+.srcErrorHint {
+  margin-top: var(--sp-15);
+  font-size: var(--fs-sm);
+  color: var(--text);
 }
 
 .srcPathBar {
@@ -3183,7 +3278,7 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
 
 /* Fixed height, so browsing between folders does not resize the dialog. */
 .srcList {
-  height: 210px;
+  height: 200px;
 }
 
 .srcRow {
@@ -3221,19 +3316,26 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
   overflow-wrap: anywhere;
 }
 
-.srcWatchRow {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
+.srcPicked {
+  margin-top: var(--sp-2);
   font-size: var(--fs-sm);
   color: var(--muted);
 }
 
-.srcWatchRow select {
-  width: auto;
+/* Step 3's three toggles on one line: what to take, whether to watch, how often. */
+.srcWatchRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
 }
 
-/* The status line rides in the foot, so "fetching…" is next to the button
+.srcWatchRow select {
+  width: auto;
+  margin-left: auto;
+}
+
+/* The status line rides in the foot, so "validating…" is next to the button
    that started it. */
 .dlg-foot #srcStatus {
   flex: 1 1 auto;

@@ -42,6 +42,8 @@ window.SaveSource = (function() {
     takeNewest: true,
     watch: false,
     interval: 60,
+    step: 1, // 1 protocol, 2 connection, 3 save file
+    reached: 1, // the furthest step visited, so the stepper can go back
     capabilities: null, // last validate result
     seen: null, // "name|size|mtime" of the save we last loaded from
     sha: null, // hash of the bytes we last loaded (null = not loaded yet)
@@ -142,11 +144,17 @@ window.SaveSource = (function() {
       port: document.getElementById("srcPort"),
       identity: document.getElementById("srcIdentity"),
       acceptNew: document.getElementById("srcAcceptNew"),
+      steps: document.querySelectorAll("#srcSteps .srcStepBtn"),
+      sections: document.querySelectorAll("#saveSourceModal .srcStep"),
+      protocols: document.querySelectorAll('input[name="srcProtocol"]'),
       sshFields: document.getElementById("srcSshFields"),
       localFields: document.getElementById("srcLocalFields"),
       localPath: document.getElementById("srcLocalPath"),
       validate: document.getElementById("srcValidate"),
       checks: document.getElementById("srcChecks"),
+      error: document.getElementById("srcError"),
+      back: document.getElementById("srcBack"),
+      next: document.getElementById("srcNext"),
       path: document.getElementById("srcPath"),
       up: document.getElementById("srcUp"),
       go: document.getElementById("srcGo"),
@@ -159,7 +167,7 @@ window.SaveSource = (function() {
       load: document.getElementById("srcLoad"),
       status: document.getElementById("srcStatus"),
     };
-    if (!el.dialogApi || !el.list || !el.sshFields || !el.localFields) {
+    if (!el.dialogApi || !el.list || !el.sshFields || !el.localFields || !el.next) {
       return; // markup missing (older dist): stay inert rather than throw
     }
     if (el.dialogApi.el.dataset.saveSourceWired) {
@@ -176,20 +184,20 @@ window.SaveSource = (function() {
     }
     // The source is remembered, so the checkbox survives a restart -- but the
     // poll only starts once a save has been loaded from it in this session
-    // (see arm()), or it would download and load a save nobody asked for.
-    if (state.watch) {
-      say("Watching " + (state.file || state.dir) + " every " + state.interval + "s once a save is loaded.");
-    }
+    // (see arm()), or it would download and load a save nobody asked for. No
+    // status line for that: step 1 is a choice, not a report.
   }
 
   function open() {
     fillForm();
     renderCapabilities(state.capabilities);
+    say(""); // whatever the last tick said is stale by the time this opens
     el.dialogApi.open();
+    // Continue where the last session stopped: a remembered folder means the
+    // protocol and the connection are already answered.
+    showStep(state.dir ? 3 : 1);
     if (state.dir) {
       browse(state.dir);
-    } else if (el.path && !el.path.value) {
-      el.path.focus();
     }
   }
 
@@ -239,11 +247,65 @@ window.SaveSource = (function() {
     var local = state.transport === "local";
     el.sshFields.style.display = local ? "none" : "";
     el.localFields.style.display = local ? "" : "none";
-    document.querySelectorAll("#srcTransportTabs button").forEach(function(button) {
-      var on = button.dataset.transport === state.transport;
-      button.classList.toggle("is-on", on);
-      button.setAttribute("aria-pressed", String(on));
+    el.protocols.forEach(function(radio) {
+      radio.checked = radio.value === state.transport;
     });
+  }
+
+  // One step at a time, and the stepper only offers steps already reached.
+  function showStep(step) {
+    state.step = step;
+    state.reached = Math.max(state.reached, step);
+    el.sections.forEach(function(section) {
+      section.style.display = Number(section.dataset.step) === step ? "" : "none";
+    });
+    el.steps.forEach(function(button) {
+      var n = Number(button.dataset.step);
+      button.disabled = n > state.reached;
+      button.classList.toggle("is-on", n === step);
+      button.classList.toggle("is-done", n < step);
+      if (n === step) {
+        button.setAttribute("aria-current", "step");
+      } else {
+        button.removeAttribute("aria-current");
+      }
+    });
+    el.back.style.display = step > 1 ? "" : "none";
+    el.next.style.display = step < 3 ? "" : "none";
+    el.load.style.display = step === 3 ? "" : "none";
+    el.next.textContent = step === 1 ? "Connection" : "Save to load";
+    if (step === 3) {
+      renderPicked();
+    }
+    var body = el.dialogApi.el.querySelector(".dlg-body");
+    if (body) {
+      body.scrollTop = 0;
+    }
+  }
+
+  // "Validate/debug": the ssh client's own words are the error, and the hint is
+  // the one thing to try next. Anything not listed gets no invented advice.
+  function hintFor(error) {
+    var text = String(error || "");
+    if (text.indexOf("Bad owner or permissions") !== -1) {
+      return "This machine's own ssh config is unreadable (a non-root owner under /etc/ssh/ssh_config.d). ssh fails outside this app too until it is fixed.";
+    }
+    if (/host key|Host key/i.test(text) && /known|verification/i.test(text)) {
+      return "Tick \"Trust this host's key the first time\" above, then validate again.";
+    }
+    if (/Permission denied/i.test(text)) {
+      return "The server refused the key. Check the user name, or add your public key to the server's authorized_keys.";
+    }
+    if (/Connection refused|timed out|No route to host|Could not resolve/i.test(text)) {
+      return "Nothing answered on that host and port. Is the machine awake, sshd running, and the firewall open?";
+    }
+    if (/subsystem request failed|subsystem/i.test(text)) {
+      return "The server has no SFTP subsystem, so the folder cannot be listed or watched. Type the save's path in step 3; rsync can still pull it.";
+    }
+    if (/Could not run ssh|Could not run sftp/i.test(text)) {
+      return "No ssh client on this machine. Install OpenSSH and reopen this dialog.";
+    }
+    return "";
   }
 
   // Whether watching is even possible: SFTP is what gives us a cheap listing
@@ -271,19 +333,51 @@ window.SaveSource = (function() {
   }
 
   function wire() {
-    document.querySelectorAll("#srcTransportTabs button").forEach(function(button) {
-      button.addEventListener("click", function() {
-        state.transport = button.dataset.transport;
+    el.protocols.forEach(function(radio) {
+      radio.addEventListener("change", function() {
+        if (!radio.checked) {
+          return;
+        }
+        state.transport = radio.value;
         state.capabilities = null;
-        state.dir = state.transport === "local"
-          ? (el.localPath.value.trim() || state.dir)
-          : state.dir;
-        el.path.value = state.dir;
+        if (state.transport === "local" && el.localPath.value.trim()) {
+          state.dir = el.localPath.value.trim();
+          el.path.value = state.dir;
+        }
         renderCapabilities(null);
         syncTransport();
         syncWatchNote();
         remember();
       });
+    });
+    el.steps.forEach(function(button) {
+      button.addEventListener("click", function() {
+        if (!button.disabled) {
+          showStep(Number(button.dataset.step));
+        }
+      });
+    });
+    el.back.addEventListener("click", function() {
+      showStep(Math.max(1, state.step - 1));
+    });
+    el.next.addEventListener("click", function() {
+      readForm();
+      if (state.step === 1) {
+        showStep(2);
+        (state.transport === "local" ? el.localPath : el.host).focus();
+        return;
+      }
+      // Step 2 -> 3: land on the folder, whether or not validate was run.
+      if (state.transport === "local") {
+        state.dir = el.localPath.value.trim() || state.dir;
+        el.path.value = state.dir;
+      }
+      showStep(3);
+      if (state.dir) {
+        browse(state.dir);
+      } else {
+        el.path.focus();
+      }
     });
     el.validate.addEventListener("click", validate);
     el.go.addEventListener("click", function() { browse(el.path.value.trim()); });
@@ -345,32 +439,61 @@ window.SaveSource = (function() {
       renderCapabilities(result);
       syncWatchNote();
       if (!result.ok) {
-        say(result.detail || "That connection did not work.");
+        showError(result.detail || "That connection did not work.");
+        say("Not connected.");
         return;
       }
-      say(result.detail);
+      showError("");
+      say("Connected. Next: pick the save.");
       // Land the browser somewhere useful: the folder the caller gave, else the
       // game's usual save location under this user's home.
       if (!el.path.value.trim() && state.transport === "ssh") {
-        el.path.value = suggestDir(result);
-        browse(el.path.value);
+        state.dir = suggestDir(result);
+        el.path.value = state.dir;
       }
     }).catch(function(error) {
       el.validate.disabled = false;
-      say("Validation failed: " + message(error));
+      showError(message(error));
+      say("Not connected.");
     });
   }
 
+  // The game's usual folder, when the platform is one we know. Anything else
+  // gets no guess: a wrong path is worse than an empty one, and the folder is
+  // one click away once the browser opens.
   function suggestDir(result) {
     var home = (result.home || "").replace(/[\\/]+$/, "");
-    var user = state.target.user || "";
+    if (!home) {
+      return "";
+    }
     if (result.platform === "Windows") {
       return home + "/" + SAVE_DIR.windows;
     }
-    if (home) {
+    if (result.platform === "Linux/macOS") {
       return home + "/" + SAVE_DIR.linux;
     }
     return "";
+  }
+
+  // The connection's own words, plus the one thing to try next.
+  function showError(text) {
+    el.error.textContent = "";
+    if (!text) {
+      el.error.style.display = "none";
+      return;
+    }
+    var line = document.createElement("div");
+    line.className = "srcErrorText";
+    line.textContent = text;
+    el.error.appendChild(line);
+    var hint = hintFor(text);
+    if (hint) {
+      var advice = document.createElement("div");
+      advice.className = "srcErrorHint";
+      advice.textContent = hint;
+      el.error.appendChild(advice);
+    }
+    el.error.style.display = "";
   }
 
   function renderCapabilities(result) {
@@ -382,7 +505,7 @@ window.SaveSource = (function() {
     // connection is fine and SFTP carries the transfer. Red is reserved for the
     // one thing browsing and watching actually depend on.
     var rows = [
-      [result.ok ? "ok" : "bad", "SSH login", result.detail || "no answer"],
+      [result.ok ? "ok" : "bad", "SSH login", result.ok ? (result.detail || "signed in") : "not connected"],
       [result.sftp ? "ok" : "bad", "SFTP subsystem", result.sftp
         ? "browsing and change detection available (" + (result.platform || "unknown")
           + (result.home ? ", " + result.home : "") + ")"
@@ -391,10 +514,8 @@ window.SaveSource = (function() {
         ? "available (delta transfers, less to re-fetch)"
         : "not installed there -- SFTP is used instead"],
     ];
-    if (result.saveCount || result.newestSave) {
-      rows.push(["ok", "Saves in that folder",
-        result.saveCount + " .sav file" + (result.saveCount === 1 ? "" : "s")
-        + (result.newestSave ? ", newest " + result.newestSave : "")]);
+    if (!result.ok) {
+      return; // the error block says it better, in the client's own words
     }
     rows.forEach(function(row) {
       var line = document.createElement("div");
