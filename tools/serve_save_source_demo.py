@@ -38,7 +38,11 @@ STUB = r"""<script>
   var listing = function (path) {
     var url = "/__demo/listing";
     if (path) { url += "?path=" + encodeURIComponent(path); }
-    return fetch(url).then(function (r) { return r.json(); }).catch(function () {
+    return fetch(url).then(function (r) { return r.json(); }).then(function (data) {
+      if (data && data.error) { throw new Error(data.error); }
+      return data;
+    }).catch(function (error) {
+      if (error && /not found/.test(error.message)) { throw error; }
       // A dead demo server otherwise shows up as the browser's own "Failed to
       // fetch", which reads like the ssh connection failed. It did not.
       throw new Error("the demo server is gone -- restart tools/serve_save_source_demo.py and reload this page");
@@ -137,7 +141,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             wanted = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("path", [""])[0]
             # Only inside the folder the demo was pointed at: a local dev server
             # has no business listing the rest of the disk.
-            if wanted and os.path.isdir(wanted) and os.path.abspath(wanted).startswith(folder):
+            if wanted and not (os.path.isdir(wanted) and os.path.abspath(wanted).startswith(folder)):
+                # Outside the folder the demo was pointed at, or not there at all:
+                # say so, the way the real backend does.
+                body = json.dumps({"error": "Can't ls: \"" + wanted + "\" not found"}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if wanted:
                 folder = os.path.abspath(wanted)
             body = json.dumps({
                 "path": folder,

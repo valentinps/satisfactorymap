@@ -284,6 +284,7 @@ window.SaveSource = (function() {
     // protocol and the connection are already answered.
     showStep(state.dir ? 3 : 1);
     state.descended = false;
+    state.fellBack = false;
     if (state.dir) {
       browse(state.dir);
     }
@@ -364,6 +365,14 @@ window.SaveSource = (function() {
     el.next.textContent = step === 1 ? "Connection" : "Save to load";
     if (step === 3) {
       renderPicked();
+    }
+    if (step === 3 && !state.dir) {
+      el.list.innerHTML = "";
+      var hint = document.createElement("div");
+      hint.className = "srcEmpty";
+      hint.textContent = "No folder open yet. Go back and press Validate connection to start at "
+        + "that machine's home, or type a path above and press Open.";
+      el.list.appendChild(hint);
     }
     var body = el.dialogApi.el.querySelector(".dlg-body");
     if (body) {
@@ -478,7 +487,10 @@ window.SaveSource = (function() {
       }
     });
     el.validate.addEventListener("click", validate);
-    el.go.addEventListener("click", function() { browse(el.path.value.trim()); });
+    el.go.addEventListener("click", function() {
+      state.fellBack = false;
+      browse(el.path.value.trim());
+    });
     el.path.addEventListener("keydown", function(e) {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -487,6 +499,7 @@ window.SaveSource = (function() {
     });
     el.up.addEventListener("click", function() {
       if (state.parent) {
+        state.fellBack = false;
         browse(state.parent);
       }
     });
@@ -542,6 +555,7 @@ window.SaveSource = (function() {
     }).then(function(result) {
       el.validate.disabled = false;
       state.capabilities = result;
+      state.fellBack = false;
       renderCapabilities(result);
       syncWatchNote();
       if (!result.ok) {
@@ -564,9 +578,10 @@ window.SaveSource = (function() {
     });
   }
 
-  // The game's usual folder, when the platform is one we know. Anything else
-  // gets no guess: a wrong path is worse than an empty one, and the folder is
-  // one click away once the browser opens.
+  // Where to open the browser: the game's usual folder when the platform is one
+  // we know, and otherwise the home directory -- the one path validate always
+  // reports, and one the user can walk down from. An empty path here is what
+  // left step 3 blank with nothing to click.
   function suggestDir(result) {
     var home = (result.home || "").replace(/[\\/]+$/, "");
     if (!home) {
@@ -578,7 +593,7 @@ window.SaveSource = (function() {
     if (result.platform === "Linux/macOS") {
       return home + "/" + SAVE_DIR.linux;
     }
-    return "";
+    return home;
   }
 
   // The connection's own words, plus the one thing to try next.
@@ -674,12 +689,23 @@ window.SaveSource = (function() {
       renderListing(listing, quiet);
       remember();
     }).catch(function(error) {
+      var home = state.capabilities && state.capabilities.home;
+      if (!state.fellBack && home && path !== home && path === state.dir) {
+        // The guess was wrong (a different Steam library, a host we only know
+        // the home of). Start where we know there is something.
+        state.fellBack = true;
+        var reason = message(error);
+        return browse(home, quiet).then(function() {
+          say(reason + " -- showing " + home + " instead.");
+        });
+      }
       if (!quiet) {
         el.list.innerHTML = "";
         var failed = document.createElement("div");
         failed.className = "srcEmpty";
         failed.textContent = message(error);
         el.list.appendChild(failed);
+        say(message(error));
       }
       throw error;
     });

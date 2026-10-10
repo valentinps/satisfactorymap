@@ -24,7 +24,11 @@ key and `~/.ssh/config` the user already has.
    key, an unknown host key, a port nothing answers on, a machine whose own
    `ssh` is broken, a server with no SFTP subsystem.
 3. **Save to load** — the folder, walked like a file dialog (folders first,
-   `.sav` marked, `Up` for the parent), then the file. *Newest `.sav`* follows
+   `.sav` marked, click a folder to descend, `Up` for the parent, or type a path
+   and press `Open`), then the file. It opens at the game's usual folder when the
+   platform is known and otherwise at the remote **home directory**, so there is
+   always something to walk from; a guess that turns out not to exist falls back
+   to the home directory and says so. *Newest `.sav`* follows
    the autosave rotation; *Keep it fresh* reloads the map when the save
    changes -- see below for what "when" means.
 
