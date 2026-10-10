@@ -229,6 +229,12 @@
           <span id="uploadDropText">Drop a .sav here or click to browse</span>
         </div>
         <input type="file" id="uploadFileInput" accept=".sav" style="display:none">
+        <!-- Desktop only (save_source.js shows this inside the Tauri shell):
+             load the save off the machine that runs the game, over that
+             machine's own SSH server -- or from a share the OS has already
+             mounted -- instead of asking the game machine to host the file.
+             Opens saveSourceModal below. -->
+        <button id="saveSourceBtn" class="btn btn-block" type="button" style="display:none" title="Load the save off another machine over SSH/SFTP, or from a share that is already mounted">From another machine</button>
         <!-- Desktop only (data.js shows this inside the Tauri shell): pull
              the newest save straight off a dedicated server through the
              official server HTTPS API -- the same one the in-game Server
@@ -640,6 +646,90 @@
   </div>
 </dialog>
 
+<!-- Desktop only: the save on the machine that runs the game (see
+     save_source.js and rust_parser/tauri/src/ssh_source.rs). Everything here
+     is driven by four Tauri commands -- validate, browse, stat, fetch -- so the
+     dialog can show what a connection can actually do rather than failing at
+     the click: SSH login, whether the SFTP subsystem answers (browsing and the
+     change check depend on it), and whether the far side has rsync.
+     A modal <dialog> like the rest: focus trap, Escape, backdrop close, top
+     layer. Remote folder names are rendered with textContent -- they are
+     untrusted data. -->
+<dialog id="saveSourceModal" class="dlg dlg-lg" aria-labelledby="saveSourceTitle">
+  <div class="dlg-inner">
+    <div class="dlg-head">
+      <span id="saveSourceTitle" class="dlg-title">Save on another machine</span>
+      <button class="btn btn-ghost btn-icon dlg-close" type="button" aria-label="Close">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M6 6 18 18M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+    <div id="saveSourceSummary" class="dlg-summary">Pull the save off the gaming PC with the tools it already has &mdash; its own SSH server, or a share the OS has mounted. Nothing is hosted, nothing is uploaded; keys and <code>~/.ssh/config</code> are used as they are.</div>
+    <div class="dlg-body">
+      <div class="kicker">How to reach it</div>
+      <div id="srcTransportTabs" class="srcTabs" role="group" aria-label="Transport">
+        <button class="btn btn-sm is-on" type="button" data-transport="ssh" aria-pressed="true">SSH / SFTP</button>
+        <button class="btn btn-sm" type="button" data-transport="local" aria-pressed="false">Mounted share</button>
+      </div>
+
+      <div id="srcSshFields">
+        <div class="srcGrid">
+          <input id="srcHost" class="field" type="text" placeholder="Host or IP — or a ~/.ssh/config alias" spellcheck="false" autocomplete="off" aria-label="Host">
+          <input id="srcUser" class="field" type="text" placeholder="User" spellcheck="false" autocomplete="off" aria-label="User">
+          <input id="srcPort" class="field" type="text" inputmode="numeric" placeholder="Port (22)" spellcheck="false" autocomplete="off" aria-label="Port">
+        </div>
+        <input id="srcIdentity" class="field" type="text" placeholder="Key file (optional — agent and ~/.ssh/config are used anyway)" spellcheck="false" autocomplete="off" aria-label="Private key file">
+        <label class="srcCheckLine" title="Without this, a host whose key is not in known_hosts is refused (which is the safe default)">
+          <input id="srcAcceptNew" type="checkbox">
+          <span>Trust this host's key the first time (writes known_hosts)</span>
+        </label>
+        <button id="srcValidate" class="btn btn-block" type="button">Validate connection</button>
+        <div id="srcChecks" class="srcChecks"></div>
+      </div>
+
+      <div id="srcLocalFields" style="display:none">
+        <input id="srcLocalPath" class="field" type="text" placeholder="Mounted path (e.g. /mnt/gaming/SaveGames)" spellcheck="false" autocomplete="off" aria-label="Mounted save folder">
+        <p class="srcHint">SMB/CIFS, NFS or a GVFS mount: the OS already speaks the protocol, so this just reads the folder.</p>
+      </div>
+
+      <div class="kicker">Save folder</div>
+      <div class="srcPathBar">
+        <button id="srcUp" class="btn btn-sm" type="button" title="Parent folder">Up</button>
+        <input id="srcPath" class="field" type="text" placeholder="Remote folder, or the path on a mounted share" spellcheck="false" autocomplete="off" aria-label="Folder">
+        <button id="srcGo" class="btn btn-sm" type="button">Open</button>
+      </div>
+      <div id="srcList" class="list srcList" role="listbox" aria-label="Folder contents"></div>
+      <div id="srcPicked" class="row-meta"></div>
+
+      <div class="kicker">Keep it fresh</div>
+      <label class="srcCheckLine" title="A game autosaves on its own schedule; reloading only happens when the bytes actually changed">
+        <input id="srcNewestBox" type="checkbox" checked>
+        <span>Always take the newest <code>.sav</code> in the folder</span>
+      </label>
+      <label class="srcCheckLine">
+        <input id="srcWatchBox" type="checkbox">
+        <span>Watch it and reload the map when it changes</span>
+      </label>
+      <div class="srcWatchRow">
+        <label for="srcInterval">every</label>
+        <select id="srcInterval" class="field">
+          <option value="15">15 seconds</option>
+          <option value="30">30 seconds</option>
+          <option value="60" selected>1 minute</option>
+          <option value="300">5 minutes</option>
+          <option value="900">15 minutes</option>
+        </select>
+      </div>
+      <p id="srcWatchNote" class="srcHint"></p>
+    </div>
+    <div class="dlg-foot">
+      <span id="srcStatus"></span>
+      <button id="srcLoad" class="btn btn-primary" type="button">Load this save</button>
+    </div>
+  </div>
+</dialog>
+
 <script src="vendor/leaflet.js"></script>
 <!-- ui.js first: every feature script below builds its chrome from it. -->
 <script src="analytics.js"></script>
@@ -656,6 +746,7 @@
 <script src="selection.js"></script>
 <script src="contextmenu.js"></script>
 <script src="save_client.js"></script>
+<script src="save_source.js"></script>
 <script src="editor.js"></script>
 <script src="emst.js"></script>
 <script src="network.js"></script>

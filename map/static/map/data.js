@@ -642,6 +642,16 @@
     // handlers below.
     if (isTauri) {
       setupServerFetch();
+      // The save on another machine (save_source.js). It owns its own dialog
+      // and watch loop; all it needs from here is the path loader and the two
+      // questions the watch loop must ask before reloading the map.
+      SaveSource.init({
+        options: {
+          loadPath: loadLocalPath,
+          isBusy: function() { return loadInFlight; },
+          pendingEdits: function() { return EditorTool.opCount(); },
+        },
+      });
     }
     if (isTauri && window.__TAURI__.event) {
       window.__TAURI__.event.listen("tauri://drag-drop", function(e) {

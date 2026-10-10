@@ -3074,3 +3074,172 @@ button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible
 .leaflet-left {
   left: var(--dock-left-inset);
 }
+
+/* ===== Save on another machine (save_source.js) ==========================
+   The SSH/SFTP source dialog. Chrome comes from ui.css (.dlg, .btn, .field,
+   .list, .row); only the pieces this dialog adds live here: the transport
+   tabs, the two-column host fields, the validation checklist, and the folder
+   list's fixed height so the dialog itself never scrolls. */
+
+.dlg-lg .dlg-inner {
+  width: 760px;
+}
+
+.srcTabs {
+  display: flex;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-2);
+}
+
+.srcTabs .btn.is-on {
+  background: var(--select-bg);
+  border-color: var(--accent-soft);
+  color: var(--text-bright);
+}
+
+/* Host / user / port on one line: three short fields, one question. */
+.srcGrid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+#srcSshFields > .field,
+#srcLocalFields > .field,
+.srcGrid > .field {
+  margin-bottom: var(--sp-2);
+  width: 100%;
+}
+
+.srcCheckLine {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.srcHint {
+  margin: var(--sp-1) 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--faint);
+}
+
+/* One line per capability the connection has (or lacks): a tick, what it is,
+   and the detail -- so "SSH works but there is no SFTP subsystem" reads as a
+   partial answer instead of a bare failure. */
+.srcChecks {
+  margin-top: var(--sp-2);
+}
+
+.srcCheck {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0;
+  font-size: var(--fs-sm);
+  border-top: 1px solid var(--border-sub);
+}
+
+.srcCheckMark {
+  flex: none;
+  width: 12px;
+  color: var(--ok-soft);
+}
+
+.srcCheck.is-bad .srcCheckMark {
+  color: var(--danger-soft);
+}
+
+.srcCheck.is-off .srcCheckMark {
+  color: var(--faint);
+}
+
+.srcCheckName {
+  flex: none;
+  min-width: 150px;
+  color: var(--text);
+}
+
+.srcCheckDetail {
+  min-width: 0;
+  color: var(--faint);
+  overflow-wrap: anywhere;
+}
+
+.srcPathBar {
+  display: flex;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.srcPathBar .field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Fixed height, so browsing between folders does not resize the dialog. */
+.srcList {
+  height: 210px;
+}
+
+.srcRow {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-sub);
+  font: inherit;
+}
+
+.srcRowIcon {
+  flex: none;
+  width: 14px;
+  color: var(--faint);
+}
+
+.srcRow.is-dir .srcRowIcon {
+  color: var(--accent-soft);
+}
+
+.srcRow.is-sav .srcRowIcon {
+  color: var(--ok-soft);
+}
+
+.srcRow:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: -2px;
+}
+
+.srcEmpty {
+  padding: var(--sp-3);
+  color: var(--faint);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.srcWatchRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.srcWatchRow select {
+  width: auto;
+}
+
+/* The status line rides in the foot, so "fetching…" is next to the button
+   that started it. */
+.dlg-foot #srcStatus {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--faint);
+  font-size: var(--fs-sm);
+  align-self: center;
+  overflow-wrap: anywhere;
+}

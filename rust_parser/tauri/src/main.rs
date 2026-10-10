@@ -12,6 +12,7 @@
 
 use sav_tauri_lib::server_api;
 use sav_tauri_lib::session::AppSession;
+use sav_tauri_lib::ssh_source;
 use std::sync::Mutex;
 use tauri::ipc::{Channel, Response};
 use tauri::{Manager, State};
@@ -551,6 +552,69 @@ async fn server_fetch_latest(
     })
 }
 
+// ---- Save sources over SSH / a mounted share (src/ssh_source.rs) -----------
+// The HTTP alternative to these is a listener on the game machine; these use
+// the OpenSSH server that is already there. All of them run on blocking
+// threads, because each one is a subprocess with a deadline.
+
+/// "Can this connection do what the dialog needs?" -- authentication, the
+/// SFTP subsystem (browsing and change polling depend on it), rsync on the far
+/// side, and how many saves are in `dir` when the caller already knows one.
+#[tauri::command]
+async fn source_validate(
+    target: ssh_source::SshTarget,
+    dir: Option<String>,
+) -> Result<ssh_source::ValidateResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ssh_source::validate(&target, dir.as_deref().unwrap_or(""))
+    })
+    .await
+    .map_err(|e| format!("Validation task failed: {e}"))
+}
+
+/// One directory listing: over SFTP when `local` is false, straight off the
+/// filesystem when it is true (a mounted SMB/NFS share needs no protocol code
+/// -- the OS already speaks it).
+#[tauri::command]
+async fn source_browse(
+    target: ssh_source::SshTarget,
+    path: String,
+    local: bool,
+) -> Result<ssh_source::Listing, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if local {
+            ssh_source::browse_local(&path)
+        } else {
+            ssh_source::browse(&target, &path)
+        }
+    })
+    .await
+    .map_err(|e| format!("Browse task failed: {e}"))?
+}
+
+/// Pull the save into the app's own cache folder and hash it. `transport` is
+/// "sftp" (works against a stock Windows OpenSSH server) or "rsync" (delta
+/// transfer, when the far side has it -- the same 50 MB save re-fetched on
+/// every autosave is what that earns).
+#[tauri::command]
+async fn source_fetch(
+    target: ssh_source::SshTarget,
+    remote_path: String,
+    transport: String,
+    app: tauri::AppHandle,
+) -> Result<ssh_source::FetchedSave, String> {
+    let cache = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("No app data dir: {e}"))?
+        .join("remote-saves");
+    tauri::async_runtime::spawn_blocking(move || {
+        ssh_source::fetch(&target, &remote_path, &transport, &cache)
+    })
+    .await
+    .map_err(|e| format!("Fetch task failed: {e}"))?
+}
+
 /// Where the TOFU certificate pins live (see server_api::fetch_latest).
 fn cert_pin_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
@@ -736,6 +800,9 @@ fn main() {
             payload_slice,
             payload_done,
             server_fetch_latest,
+            source_validate,
+            source_browse,
+            source_fetch,
             server_forget_pin,
             server_password_store,
             server_password_get,
