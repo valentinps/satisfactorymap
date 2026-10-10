@@ -185,7 +185,7 @@
     clearSaveBtn.style.display = "flex";
   }
 
-  // "Unload" (the eject button next to the Save File header): drop the
+  // "Unload" (the eject button next to the panel header): drop the
   // loaded save entirely -- map, sidebar, editor state, and the parse
   // session's memory (SaveClient.reset terminates the wasm worker; native
   // side frees its session). Pending edits die with the session, so those
@@ -220,6 +220,7 @@
     MapApp.refreshMaxBounds(); // back to the vanilla pan limits
     clearSaveBtn.style.display = "none";
     hideProgress();
+    SaveSource.forgetLocal();
     setStatus("Save unloaded -- drop a .sav anywhere or click above.");
   }
 
@@ -342,6 +343,10 @@
         currentFile = null;
         currentUrl = null;
         EditorTool.onSaveLoaded(name);
+        // A save loaded from a path on this machine is watchable too: hand it to
+        // the module that owns the watch, which shows the sidebar switch and
+        // keeps it fresh if it was already on.
+        SaveSource.adoptLocal(path);
         applyPayload(payload);
         if (pinnedSelection) {
           restorePinnedSelection(pinnedSelection);
@@ -642,6 +647,21 @@
     // handlers below.
     if (isTauri) {
       setupServerFetch();
+      // The save on another machine (save_source.js). It owns its own dialog
+      // and watch loop; all it needs from here is the path loader and the two
+      // questions the watch loop must ask before reloading the map.
+      SaveSource.init({
+        options: {
+          loadPath: loadLocalPath,
+          isBusy: function() { return loadInFlight; },
+          pendingEdits: function() { return EditorTool.opCount(); },
+          // The sidebar's own "Keep it fresh" row lives in save_source.js, which
+          // owns the watch; this is only so a load can tell it what happened.
+          onWatch: function(watching, mode) {
+            console.info("SaveSource: watching=" + watching + " mode=" + (mode || "interval"));
+          },
+        },
+      });
     }
     if (isTauri && window.__TAURI__.event) {
       window.__TAURI__.event.listen("tauri://drag-drop", function(e) {

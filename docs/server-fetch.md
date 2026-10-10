@@ -9,7 +9,7 @@ server install. Nothing about the game was reverse-engineered.
 
 ## Using it
 
-In the Save File panel, expand **From dedicated server** and enter:
+In the sidebar, expand **From dedicated server** and enter:
 
 - **Server address** — a bare host or IP means the default port 7777;
   `host:port` overrides it (bracketed IPv6 like `[::1]:7777` works too;

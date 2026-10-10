@@ -12,9 +12,10 @@
 
 use sav_tauri_lib::server_api;
 use sav_tauri_lib::session::AppSession;
+use sav_tauri_lib::ssh_source;
 use std::sync::Mutex;
 use tauri::ipc::{Channel, Response};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 struct AppState {
@@ -35,6 +36,11 @@ struct AppState {
     /// monotonic id; entries live until the app exits because committed
     /// pasteExternal ops replay from them on every undo, across save loads.
     clipboard_slots: Mutex<(u64, std::collections::HashMap<u64, String>)>,
+    /// The change watcher, when one is running: one long-lived process (an
+    /// `inotifywait -m`, local or over ssh, or a PowerShell FileSystemWatcher),
+    /// killed when watching stops or the target changes. Kept here rather than
+    /// in the frontend because a webview cannot hold a child process.
+    watch: Mutex<Option<std::process::Child>>,
 }
 
 /// Payloads at most this big go back as one raw `Response` (the standing
@@ -551,6 +557,129 @@ async fn server_fetch_latest(
     })
 }
 
+// ---- Save sources over SSH / a mounted share (src/ssh_source.rs) -----------
+// The HTTP alternative to these is a listener on the game machine; these use
+// the OpenSSH server that is already there. All of them run on blocking
+// threads, because each one is a subprocess with a deadline.
+
+/// "Can this connection do what the dialog needs?" -- authentication, the
+/// SFTP subsystem (browsing and change polling depend on it), rsync on the far
+/// side, and how many saves are in `dir` when the caller already knows one.
+#[tauri::command]
+async fn source_validate(
+    target: ssh_source::SshTarget,
+    dir: Option<String>,
+) -> Result<ssh_source::ValidateResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ssh_source::validate(&target, dir.as_deref().unwrap_or(""))
+    })
+    .await
+    .map_err(|e| format!("Validation task failed: {e}"))
+}
+
+/// One directory listing: over SFTP when `local` is false, straight off the
+/// filesystem when it is true (a mounted SMB/NFS share needs no protocol code
+/// -- the OS already speaks it).
+#[tauri::command]
+async fn source_browse(
+    target: ssh_source::SshTarget,
+    path: String,
+    local: bool,
+) -> Result<ssh_source::Listing, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if local {
+            ssh_source::browse_local(&path)
+        } else {
+            ssh_source::browse(&target, &path)
+        }
+    })
+    .await
+    .map_err(|e| format!("Browse task failed: {e}"))?
+}
+
+/// Pull the save into the app's own cache folder and hash it. `transport` is
+/// "sftp" (works against a stock Windows OpenSSH server) or "rsync" (delta
+/// transfer, when the far side has it -- the same 50 MB save re-fetched on
+/// every autosave is what that earns).
+#[tauri::command]
+async fn source_fetch(
+    target: ssh_source::SshTarget,
+    remote_path: String,
+    transport: String,
+    app: tauri::AppHandle,
+) -> Result<ssh_source::FetchedSave, String> {
+    let cache = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("No app data dir: {e}"))?
+        .join("remote-saves");
+    tauri::async_runtime::spawn_blocking(move || {
+        ssh_source::fetch(&target, &remote_path, &transport, &cache)
+    })
+    .await
+    .map_err(|e| format!("Fetch task failed: {e}"))?
+}
+
+/// Start watching the folder and push a `save-source-changed` event per name
+/// that lands in it. `mode` is what `source_validate` reported ("inotify" or
+/// "watcher"); empty means "work it out" -- which is what a locally opened save
+/// needs, since it never went through a validate. An error here is the
+/// frontend's cue to fall back to the interval poll, so the message is the
+/// tool's own words (no `inotifywait` on that machine, no such folder, a
+/// refused key).
+#[tauri::command]
+async fn source_watch_start(
+    target: ssh_source::SshTarget,
+    dir: String,
+    mode: String,
+    platform: Option<String>,
+    local: bool,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    stop_watch(&state);
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        let mode = if mode.is_empty() {
+            ssh_source::watch_mode(
+                &target,
+                platform.as_deref().unwrap_or(""),
+                local,
+                &dir,
+            )
+            .to_string()
+        } else {
+            mode
+        };
+        if mode.is_empty() {
+            return Err("No event watcher on that machine.".to_string());
+        }
+        ssh_source::spawn_watch(&target, &dir, local, &mode, move |name| {
+            // The webview decides whether the name matters; this is just the
+            // notification that something moved.
+            let _ = app.emit("save-source-changed", name);
+        })
+    })
+    .await
+    .map_err(|e| format!("Watch task failed: {e}"))??;
+    let mode = handle.mode.clone();
+    *state.watch.lock().unwrap() = Some(handle.child);
+    Ok(mode)
+}
+
+/// Stop watching. The remote `inotifywait` dies with the connection it was
+/// started on.
+#[tauri::command]
+fn source_watch_stop(state: State<'_, AppState>) {
+    stop_watch(&state);
+}
+
+fn stop_watch(state: &AppState) {
+    if let Some(mut child) = state.watch.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 /// Where the TOFU certificate pins live (see server_api::fetch_latest).
 fn cert_pin_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
@@ -716,6 +845,7 @@ fn main() {
             session: Mutex::new(None),
             chunked_payload: Mutex::new((0, None)),
             clipboard_slots: Mutex::new((0, std::collections::HashMap::new())),
+            watch: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             load,
@@ -736,6 +866,11 @@ fn main() {
             payload_slice,
             payload_done,
             server_fetch_latest,
+            source_validate,
+            source_browse,
+            source_fetch,
+            source_watch_start,
+            source_watch_stop,
             server_forget_pin,
             server_password_store,
             server_password_get,
