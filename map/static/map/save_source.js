@@ -44,6 +44,7 @@ window.SaveSource = (function() {
     watch: false,
     interval: 60,
     watchMode: "", // "inotify" | "watcher" while events are live, "" while polling
+    descended: false, // the folder-with-one-subfolder shortcut has been taken
     watchKey: "", // target+dir the running watcher belongs to
     step: 1, // 1 protocol, 2 connection, 3 save file
     reached: 1, // the furthest step visited, so the stepper can go back
@@ -204,6 +205,7 @@ window.SaveSource = (function() {
     // Continue where the last session stopped: a remembered folder means the
     // protocol and the connection are already answered.
     showStep(state.dir ? 3 : 1);
+    state.descended = false;
     if (state.dir) {
       browse(state.dir);
     }
@@ -657,11 +659,28 @@ window.SaveSource = (function() {
       });
       el.list.appendChild(row);
     });
+    var saves = state.entries.filter(function(entry) {
+      return !entry.isDir && isSave(entry.name);
+    });
+    var folders = state.entries.filter(function(entry) { return entry.isDir; });
+    // The game's own layout is <SaveGames>/<steam id>/*.sav, and the level above
+    // it holds that one folder plus the dedicated server's own 116-byte
+    // ServerManager file -- so "newest .sav" there picks a file that is not a
+    // save. When the single folder beside them is the most recently written
+    // thing, the saves are in it: walk in once, the way a person would.
+    var newestSave = saves.reduce(function(latest, entry) {
+      return Math.max(latest, entry.mtime || 0);
+    }, 0);
+    var savesAreInside = !quiet && !state.descended && folders.length === 1
+      && (saves.length === 0 || (folders[0].mtime || 0) > newestSave);
+    if (savesAreInside) {
+      state.descended = true;
+      browse(folders[0].path);
+      return;
+    }
+    var saveCount = saves.length;
     if (!quiet) {
-      var count = state.entries.filter(function(entry) {
-        return !entry.isDir && isSave(entry.name);
-      }).length;
-      say(count + " .sav file" + (count === 1 ? "" : "s") + " in " + listing.path + ".");
+      say(saveCount + " .sav file" + (saveCount === 1 ? "" : "s") + " in " + listing.path + ".");
     }
     if (state.file && !el.newest.checked) {
       // The picked file may be gone; the folder listing is the truth.

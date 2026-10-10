@@ -55,8 +55,12 @@ icacls $env:USERPROFILE\.ssh\authorized_keys /inheritance:r /grant "$($env:USERN
 The saves are at
 `C:\Users\<you>\AppData\Local\FactoryGame\Saved\SaveGames\<steamid64>\`, which
 is why the dialog opens on the SFTP form of that path: `/C:/Users/...`. On
-Linux the game writes into the Proton prefix — the dialog's suggested path is
-the usual one.
+Linux the game writes into the Proton prefix; checked on Bazzite, that is
+`~/.steam/steam/steamapps/compatdata/526870/pfx/drive_c/users/steamuser/AppData/Local/FactoryGame/Saved/SaveGames/<steamid64>/`.
+The `<steamid64>` level is the game's own layout, so the dialog opens the folder
+above it and walks into the only folder when that folder is the most recently
+written thing — otherwise "newest `.sav`" there would pick the dedicated
+server's 116-byte `ServerManager_V2.sav`, which is not a save.
 
 An admin password is never asked for and never stored: the dialog sets
 `BatchMode=yes`, so authentication is key/agent only by design. A host whose
@@ -135,20 +139,16 @@ cargo tauri dev            # or: cargo tauri build
 plus the sshd setup above -- and Windows is where the game machine is, so this
 is the path that ends in a working map.
 
-### If SSH is already broken on the machine running the app
+### "Bad owner or permissions on /etc/ssh/ssh_config.d/..."
 
-The dialog reports the ssh client's own words, and one of them is worth knowing
-about: on an ostree/Bluefin-style install, files under `/etc/ssh/ssh_config.d/`
-can end up owned by an unmapped uid (`nfsnobody`). OpenSSH treats a non-root
-owned included config as fatal, so **every** `ssh` invocation fails with:
-
-```
-Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf
-```
-
-That is not this app's bug and it breaks `ssh` in a terminal too; fix the
-ownership (`sudo chown root:root /etc/ssh/ssh_config.d/*`) and Validate
-connection starts answering.
+OpenSSH refuses to read a config file it does not consider root-owned, and
+inside a **user namespace** the host's root-owned files map to an unmapped uid,
+so they look like `nfsnobody` to the client. Every `ssh` invocation then fails
+before it connects, and the dialog shows exactly that line. It is the sandbox,
+not the machine: run the app (or `ssh`) outside it, or use a container that keeps
+your uid — `distrobox` does by default, `podman run --userns=keep-id` says so
+explicitly. `ssh -F /dev/null` also gets past it, by not reading the system
+config at all.
 
 ## Implementation notes
 

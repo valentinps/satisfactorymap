@@ -23,18 +23,23 @@ import http.server
 import json
 import os
 import sys
+import urllib.parse
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC = os.path.join(REPO, "map", "static", "map")
 
 # Injected before the app scripts: window.__TAURI__ has to exist by the time
 # save_client.js reads it, or the app takes the browser transport instead.
-STUB = """<script>
+STUB = r"""<script>
 (function () {
   var DIR = %(dir)s;
   // Re-read from the server on every call: that is what makes the watch loop
   // live -- touch a file and the next tick sees it.
-  var listing = function () { return fetch("/__demo/listing").then(function (r) { return r.json(); }); };
+  var listing = function (path) {
+    var url = "/__demo/listing";
+    if (path) { url += "?path=" + encodeURIComponent(path); }
+    return fetch(url).then(function (r) { return r.json(); });
+  };
   // loadSavePath builds a Channel before it invokes anything.
   function Channel() { this.onmessage = null; }
   window.__TAURI__ = { core: { Channel: Channel, invoke: function (cmd, args) {
@@ -44,14 +49,14 @@ STUB = """<script>
       return Promise.reject(new Error("dion@192.168.1.50: Permission denied (publickey)."));
     }
     if (cmd === "source_validate") {
-      return listing().then(function (l) {
+      return listing(DIR).then(function (l) {
         var saves = l.entries.filter(function (e) { return !e.isDir && /\\.sav$/i.test(e.name); });
         return { ok: true, platform: "demo", home: DIR, sftp: true, rsync: false,
           saveCount: saves.length, newestSave: saves.length ? saves[0].name : "", watch: "inotify",
           detail: "demo bridge: browsing " + DIR };
       });
     }
-    if (cmd === "source_browse") { return listing(); }
+    if (cmd === "source_browse") { return listing(args.path); }
     if (cmd === "source_watch_start") {
       // The demo has no inotifywait to run (this box has no inotify-tools), so
       // it reports the event path as live and lets __demoEmit stand in for the
@@ -63,7 +68,7 @@ STUB = """<script>
     }
     if (cmd === "source_watch_stop") { return Promise.resolve(); }
     if (cmd === "source_fetch") {
-      return listing().then(function (l) {
+      return listing(args.remotePath.replace(/\/[^/]*$/, "")).then(function (l) {
         var entry = l.entries.filter(function (e) { return e.path === args.remotePath; })[0];
         if (!entry) { throw new Error("no such file: " + args.remotePath); }
         return { path: entry.path, saveName: entry.name, bytes: entry.size,
@@ -125,6 +130,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/__demo/listing":
             folder = os.path.abspath(self.folder)
+            wanted = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("path", [""])[0]
+            # Only inside the folder the demo was pointed at: a local dev server
+            # has no business listing the rest of the disk.
+            if wanted and os.path.isdir(wanted) and os.path.abspath(wanted).startswith(folder):
+                folder = os.path.abspath(wanted)
             body = json.dumps({
                 "path": folder,
                 "parent": os.path.dirname(folder),
