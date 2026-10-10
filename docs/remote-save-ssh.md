@@ -154,6 +154,14 @@ cargo tauri dev            # or: cargo tauri build
 plus the sshd setup above -- and Windows is where the game machine is, so this
 is the path that ends in a working map.
 
+### "Failed to fetch" in the Connection step
+
+That is not ssh talking: it is the app's own command channel. On Linux the
+desktop shell carries its commands over a local fetch, so a backend that is gone
+(or a frontend rebuilt against an older binary) shows up this way, and the hint
+under the message says so. Restart the app; if the frontend changed, rebuild it.
+The demo server prints its own version of this when it is not running.
+
 ### "Bad owner or permissions on /etc/ssh/ssh_config.d/..."
 
 OpenSSH refuses to read a config file it does not consider root-owned, and

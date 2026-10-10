@@ -38,7 +38,11 @@ STUB = r"""<script>
   var listing = function (path) {
     var url = "/__demo/listing";
     if (path) { url += "?path=" + encodeURIComponent(path); }
-    return fetch(url).then(function (r) { return r.json(); });
+    return fetch(url).then(function (r) { return r.json(); }).catch(function () {
+      // A dead demo server otherwise shows up as the browser's own "Failed to
+      // fetch", which reads like the ssh connection failed. It did not.
+      throw new Error("the demo server is gone -- restart tools/serve_save_source_demo.py and reload this page");
+    });
   };
   // loadSavePath builds a Channel before it invokes anything.
   function Channel() { this.onmessage = null; }

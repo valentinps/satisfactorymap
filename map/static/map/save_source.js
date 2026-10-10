@@ -375,6 +375,12 @@ window.SaveSource = (function() {
   // the one thing to try next. Anything not listed gets no invented advice.
   function hintFor(error) {
     var text = String(error || "");
+    // A transport-level failure never came from ssh: on Linux the desktop shell
+    // carries its own commands over a local fetch, so this is the app's channel
+    // to its backend, not the remote host answering.
+    if (/Failed to fetch|NetworkError|ipc:|not answering/i.test(text)) {
+      return "That is the app's own command channel failing, not ssh: the window has lost its backend, or the build is stale. Restart the app (and rebuild it if the frontend changed since).";
+    }
     if (text.indexOf("Bad owner or permissions") !== -1) {
       return "This machine's own ssh config is unreadable (a non-root owner under /etc/ssh/ssh_config.d). ssh fails outside this app too until it is fixed.";
     }
