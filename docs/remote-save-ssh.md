@@ -154,6 +154,15 @@ cd <checkout>/rust_parser && cargo build -p sav_tauri --release
 cargo tauri dev            # or: cargo tauri build
 ```
 
+If you cannot install `-devel` packages (an immutable distro, no root), note that
+the Tauri tree's `-sys` crates only ask pkg-config *where* the libraries are —
+they compile no C headers — and the runtime libraries are usually already
+installed. Hand-written `.pc` files for the missing names plus the unversioned
+`libfoo.so` symlinks the linker wants, both in a directory of your own, are
+enough to build and link against them; the container above remains the tidy
+route. Remember that `dist/` is embedded at compile time, so build the site
+first.
+
 **The real thing on Windows** is the repo's normal build (`cargo tauri build`)
 plus the sshd setup above -- and Windows is where the game machine is, so this
 is the path that ends in a working map.
