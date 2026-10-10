@@ -220,6 +220,7 @@
     MapApp.refreshMaxBounds(); // back to the vanilla pan limits
     clearSaveBtn.style.display = "none";
     hideProgress();
+    SaveSource.forgetLocal();
     setStatus("Save unloaded -- drop a .sav anywhere or click above.");
   }
 
@@ -342,6 +343,10 @@
         currentFile = null;
         currentUrl = null;
         EditorTool.onSaveLoaded(name);
+        // A save loaded from a path on this machine is watchable too: hand it to
+        // the module that owns the watch, which shows the sidebar switch and
+        // keeps it fresh if it was already on.
+        SaveSource.adoptLocal(path);
         applyPayload(payload);
         if (pinnedSelection) {
           restorePinnedSelection(pinnedSelection);
@@ -650,6 +655,11 @@
           loadPath: loadLocalPath,
           isBusy: function() { return loadInFlight; },
           pendingEdits: function() { return EditorTool.opCount(); },
+          // The sidebar's own "Keep it fresh" row lives in save_source.js, which
+          // owns the watch; this is only so a load can tell it what happened.
+          onWatch: function(watching, mode) {
+            console.info("SaveSource: watching=" + watching + " mode=" + (mode || "interval"));
+          },
         },
       });
     }

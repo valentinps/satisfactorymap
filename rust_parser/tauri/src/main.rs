@@ -622,20 +622,37 @@ async fn source_fetch(
 
 /// Start watching the folder and push a `save-source-changed` event per name
 /// that lands in it. `mode` is what `source_validate` reported ("inotify" or
-/// "watcher"); an error here is the frontend's cue to fall back to the interval
-/// poll, so the message is the tool's own words (no `inotifywait` on that
-/// machine, no such folder, a refused key).
+/// "watcher"); empty means "work it out" -- which is what a locally opened save
+/// needs, since it never went through a validate. An error here is the
+/// frontend's cue to fall back to the interval poll, so the message is the
+/// tool's own words (no `inotifywait` on that machine, no such folder, a
+/// refused key).
 #[tauri::command]
 async fn source_watch_start(
     target: ssh_source::SshTarget,
     dir: String,
     mode: String,
+    platform: Option<String>,
     local: bool,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     stop_watch(&state);
     let handle = tauri::async_runtime::spawn_blocking(move || {
+        let mode = if mode.is_empty() {
+            ssh_source::watch_mode(
+                &target,
+                platform.as_deref().unwrap_or(""),
+                local,
+                &dir,
+            )
+            .to_string()
+        } else {
+            mode
+        };
+        if mode.is_empty() {
+            return Err("No event watcher on that machine.".to_string());
+        }
         ssh_source::spawn_watch(&target, &dir, local, &mode, move |name| {
             // The webview decides whether the name matters; this is just the
             // notification that something moved.

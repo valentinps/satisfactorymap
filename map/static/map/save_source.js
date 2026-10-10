@@ -170,6 +170,8 @@ window.SaveSource = (function() {
       interval: document.getElementById("srcInterval"),
       load: document.getElementById("srcLoad"),
       status: document.getElementById("srcStatus"),
+      localRow: document.getElementById("localWatchRow"),
+      localBox: document.getElementById("localWatchBox"),
     };
     if (!el.dialogApi || !el.list || !el.sshFields || !el.localFields || !el.next) {
       return; // markup missing (older dist): stay inert rather than throw
@@ -191,10 +193,86 @@ window.SaveSource = (function() {
       el.trigger.style.display = "";
       el.trigger.addEventListener("click", open);
     }
+    if (el.localBox) {
+      el.localBox.addEventListener("change", function() {
+        state.watch = el.localBox.checked;
+        remember();
+        if (state.watch) {
+          arm();
+        } else {
+          stop();
+          say("Watching off.");
+        }
+        notifyWatch();
+      });
+    }
     // The source is remembered, so the checkbox survives a restart -- but the
     // poll only starts once a save has been loaded from it in this session
     // (see arm()), or it would download and load a save nobody asked for. No
     // status line for that: step 1 is a choice, not a report.
+  }
+
+  // A save opened from this machine -- the file dialog, a drag-drop, or the
+  // dialog's mounted-share transport -- is watched by the same machinery as a
+  // remote one: the folder is what is watched, the filesystem decides whether
+  // that means events or an interval, and the bytes decide whether the map
+  // reloads. Called by data.js once a path load succeeded; `watch` is left as
+  // the user set it, so loading another save does not silently start or stop
+  // watching.
+  function adoptLocal(path, watch) {
+    if (!path) {
+      return;
+    }
+    state.transport = "local";
+    state.dir = path.replace(/[\\/][^\\/]*$/, "") || path;
+    state.file = path.split(/[\\/]/).pop();
+    state.filePath = path;
+    // A picked file means that file: following "newest" would swap the map onto
+    // a save the user did not open. The dialog's toggle is right there for
+    // anyone who wants the rotation instead.
+    state.takeNewest = false;
+    if (typeof watch === "boolean") {
+      state.watch = watch;
+    }
+    // No validate ran for a local path, so the mode is not known yet: empty
+    // means "work it out", which the command does from the filesystem.
+    state.capabilities = null;
+    remember();
+    showLocalRow(true);
+    if (state.watch) {
+      arm();
+    } else {
+      stop();
+      say("Watching off. Tick \"Keep it fresh\" to reload this save as it changes.");
+    }
+    notifyWatch();
+  }
+
+  /// The loaded save is no longer a local path (a remote source took over, or
+  /// the save was unloaded): the sidebar switch goes away with it.
+  function forgetLocal() {
+    showLocalRow(false);
+    if (state.transport === "local") {
+      stop();
+      state.watch = false;
+      remember();
+    }
+  }
+
+  function showLocalRow(show) {
+    if (!el.localRow) {
+      return;
+    }
+    el.localRow.style.display = show ? "" : "none";
+    if (el.localBox) {
+      el.localBox.checked = !!state.watch;
+    }
+  }
+
+  function notifyWatch() {
+    if (typeof options.onWatch === "function") {
+      options.onWatch(state.watch, state.watchMode);
+    }
   }
 
   function open() {
@@ -424,6 +502,8 @@ window.SaveSource = (function() {
       }
       // arm() decides between events and the interval, and says which it got.
       arm();
+      showLocalRow(state.transport === "local");
+      notifyWatch();
     });
     el.interval.addEventListener("change", function() {
       readForm();
@@ -748,6 +828,7 @@ window.SaveSource = (function() {
       }
       // rsync only when the far side actually has it (validate says so); SFTP is
       // the transport that works against a stock Windows OpenSSH server.
+      showLocalRow(false); // the loaded save is remote now, not a path here
       var transport = state.capabilities && state.capabilities.rsync ? "rsync" : "sftp";
       say("Fetching " + entry.name + " over " + transport + "\u2026");
       return invoke("source_fetch", {
@@ -780,12 +861,7 @@ window.SaveSource = (function() {
     })[0] || null;
   }
 
-  // What "load" means right now: the newest .sav in the folder, or the one the
-  // user picked. The listing is the only source for both.
-  function currentTarget() {
-    if (!state.takeNewest) {
-      return localEntry(state.file);
-    }
+  function newestSaveEntry() {
     var saves = (state.entries || []).filter(function(entry) {
       return !entry.isDir && isSave(entry.name);
     });
@@ -793,6 +869,12 @@ window.SaveSource = (function() {
       return (b.mtime || 0) - (a.mtime || 0);
     });
     return saves[0] || null;
+  }
+
+  // What "load" means right now: the newest .sav in the folder, or the one the
+  // user picked. The listing is the only source for both.
+  function currentTarget() {
+    return state.takeNewest ? newestSaveEntry() : localEntry(state.file);
   }
 
   // The identity of "the file we would load": the three things a listing gives
@@ -831,7 +913,14 @@ window.SaveSource = (function() {
       }
       var key = statKey(entry);
       if (key === state.seen) {
-        say("Auto-refresh " + clock() + ": " + entry.name + " unchanged.");
+        // Strictly newer, not merely first in the listing: two saves written in
+        // the same minute share a timestamp, and calling one of them "newer"
+        // would be a guess.
+        var newer = newestSaveEntry();
+        var movedOn = newer && newer.name !== entry.name
+          && (newer.mtime || 0) > (entry.mtime || 0);
+        say("Auto-refresh " + clock() + ": " + entry.name + " unchanged."
+          + (movedOn ? " (a newer save is in the folder: " + newer.name + ")" : ""));
         return null;
       }
       // Changed (or first look): fetch, hash, and let load() decide whether the
@@ -857,7 +946,11 @@ window.SaveSource = (function() {
       stop();
       return;
     }
-    var mode = (state.capabilities && state.capabilities.watch) || "";
+    // Remote: what validate found. Local: nothing to ask -- the command works
+    // it out from the filesystem (and from whether inotifywait is installed).
+    var mode = state.transport === "local"
+      ? ""
+      : ((state.capabilities && state.capabilities.watch) || "");
     var key = state.transport + "|" + state.dir + "|" + mode;
     if (!mode || key !== state.watchKey) {
       startWatch(key, mode);
@@ -870,7 +963,7 @@ window.SaveSource = (function() {
 
   function startWatch(key, mode) {
     stop();
-    if (!mode || !state.dir) {
+    if (!state.dir) {
       schedule();
       return;
     }
@@ -878,6 +971,7 @@ window.SaveSource = (function() {
       target: state.target,
       dir: state.dir,
       mode: mode,
+      platform: (state.capabilities && state.capabilities.platform) || "",
       local: state.transport === "local",
     }).then(function(started) {
       state.watchKey = key;
@@ -954,6 +1048,10 @@ window.SaveSource = (function() {
       }
     },
     open: open,
+    // data.js tells us what was just loaded from this machine, and whether the
+    // save is still a local one.
+    adoptLocal: adoptLocal,
+    forgetLocal: forgetLocal,
     state: state,
   };
 })();

@@ -266,6 +266,14 @@
           </div>
         </div>
         <div id="loadStatus"></div>
+        <!-- Shown by save_source.js once a save with a real path is loaded
+             (desktop only: a browser File object has no path to watch). The same
+             machinery as the remote source -- events when the filesystem can
+             push them, an interval when it cannot. -->
+        <label id="localWatchRow" class="srcCheckLine" style="display:none" title="Reload the map when this save file changes: pushed events when the system can, a check every minute when it cannot">
+          <input id="localWatchBox" type="checkbox">
+          <span>Keep it fresh</span>
+        </label>
         <div id="loadProgressBar" class="bar" style="display:none"><div id="loadProgressFill" class="bar-fill is-brand"></div></div>
         <!-- Collapsed-by-default disclosure for everything that isn't the
              load flow itself: the object-count chip is the always-visible

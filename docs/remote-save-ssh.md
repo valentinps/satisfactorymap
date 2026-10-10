@@ -31,6 +31,21 @@ key and `~/.ssh/config` the user already has.
 The stepper's numbers go back to a step already reached, and a remembered
 source reopens straight at the file it was left on.
 
+### A save opened from this machine
+
+The same watch applies to a `.sav` opened from disk -- the file dialog, a
+drag-drop, or the dialog's mounted-share transport. A **Keep it fresh** switch
+appears under the loaded save in the sidebar (desktop only: a browser `File`
+object has no path to watch), and it drives exactly the same machinery: the
+folder is watched, the filesystem decides events or interval, and the bytes
+decide whether the map reloads.
+
+A file you picked means *that* file -- following "newest" would swap the map onto
+a save you did not open -- so when a newer save lands in the folder the status
+line says which one, and the dialog's *Newest `.sav`* toggle is one click away.
+The switch keeps its setting across loads and restarts, and disappears when the
+loaded save is a remote one or nothing is loaded.
+
 ## Setting up the game machine (Windows)
 
 Run these in an **elevated PowerShell**. The save folder comes with the server
@@ -160,7 +175,9 @@ config at all.
 - Commands: `source_validate`, `source_browse`, `source_fetch` for the three
   jobs the dialog has, plus `source_watch_start` / `source_watch_stop` for the
   event watcher (a long-lived child process, local or over ssh, kept in the
-  Tauri state because a webview cannot hold one). The watch probe is a `source_browse`, because a listing
+  Tauri state because a webview cannot hold one). `source_watch_start` picks the
+  mechanism itself when the caller does not know it, which is what a locally
+  opened save needs -- it never went through a validate. The watch probe is a `source_browse`, because a listing
   is what says both what is in the folder and whether it moved. Every remote
   path crosses into an SFTP batch script, so control characters and quotes are
   rejected at the boundary; a host, user or port that could be read as an
