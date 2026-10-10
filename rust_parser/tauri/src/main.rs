@@ -15,7 +15,7 @@ use sav_tauri_lib::session::AppSession;
 use sav_tauri_lib::ssh_source;
 use std::sync::Mutex;
 use tauri::ipc::{Channel, Response};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 struct AppState {
@@ -36,6 +36,11 @@ struct AppState {
     /// monotonic id; entries live until the app exits because committed
     /// pasteExternal ops replay from them on every undo, across save loads.
     clipboard_slots: Mutex<(u64, std::collections::HashMap<u64, String>)>,
+    /// The change watcher, when one is running: one long-lived process (an
+    /// `inotifywait -m`, local or over ssh, or a PowerShell FileSystemWatcher),
+    /// killed when watching stops or the target changes. Kept here rather than
+    /// in the frontend because a webview cannot hold a child process.
+    watch: Mutex<Option<std::process::Child>>,
 }
 
 /// Payloads at most this big go back as one raw `Response` (the standing
@@ -615,6 +620,49 @@ async fn source_fetch(
     .map_err(|e| format!("Fetch task failed: {e}"))?
 }
 
+/// Start watching the folder and push a `save-source-changed` event per name
+/// that lands in it. `mode` is what `source_validate` reported ("inotify" or
+/// "watcher"); an error here is the frontend's cue to fall back to the interval
+/// poll, so the message is the tool's own words (no `inotifywait` on that
+/// machine, no such folder, a refused key).
+#[tauri::command]
+async fn source_watch_start(
+    target: ssh_source::SshTarget,
+    dir: String,
+    mode: String,
+    local: bool,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    stop_watch(&state);
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        ssh_source::spawn_watch(&target, &dir, local, &mode, move |name| {
+            // The webview decides whether the name matters; this is just the
+            // notification that something moved.
+            let _ = app.emit("save-source-changed", name);
+        })
+    })
+    .await
+    .map_err(|e| format!("Watch task failed: {e}"))??;
+    let mode = handle.mode.clone();
+    *state.watch.lock().unwrap() = Some(handle.child);
+    Ok(mode)
+}
+
+/// Stop watching. The remote `inotifywait` dies with the connection it was
+/// started on.
+#[tauri::command]
+fn source_watch_stop(state: State<'_, AppState>) {
+    stop_watch(&state);
+}
+
+fn stop_watch(state: &AppState) {
+    if let Some(mut child) = state.watch.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 /// Where the TOFU certificate pins live (see server_api::fetch_latest).
 fn cert_pin_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
@@ -780,6 +828,7 @@ fn main() {
             session: Mutex::new(None),
             chunked_payload: Mutex::new((0, None)),
             clipboard_slots: Mutex::new((0, std::collections::HashMap::new())),
+            watch: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             load,
@@ -803,6 +852,8 @@ fn main() {
             source_validate,
             source_browse,
             source_fetch,
+            source_watch_start,
+            source_watch_stop,
             server_forget_pin,
             server_password_store,
             server_password_get,

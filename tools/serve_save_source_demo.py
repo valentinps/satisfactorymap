@@ -13,7 +13,9 @@ the watch's change check are all real; only the SSH transport is canned.
 Loading is where the demo stops: the parser lives in sav_core (desktop build) or
 in dist/pkg (wasm build) and this server has neither, so the dialog's status
 line says so instead of pretending. Validate against a host containing "fail"
-to see the debug path. For the real thing see docs/remote-save-ssh.md.
+to see the debug path, and call `__demoEmit("1.2_autosave_2.sav")` from the
+console to see a change event reload the map (set `window.__demoFailWatch = true`
+first to see the polling fallback). For the real thing see docs/remote-save-ssh.md.
 """
 
 import argparse
@@ -45,11 +47,21 @@ STUB = """<script>
       return listing().then(function (l) {
         var saves = l.entries.filter(function (e) { return !e.isDir && /\\.sav$/i.test(e.name); });
         return { ok: true, platform: "demo", home: DIR, sftp: true, rsync: false,
-          saveCount: saves.length, newestSave: saves.length ? saves[0].name : "",
+          saveCount: saves.length, newestSave: saves.length ? saves[0].name : "", watch: "inotify",
           detail: "demo bridge: browsing " + DIR };
       });
     }
     if (cmd === "source_browse") { return listing(); }
+    if (cmd === "source_watch_start") {
+      // The demo has no inotifywait to run (this box has no inotify-tools), so
+      // it reports the event path as live and lets __demoEmit stand in for the
+      // kernel. Set __demoFailWatch to see the polling fallback instead.
+      if (window.__demoFailWatch) {
+        return Promise.reject(new Error("demo: no event watcher here"));
+      }
+      return Promise.resolve(args.mode || "inotify");
+    }
+    if (cmd === "source_watch_stop") { return Promise.resolve(); }
     if (cmd === "source_fetch") {
       return listing().then(function (l) {
         var entry = l.entries.filter(function (e) { return e.path === args.remotePath; })[0];
@@ -63,9 +75,17 @@ STUB = """<script>
     }
     return Promise.reject(new Error("demo build: " + cmd + " is not stubbed"));
   } } };
+  // A change event, as the Rust side would push it: __demoEmit("x.sav").
+  var listeners = {};
+  window.__TAURI__.event = {
+    listen: function (name, fn) { listeners[name] = fn; return Promise.resolve(function () { delete listeners[name]; }); }
+  };
+  window.__demoEmit = function (name) {
+    if (listeners["save-source-changed"]) { listeners["save-source-changed"]({ payload: name }); }
+  };
   document.addEventListener("DOMContentLoaded", function () {
     var note = document.createElement("div");
-    note.textContent = "demo bridge - real folder, no parser: tools/serve_save_source_demo.py";
+    note.textContent = "demo bridge - real folder, no parser, simulated change events: tools/serve_save_source_demo.py";
     note.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:9999;font:11px system-ui;"
       + "color:#ffd479;background:rgba(20,20,25,.85);border:1px solid #6a5a2a;border-radius:6px;padding:4px 8px";
     document.body.appendChild(note);

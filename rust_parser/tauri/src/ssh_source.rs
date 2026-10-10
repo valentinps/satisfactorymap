@@ -64,6 +64,9 @@ pub struct ValidateResult {
     pub sftp: bool,
     /// rsync on the REMOTE side: what makes rsync-over-ssh usable.
     pub rsync: bool,
+    /// How changes can be noticed: "inotify" or "watcher" when the far side can
+    /// push them, "" when only polling is possible. See `watch_mode`.
+    pub watch: String,
     /// How many `.sav` files are in `dir`, when the caller passed one.
     pub save_count: usize,
     pub newest_save: String,
@@ -279,6 +282,15 @@ impl SshTarget {
         args.push(self.destination());
         args
     }
+}
+
+/// Is this tool on PATH? `which` is not on a stock Windows box, so ask the
+/// shell that is.
+fn on_path(bin: &str) -> bool {
+    let probe = if cfg!(windows) { "where" } else { "which" };
+    run(probe, &[bin.to_string()], None, Duration::from_secs(5))
+        .map(|cmd| cmd.ok)
+        .unwrap_or(false)
 }
 
 fn first_line(text: &str) -> String {
@@ -542,6 +554,7 @@ pub fn validate(target: &SshTarget, dir: &str) -> ValidateResult {
         home: String::new(),
         sftp: false,
         rsync: false,
+        watch: String::new(),
         save_count: 0,
         newest_save: String::new(),
         detail: String::new(),
@@ -574,6 +587,11 @@ pub fn validate(target: &SshTarget, dir: &str) -> ValidateResult {
     // carries the transfer.
     let cmd = run("ssh", &target.ssh_args("rsync --version"), None, PROBE_TIMEOUT);
     result.rsync = cmd.map(|c| c.ok).unwrap_or(false);
+    result.watch = if result.sftp {
+        watch_mode(target, &result.platform, false, dir).to_string()
+    } else {
+        String::new()
+    };
     if !dir.trim().is_empty() && result.sftp {
         if let Ok(entries) = listing(target, dir) {
             let saves: Vec<&DirEntry> = entries.iter().filter(|e| is_save(&e.name)).collect();
@@ -773,6 +791,262 @@ fn hash_file(path: &std::path::Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// How changes can be noticed on the machine that holds the save.
+///
+/// Events beat an interval whenever the filesystem can produce them, which is
+/// not everywhere: `inotify` on a mounted CIFS/NFS share never fires, because
+/// the kernel only reports writes made through this machine's own VFS -- the
+/// game machine's writes land on the server's disk and nothing tells the client.
+/// Windows is the exception that makes the mounted transport useful: its
+/// `FileSystemWatcher` does receive SMB notifications, so a UNC path or a mapped
+/// drive reports changes even though Linux could not.
+pub fn watch_mode(target: &SshTarget, platform: &str, local: bool, dir: &str) -> &'static str {
+    if local {
+        if cfg!(windows) {
+            return "watcher";
+        }
+        return if on_path("inotifywait") && is_local_filesystem(dir) {
+            "inotify"
+        } else {
+            ""
+        };
+    }
+    if platform == "Windows" {
+        // FileSystemWatcher is part of .NET: nothing to install, nothing to probe.
+        return "watcher";
+    }
+    if platform == "Linux/macOS" && !dir.trim().is_empty() {
+        let probe = run(
+            "ssh",
+            &target.ssh_args("command -v inotifywait"),
+            None,
+            PROBE_TIMEOUT,
+        );
+        if probe.map(|c| c.ok).unwrap_or(false) {
+            return "inotify";
+        }
+    }
+    ""
+}
+
+/// Is this path on a filesystem whose writes we can actually see? `findmnt`
+/// answers in one line; when it is missing, assume no -- a silent inotify watch
+/// on a network mount is worse than an honest interval.
+fn is_local_filesystem(path: &str) -> bool {
+    if path.trim().is_empty() || !std::path::Path::new(path).exists() {
+        return false;
+    }
+    let Ok(cmd) = run(
+        "findmnt",
+        &[
+            "-no".to_string(),
+            "FSTYPE".to_string(),
+            "-T".to_string(),
+            path.to_string(),
+        ],
+        None,
+        Duration::from_secs(10),
+    ) else {
+        return false;
+    };
+    if !cmd.ok {
+        return false;
+    }
+    let fstype = first_line(&cmd.stdout).to_ascii_lowercase();
+    !(fstype.starts_with("nfs")
+        || fstype.starts_with("cifs")
+        || fstype.starts_with("smb")
+        || fstype.contains("fuse")
+        || fstype.starts_with("sshfs"))
+}
+
+/// A running change watcher: the child to kill, and which mechanism it is.
+pub struct WatchHandle {
+    pub child: std::process::Child,
+    pub mode: String,
+}
+
+/// Start watching `dir` and call `on_change` with each name that lands in it.
+///
+/// Two mechanisms, chosen by `mode`:
+///   - "inotify": `inotifywait -m` on the machine that holds the folder, run
+///     locally or over ssh, printing one name per event;
+///   - "watcher": PowerShell's `FileSystemWatcher` for a Windows folder, sent as
+///     a base64 `-EncodedCommand` -- the only quoting that survives cmd.exe, the
+///     default shell of Windows OpenSSH.
+/// The process is long-lived: the caller kills it when the watch is turned off.
+pub fn spawn_watch<F>(
+    target: &SshTarget,
+    dir: &str,
+    local: bool,
+    mode: &str,
+    on_change: F,
+) -> Result<WatchHandle, String>
+where
+    F: Fn(String) + Send + 'static,
+{
+    let remote = !local;
+    let (bin, args) = match mode {
+        "inotify" => {
+            if remote {
+                // The folder is embedded in a command the REMOTE SHELL parses,
+                // so a single quote in it would end the quoting; refuse rather
+                // than escape, because no real save folder has one.
+                if dir.contains('\'') {
+                    return Err("That folder has a quote in it, so it cannot be watched.".to_string());
+                }
+                target.check()?;
+                let script = format!(
+                    "inotifywait -m -q -e close_write -e moved_to -e create --format %f -- '{dir}'"
+                );
+                ("ssh".to_string(), target.ssh_args(&script))
+            } else {
+                let mut args: Vec<String> = ["-m", "-q", "-e", "close_write", "-e", "moved_to", "-e", "create",
+                    "--format", "%f", "--"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                args.push(dir.to_string());
+                ("inotifywait".to_string(), args)
+            }
+        }
+        "watcher" => {
+            let command = powershell_watch_command(dir)?;
+            if remote {
+                target.check()?;
+                let mut args = target.opts();
+                if target.port != 0 && target.port != 22 {
+                    args.push("-p".to_string());
+                    args.push(target.port.to_string());
+                }
+                args.push(target.destination());
+                args.extend(command);
+                ("ssh".to_string(), args)
+            } else {
+                ("powershell".to_string(), command)
+            }
+        }
+        other => return Err(format!("No event watcher for mode {other:?}.")),
+    };
+
+    let mut child = Command::new(&bin)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Could not start {bin}: {e}"))?;
+    let mut out = child.stdout.take().expect("stdout piped");
+    let mut err = child.stderr.take().expect("stderr piped");
+
+    // A watcher that dies at once is the interesting failure -- no inotifywait,
+    // no such folder, a refused key -- so say why instead of reporting success
+    // and then never firing. `inotifywait -m` otherwise runs until killed.
+    let deadline = Instant::now() + Duration::from_millis(700);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let mut text = String::new();
+                let _ = err.read_to_string(&mut text);
+                let mut out_text = String::new();
+                let _ = out.read_to_string(&mut out_text);
+                let detail = if text.trim().is_empty() {
+                    first_line(&out_text)
+                } else {
+                    first_line(&text)
+                };
+                return Err(if detail.is_empty() {
+                    format!("The watcher stopped immediately ({bin}).")
+                } else {
+                    detail
+                });
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("Could not watch {dir}: {e}")),
+        }
+    }
+
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(out);
+        for line in reader.lines().map_while(Result::ok) {
+            let name = line.trim().to_string();
+            if !name.is_empty() {
+                on_change(name);
+            }
+        }
+    });
+    // Drain stderr too, or a chatty watcher fills the pipe and blocks.
+    std::thread::spawn(move || {
+        let mut sink = Vec::new();
+        let _ = err.read_to_end(&mut sink);
+    });
+
+    Ok(WatchHandle {
+        child,
+        mode: mode.to_string(),
+    })
+}
+
+/// `powershell ... -EncodedCommand <base64 of the script>`: the script is
+/// UTF-16LE base64, so no quoting in it can be reinterpreted by cmd.exe.
+pub fn powershell_watch_command(dir: &str) -> Result<Vec<String>, String> {
+    let folder = windows_path(dir)?;
+    let script = format!(
+        "$w = New-Object System.IO.FileSystemWatcher '{folder}', '*.sav'; \
+$w.IncludeSubdirectories = $false; $w.EnableRaisingEvents = $true; \
+while ($true) {{ $e = $w.WaitForChanged('All', 60000); \
+if (-not $e.TimedOut) {{ [Console]::Out.WriteLine($e.Name); [Console]::Out.Flush() }} }}"
+    );
+    Ok(vec![
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+        "-EncodedCommand".to_string(),
+        base64_utf16le(&script),
+    ])
+}
+
+/// SFTP reports a Windows folder as `/C:/Users/x`; PowerShell needs `C:\Users\x`.
+/// A quote would end the single-quoted PowerShell literal, so it is refused.
+fn windows_path(dir: &str) -> Result<String, String> {
+    if dir.contains('\'') || dir.chars().any(|c| c.is_control()) {
+        return Err("That folder cannot be watched: it has a quote or a control character.".to_string());
+    }
+    let trimmed = dir.trim().trim_start_matches('/');
+    let bytes = trimmed.as_bytes();
+    let drive = bytes.len() >= 2 && bytes[1] == b':' && (bytes[0] as char).is_ascii_alphabetic();
+    if !drive {
+        return Err(format!("{dir} is not a Windows drive path."));
+    }
+    Ok(trimmed.replace('/', "\\"))
+}
+
+/// UTF-16LE (what PowerShell's -EncodedCommand wants), base64'd. Written out
+/// rather than pulling in a crate for the one encoding.
+pub fn base64_utf16le(text: &str) -> String {
+    let mut bytes = Vec::with_capacity(text.len() * 2);
+    for unit in text.encode_utf16() {
+        bytes.push((unit & 0xff) as u8);
+        bytes.push((unit >> 8) as u8);
+    }
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { ALPHABET[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { ALPHABET[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -889,6 +1163,44 @@ drwxr-xr-x    ?         ?                0 Oct 10 13:41 /C:/saves/76561198036921
         assert_eq!(parse_pwd("no banner here"), None);
         assert_eq!(platform_from_home("/C:/Users/dion"), "Windows");
         assert_eq!(platform_from_home("/home/dion"), "Linux/macOS");
+    }
+
+    #[test]
+    fn base64_matches_utf16le_powershell_encoding() {
+        // "AB" in UTF-16LE is 41 00 42 00 -> "QQBCAA==", the shape
+        // powershell -EncodedCommand expects (verified against PowerShell's own
+        // output for the same string).
+        assert_eq!(base64_utf16le("AB"), "QQBCAA==");
+        assert_eq!(base64_utf16le("A"), "QQA=");
+        assert_eq!(base64_utf16le("ABC"), "QQBCAEMA");
+        assert_eq!(base64_utf16le(""), "");
+    }
+
+    #[test]
+    fn powershell_watch_script_carries_the_folder_and_stays_unquotable() {
+        let args = powershell_watch_command("/C:/Users/dion/SaveGames").unwrap();
+        assert_eq!(args[0], "-NoProfile");
+        assert_eq!(args[2], "-EncodedCommand");
+        assert!(args[3].chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='));
+        // The path is in the script as a Windows path, not as an SFTP one.
+        let decoded = args[3].clone();
+        assert!(!decoded.contains('\''), "nothing in the payload can be requoted");
+        // A path that is not a drive path, or carries a quote, is refused rather
+        // than escaped into a command string.
+        assert!(powershell_watch_command("/home/dion/saves").is_err());
+        assert!(powershell_watch_command("/C:/Users/o'brien/saves").is_err());
+    }
+
+    #[test]
+    fn a_folder_with_a_quote_is_refused_by_the_shell_watcher() {
+        let target = SshTarget { host: "192.168.1.50".to_string(), ..Default::default() };
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = called.clone();
+        let result = spawn_watch(&target, "/saves/o'brien", false, "inotify", move |_| {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(result.is_err(), "a quote must not reach the remote shell");
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

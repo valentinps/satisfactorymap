@@ -31,7 +31,8 @@ window.SaveSource = (function() {
 
   var tauriInvoke = null; // window.__TAURI__.core.invoke, set by init
   var options = {};
-  var timer = null;
+  var timer = null; // the fallback interval
+  var burst = null; // a change event waiting for the write burst to settle
   var el = {}; // cached elements
 
   var state = {
@@ -42,6 +43,8 @@ window.SaveSource = (function() {
     takeNewest: true,
     watch: false,
     interval: 60,
+    watchMode: "", // "inotify" | "watcher" while events are live, "" while polling
+    watchKey: "", // target+dir the running watcher belongs to
     step: 1, // 1 protocol, 2 connection, 3 save file
     reached: 1, // the furthest step visited, so the stepper can go back
     capabilities: null, // last validate result
@@ -178,6 +181,11 @@ window.SaveSource = (function() {
     wire();
     syncWatchNote();
     el.dialogApi.el.dataset.saveSourceWired = "1";
+    if (window.__TAURI__.event && window.__TAURI__.event.listen) {
+      window.__TAURI__.event.listen("save-source-changed", function(event) {
+        onChanged(String((event && event.payload) || ""));
+      });
+    }
     if (el.trigger) {
       el.trigger.style.display = "";
       el.trigger.addEventListener("click", open);
@@ -324,7 +332,11 @@ window.SaveSource = (function() {
     if (watchPossible()) {
       el.watch.checked = state.watch;
       el.watch.disabled = false;
-      el.watchNote.textContent = "";
+      var mode = state.capabilities && state.capabilities.watch;
+      el.watchNote.textContent = !state.watch ? ""
+        : (mode
+          ? "The machine holding the save pushes changes, so the map reloads as they land."
+          : "No event source on that machine, so the folder is checked every " + state.interval + "s.");
       return;
     }
     el.watch.checked = false;
@@ -402,12 +414,18 @@ window.SaveSource = (function() {
     });
     el.watch.addEventListener("change", function() {
       readForm();
-      schedule();
-      say(state.watch ? "Watching -- every " + state.interval + "s once a save is loaded."
-        : "Watching off.");
+      syncWatchNote();
+      if (!state.watch) {
+        stop();
+        say("Watching off.");
+        return;
+      }
+      // arm() decides between events and the interval, and says which it got.
+      arm();
     });
     el.interval.addEventListener("change", function() {
       readForm();
+      syncWatchNote();
       schedule();
     });
     el.load.addEventListener("click", function() { load(true); });
@@ -807,17 +825,66 @@ window.SaveSource = (function() {
     });
   }
 
-  // The poll starts on the first load from this source, and every load restarts
-  // the clock -- so a save loaded by hand is not re-fetched a moment later.
+  // Two triggers, one decision. When the machine that holds the save can push
+  // events, nothing is polled: `inotifywait` (or PowerShell's FileSystemWatcher
+  // on Windows) runs there and each name it prints wakes the same tick(). When
+  // it cannot -- no inotify-tools, or a CIFS/NFS mount, where inotify would
+  // never fire because the writes are not made through this kernel -- the
+  // interval is the trigger instead. Either way the decision is a listing
+  // comparison and a byte hash, so a missed or spurious event cannot reload the
+  // map wrongly.
   function arm() {
-    if (state.watch) {
+    if (!state.watch || !watchPossible()) {
+      stop();
+      return;
+    }
+    var mode = (state.capabilities && state.capabilities.watch) || "";
+    var key = state.transport + "|" + state.dir + "|" + mode;
+    if (!mode || key !== state.watchKey) {
+      startWatch(key, mode);
+      return;
+    }
+    if (!state.watchMode) {
       schedule();
     }
   }
 
-  function schedule() {
+  function startWatch(key, mode) {
     stop();
-    if (!state.watch || !watchPossible()) {
+    if (!mode || !state.dir) {
+      schedule();
+      return;
+    }
+    invoke("source_watch_start", {
+      target: state.target,
+      dir: state.dir,
+      mode: mode,
+      local: state.transport === "local",
+    }).then(function(started) {
+      state.watchKey = key;
+      state.watchMode = started;
+      say("Watching " + state.dir + " \u2014 changes are pushed to the map as they land ("
+        + (started === "watcher" ? "FileSystemWatcher" : "inotifywait") + ").");
+    }).catch(function(error) {
+      state.watchKey = key;
+      state.watchMode = "";
+      if (el.watchNote) {
+        el.watchNote.textContent = "No event source there, so the folder is checked every "
+          + state.interval + "s.";
+      }
+      say("No event watcher on that machine (" + message(error) + ") \u2014 checking every "
+        + state.interval + "s instead.");
+      schedule();
+    });
+  }
+
+  // The interval, used only while no event source is live.
+  function schedule() {
+    if (timer !== null) {
+      window.clearInterval(timer);
+      timer = null;
+    }
+    if (!state.watch || state.watchMode || !watchPossible()) {
       return;
     }
     timer = window.setInterval(tick, Math.max(5, state.interval) * 1000);
@@ -828,6 +895,34 @@ window.SaveSource = (function() {
       window.clearInterval(timer);
       timer = null;
     }
+    if (burst !== null) {
+      window.clearTimeout(burst);
+      burst = null;
+    }
+    if (state.watchMode) {
+      state.watchMode = "";
+      state.watchKey = "";
+      invoke("source_watch_stop").catch(function() { /* nothing to stop */ });
+    }
+  }
+
+  // An event is a nudge, not a verdict: a save write arrives as a burst
+  // (create, several close_writes, a rename), so wait for the burst to settle
+  // and let one tick answer for all of it.
+  function onChanged(name) {
+    if (!state.watch) {
+      return;
+    }
+    if (name && !isSave(name)) {
+      return; // the folder also holds backups, screenshots and logs
+    }
+    if (burst !== null) {
+      window.clearTimeout(burst);
+    }
+    burst = window.setTimeout(function() {
+      burst = null;
+      tick();
+    }, 1500);
   }
 
   return {

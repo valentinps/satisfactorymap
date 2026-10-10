@@ -25,8 +25,8 @@ key and `~/.ssh/config` the user already has.
    `ssh` is broken, a server with no SFTP subsystem.
 3. **Save to load** — the folder, walked like a file dialog (folders first,
    `.sav` marked, `Up` for the parent), then the file. *Newest `.sav`* follows
-   the autosave rotation; *Keep it fresh* re-lists the folder and reloads the
-   map only when the fetched bytes actually changed.
+   the autosave rotation; *Keep it fresh* reloads the map when the save
+   changes -- see below for what "when" means.
 
 The stepper's numbers go back to a step already reached, and a remembered
 source reopens straight at the file it was left on.
@@ -66,9 +66,33 @@ the dedicated-server certificate pin). A *changed* key is still refused.
 
 ## While it is watching
 
-The status line says what each tick saw. Reloading is refused while the editor
+**Changes are pushed when the machine can push them, and checked on an interval
+when it cannot.** `inotifywait` is run *on the machine that holds the folder* —
+locally, or over the ssh connection — and every name it prints wakes the same
+check; on Windows the equivalent is PowerShell's `FileSystemWatcher`, sent as a
+base64 `-EncodedCommand` so nothing in the path can be reinterpreted by
+`cmd.exe`. Nothing is polled while events are live.
+
+Two cases fall back to the interval, and the dialog says which one you got:
+
+- **No `inotifywait` on that machine** (Debian/Ubuntu: `apt install
+  inotify-tools`; Fedora: `dnf install inotify-tools`; Bluefin:
+  `rpm-ostree install inotify-tools`). Windows needs nothing — the watcher is
+  part of .NET.
+- **A mounted share on Linux.** `inotify` only reports writes made through this
+  machine's own kernel, so the game machine writing into an SMB or NFS share is
+  invisible to it — the watch would be silent rather than late, which is worse.
+  The filesystem type is checked before choosing, so this is decided rather than
+  hoped. Windows is the exception: `FileSystemWatcher` does receive SMB
+  notifications, so a UNC path or a mapped drive there still gets events.
+
+An event is a nudge, not a verdict: the burst a save write produces is
+debounced, then the folder is re-listed and the fetched bytes are hashed, so a
+missed or spurious event cannot reload the map wrongly.
+
+The status line says what each check saw. Reloading is refused while the editor
 holds pending edits (a reload discards them), while a parse is already running,
-and while the window is hidden — polling resumes on its own. Remote names are
+and while the window is hidden — it resumes on its own. Remote names are
 rendered as text, never as markup.
 
 A fetched save lands in the app's data directory under `remote-saves/`, written
@@ -133,8 +157,10 @@ connection starts answering.
   subprocesses with a deadline, parses their output, and hashes what arrives.
   The app ships no SSH stack: host keys, keys, agents and `ProxyJump` are
   OpenSSH's, so the app never grows a second implementation of any of it.
-- Commands: `source_validate`, `source_browse`, `source_fetch` -- the three
-  jobs the dialog has. The watch probe is a `source_browse`, because a listing
+- Commands: `source_validate`, `source_browse`, `source_fetch` for the three
+  jobs the dialog has, plus `source_watch_start` / `source_watch_stop` for the
+  event watcher (a long-lived child process, local or over ssh, kept in the
+  Tauri state because a webview cannot hold one). The watch probe is a `source_browse`, because a listing
   is what says both what is in the folder and whether it moved. Every remote
   path crosses into an SFTP batch script, so control characters and quotes are
   rejected at the boundary; a host, user or port that could be read as an
