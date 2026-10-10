@@ -70,6 +70,56 @@ to a `.part` file and renamed only when complete, and capped at 8 GiB, so a
 wrong path cannot fill the disk and a truncated transfer cannot become the file
 the parser reads.
 
+## Running it locally
+
+**The dialog, without building anything** (needs only Python):
+
+```sh
+python3 tools/serve_save_source_demo.py --dir /path/to/SaveGames
+# then open http://127.0.0.1:8793/ and click Save File -> From another machine
+```
+
+That serves `map/static/map/` with a stubbed desktop bridge: the three commands
+answer from a real folder, so the listing, its sizes and timestamps, the
+"newest .sav" pick and the watch's change check are real (drop a file in the
+folder and the next tick notices). Only the SSH transport is canned, and loading
+stops at the parser -- `sav_core` is in the desktop build and `dist/pkg` is the
+wasm build, neither of which that server has -- so the status line says so
+rather than pretending.
+
+**The real thing on Linux** (the app itself, real SSH, real parsing). The Tauri
+tree needs the WebKitGTK/GTK development packages, which an immutable distro
+does not carry, so build it in a container:
+
+```sh
+distrobox create --name satisfactory-map --image registry.fedoraproject.org/fedora:41
+distrobox enter satisfactory-map
+sudo dnf install -y webkit2gtk4.1-devel gtk3-devel libsoup3-devel librsvg2-devel \
+  openssl-devel cairo-devel pango-devel gdk-pixbuf2-devel
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+cd <checkout>/rust_parser && cargo build -p sav_tauri --release
+cargo tauri dev            # or: cargo tauri build
+```
+
+**The real thing on Windows** is the repo's normal build (`cargo tauri build`)
+plus the sshd setup above -- and Windows is where the game machine is, so this
+is the path that ends in a working map.
+
+### If SSH is already broken on the machine running the app
+
+The dialog reports the ssh client's own words, and one of them is worth knowing
+about: on an ostree/Bluefin-style install, files under `/etc/ssh/ssh_config.d/`
+can end up owned by an unmapped uid (`nfsnobody`). OpenSSH treats a non-root
+owned included config as fatal, so **every** `ssh` invocation fails with:
+
+```
+Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf
+```
+
+That is not this app's bug and it breaks `ssh` in a terminal too; fix the
+ownership (`sudo chown root:root /etc/ssh/ssh_config.d/*`) and Validate
+connection starts answering.
+
 ## Implementation notes
 
 - `map/static/map/save_source.js` — the dialog, the browser and the watch loop.
