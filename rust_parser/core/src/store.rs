@@ -444,6 +444,45 @@ impl SaveStore {
         r.to_string(&self.data)
     }
 
+    /// A store with no levels, objects or collectables: "no save loaded".
+    /// Running the payload collectors over it yields the vanilla world --
+    /// every pickup uncollected, every crash site unopened, nothing built --
+    /// which is what the map shows before a save is loaded (see
+    /// mapdata::build_static_payload_json).
+    pub fn empty() -> Self {
+        SaveStore {
+            data: Vec::new(),
+            info: crate::save_header::SaveFileInfo {
+                save_header_type: 0,
+                save_version: 0,
+                build_version: 0,
+                save_name: String::new(),
+                map_name: String::new(),
+                map_options: String::new(),
+                session_name: String::new(),
+                play_duration_in_seconds: 0,
+                save_date_time_in_ticks: 0,
+                session_visibility: 0,
+                editor_object_version: 0,
+                mod_metadata: String::new(),
+                is_modded_save: false,
+                save_identifier: String::new(),
+                save_data_hash: [0, 0],
+                is_creative_mode_enabled: false,
+            },
+            persistent_level_version_data: None,
+            partitions: Vec::new(),
+            levels: Vec::new(),
+            a_level_name: crate::reader::EMPTY_STR,
+            drop_pod_refs: Vec::new(),
+            extra_refs: Vec::new(),
+            calculator_extras: Vec::new(),
+            file_header: Vec::new(),
+            padded: false,
+            tables: crate::object::ClassTables { conveyor_belts: Vec::new() },
+        }
+    }
+
     pub fn has_object_model(&self) -> bool {
         self.levels.iter().all(|l| l.objects.is_some())
     }

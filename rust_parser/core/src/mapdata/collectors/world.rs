@@ -36,6 +36,9 @@ const FRACKING_CORE_TYPE_PATH: &str =
     "/Game/FactoryGame/Resource/BP_FrackingCore.BP_FrackingCore_C";
 const FRACKING_SATELLITE_TYPE_PATH: &str =
     "/Game/FactoryGame/Resource/BP_FrackingSatellite.BP_FrackingSatellite_C";
+/// Stand-in actor class for the no-save static placement: only the
+/// well/non-well split reads the type path once a static entry exists.
+const RESOURCE_NODE_TYPE_PATH: &str = "/Game/FactoryGame/Resource/BP_ResourceNode.BP_ResourceNode_C";
 
 /// _PURITY_OVERRIDE_NAME_TO_ENUM applied to a raw mPurityOverride value.
 /// Python duck-types `isinstance(purityOverride, list) and len(...) == 2`
@@ -106,6 +109,21 @@ pub fn collect_resource_nodes(scan: &SaveScan) -> Value {
         mined_resource_actors.insert(name, (actor.position, actor.type_path.bytes(data)));
         if let Some(slot) = obj_slot {
             node_objects_by_instance_name.insert(name, slot);
+        }
+    }
+    // No save loaded (an empty store -- see SaveStore::empty): there are no
+    // node actors to read, so place every node from the static table at its
+    // vanilla position/type/purity. A real save always takes the actor path
+    // above, which is what picks up Node Randomization's moved/retyped nodes.
+    if scan.store.levels.is_empty() {
+        for (name, (_, _, position, core_name)) in &gd.resource_purity {
+            let type_path: &[u8] = if core_name.is_some() {
+                FRACKING_SATELLITE_TYPE_PATH.as_bytes()
+            } else {
+                RESOURCE_NODE_TYPE_PATH.as_bytes()
+            };
+            let p = [position[0] as f32, position[1] as f32, position[2] as f32];
+            mined_resource_actors.insert(name.as_bytes(), (p, type_path));
         }
     }
 

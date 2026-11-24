@@ -1885,17 +1885,22 @@ var Filters = {};
     // category in the nav column.
     deselectAllCategories();
 
+    // The no-save payload (vanilla world, see build_static_payload_json in
+    // the Rust parser) has no save to count or export: keep that chrome
+    // hidden until a real save arrives.
     var totalEl = document.getElementById("totalObjectCount");
     if (totalEl) {
       totalEl.innerHTML = "";
-      totalEl.appendChild(el("span", "totalObjectCountValue", computeTotalObjectCount(payload).toLocaleString()));
-      totalEl.appendChild(el("span", "totalObjectCountLabel", " objects"));
+      if (!payload.noSave) {
+        totalEl.appendChild(el("span", "totalObjectCountValue", computeTotalObjectCount(payload).toLocaleString()));
+        totalEl.appendChild(el("span", "totalObjectCountLabel", " objects"));
+      }
     }
     // A save is loaded, so the "save details" disclosure has something to
     // disclose (game settings, export) -- reveal its summary row.
     var detailsToggle = document.getElementById("saveDetailsToggle");
     if (detailsToggle) {
-      detailsToggle.style.display = "flex";
+      detailsToggle.style.display = payload.noSave ? "none" : "flex";
     }
 
     // Fresh buckets from clearBuckets() above have no hiddenIndices yet --

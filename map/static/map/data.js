@@ -182,7 +182,39 @@
     // (mods allow it); recomputed per payload so an edit that deletes the
     // out-of-map build snaps the limits back too.
     MapApp.refreshMaxBounds();
-    clearSaveBtn.style.display = "flex";
+    clearSaveBtn.style.display = payload.noSave ? "none" : "flex";
+  }
+
+  // The vanilla world (default resource node placement, every collectable
+  // and hard drive still in place, spawners, caves, map limits), so the map
+  // is usable before any save is loaded. Built by the parser from its
+  // embedded game data -- see build_static_payload_json. Shown at startup
+  // and again after "Unload"; a real save's payload replaces it wholesale,
+  // which is what marks collected pickups and moves randomized nodes.
+  // Bumped by every real load (and by each new request here): a static
+  // payload that resolves after a save started loading is stale and dropped.
+  var staticGeneration = 0;
+
+  function showNoSaveWorld() {
+    var generation = ++staticGeneration;
+    return SaveClient.staticPayload()
+      .then(function(payload) {
+        if (generation !== staticGeneration || loadInFlight || MapApp.currentFile) {
+          return; // A save loaded (or is loading) in the meantime.
+        }
+        applyPayload(payload);
+      })
+      .catch(function(error) {
+        // Not fatal: the map simply starts empty, as it used to.
+        console.warn("Could not build the no-save map:", error);
+      });
+  }
+
+  // Every real load path calls this as it starts, so an in-flight static
+  // payload can never land on top of the save.
+  function beginRealLoad() {
+    loadInFlight = true;
+    staticGeneration++;
   }
 
   // "Unload" (the eject button next to the Save File header): drop the
@@ -221,6 +253,9 @@
     clearSaveBtn.style.display = "none";
     hideProgress();
     setStatus("Save unloaded -- drop a .sav anywhere or click above.");
+    // Back to the vanilla world rather than a blank map (the torn-down state
+    // above is what stays if building it fails).
+    showNoSaveWorld();
   }
 
   // Editor.js drives the same progress/status UI during applyEdits, and
@@ -265,7 +300,7 @@
     if (loadInFlight) {
       return Promise.resolve(); // A parse is already running; don't queue a second one.
     }
-    loadInFlight = true;
+    beginRealLoad();
     uploadDropZone.classList.add("uploading");
     uploadDropText.textContent = "Loading " + file.name + "…";
     var pinnedSelection = Tooltip.getPinnedSelection();
@@ -322,7 +357,7 @@
     if (loadInFlight) {
       return Promise.resolve();
     }
-    loadInFlight = true;
+    beginRealLoad();
     var name = path.split(/[\\/]/).pop();
     uploadDropZone.classList.add("uploading");
     uploadDropText.textContent = "Loading " + name + "…";
@@ -406,7 +441,7 @@
     if (loadInFlight) {
       return Promise.resolve();
     }
-    loadInFlight = true;
+    beginRealLoad();
     var name = "remote save";
     try {
       name = decodeURIComponent(new URL(url, window.location.href).pathname.split("/").pop()) || name;
@@ -624,6 +659,7 @@
   document.addEventListener("DOMContentLoaded", function() {
     MapApp.init();
     setStatus("No save loaded -- drop a .sav anywhere or click above.");
+    showNoSaveWorld();
 
     var isTauri = SaveClient.isTauri();
 

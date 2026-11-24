@@ -1,6 +1,8 @@
 // Web Worker hosting the WASM save parser + payload builder (sav_wasm).
 // Protocol (id-based RPC):
 //   in : {id, op: "load", buffer: ArrayBuffer}           (buffer transferred)
+//        {id, op: "staticPayload"}                       (result: transferred
+//        Uint8Array of the no-save payload JSON; needs no session)
 //        {id, op: "describeInstance", name}
 //        {id, op: "findItem", item}
 //        {id, op: "buildingInfo", types: [..]}
@@ -90,6 +92,11 @@ self.onmessage = async (event) => {
             });
          });
          const payload = session.payload_json();
+         reply(id, payload, [payload.buffer]);
+         return;
+      }
+      if (op === "staticPayload") {
+         const payload = wasm_bindgen.static_payload_json();
          reply(id, payload, [payload.buffer]);
          return;
       }

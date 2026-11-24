@@ -164,6 +164,14 @@ async fn load(
     Ok(payload_response(payload, &state))
 }
 
+/// The "no save loaded" map payload (vanilla world -- see
+/// mapdata::build_static_payload_json). Session-free and small (~0.5MB), so
+/// it goes back as one plain response, never through the chunk protocol.
+#[tauri::command]
+async fn static_payload() -> Result<Response, String> {
+    sav_core::mapdata::build_static_payload_json().map(Response::new)
+}
+
 /// Apply edit ops. `from_pristine` replaces the whole op list (undo/recovery);
 /// otherwise the ops append incrementally. Returns the rebuilt payload bytes.
 #[tauri::command]
@@ -719,6 +727,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             load,
+            static_payload,
             apply_edits,
             export_save,
             export_save_dialog,

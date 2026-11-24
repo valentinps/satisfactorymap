@@ -118,6 +118,14 @@ pub fn live_heap_bytes() -> f64 {
     }
 }
 
+/// The "no save loaded" map payload (vanilla resource nodes, collectables,
+/// spawners... -- see mapdata::build_static_payload_json), as JSON bytes.
+/// Needs no session: the worker serves it before any save is loaded.
+#[wasm_bindgen]
+pub fn static_payload_json() -> Result<Vec<u8>, JsError> {
+    mapdata::build_static_payload_json().map_err(|e| JsError::new(&e))
+}
+
 #[wasm_bindgen]
 pub struct SaveSession {
     /// Always Some between successful calls; taken/replaced inside the edit

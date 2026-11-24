@@ -233,6 +233,8 @@ const SaveClient = (() => {
             return invoke("load", { path: msg.path, onProgress: channel })
                .then((bytes) => new Uint8Array(bytes));
          }
+         case "staticPayload":
+            return invoke("static_payload").then((bytes) => new Uint8Array(bytes));
          case "applyEdits": {
             const channel = new core.Channel();
             channel.onmessage = forwardTauriProgress;
@@ -417,6 +419,13 @@ const SaveClient = (() => {
             activeProgress = null;
             throw error;
          });
+      },
+      // staticPayload() -> Promise<payload object>: the vanilla world shown
+      // while no save is loaded (default resource nodes, every collectable
+      // uncollected, spawners, caves...; payload.noSave is true). Session-
+      // free -- it never touches a loaded save's state.
+      staticPayload() {
+         return request({ op: "staticPayload" }).then(parsePayloadBytes);
       },
       // True when running inside the native desktop shell (path-based load,
       // native file dialog) rather than the browser (File/ArrayBuffer).

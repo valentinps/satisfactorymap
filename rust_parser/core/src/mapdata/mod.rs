@@ -309,6 +309,99 @@ fn build_payload_json_with_scan(
     Ok(out)
 }
 
+/// The "no save loaded" payload: every collector run over an empty store, so
+/// the map shows the vanilla world before the user loads a save -- resource
+/// nodes at their default placement, every collectable/hard drive/dropped
+/// item still in place, creature spawners, map limits and caves -- while the
+/// save-only steps (buildings, players, vehicles...) come out empty. Same
+/// shape as a real payload, so the frontend's build chain takes it
+/// unchanged; `noSave: true` lets it tell the two apart. `progression` is
+/// left out entirely: over an empty store it reads as "nothing unlocked",
+/// which is a claim about a save, not the absence of one.
+pub fn build_static_payload_json() -> Result<Vec<u8>, String> {
+    let store = SaveStore::empty();
+    let scan = SaveScan::new(&store);
+    let steps: Vec<&str> =
+        collectors::STEP_ORDER.iter().copied().filter(|k| *k != "progression").collect();
+    let mut payload = build_payload_json_with_scan(&scan, steps, None)?;
+    debug_assert_eq!(payload.last(), Some(&b'}'));
+    payload.pop();
+    payload.extend_from_slice(b",\"noSave\":true}");
+    Ok(payload)
+}
+
+#[cfg(test)]
+mod static_payload_tests {
+    use super::*;
+
+    fn payload() -> Value {
+        serde_json::from_slice(&build_static_payload_json().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn places_every_static_resource_node_unmined() {
+        let p = payload();
+        assert_eq!(p["noSave"], json!(true));
+        let mut unmined = 0;
+        for bucket in p["resourceNodes"]["byResourceType"].as_array().unwrap() {
+            assert!(bucket["mined"]["byPurity"].as_object().unwrap().is_empty());
+            for purity in bucket["unmined"]["byPurity"].as_object().unwrap().values() {
+                unmined += purity["ids"].as_array().unwrap().len();
+            }
+        }
+        assert_eq!(unmined, gamedata::get().resource_purity.len());
+        // Wells keep their own buckets.
+        assert!(p["resourceNodes"]["byResourceType"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["resourceType"] == "Desc_Water_C" && b["isWell"] == json!(true)));
+    }
+
+    #[test]
+    fn every_collectable_is_uncollected() {
+        let p = payload();
+        let gd = gamedata::get();
+        let c = &p["collectables"];
+        assert_eq!(c["somersloops"]["remainingIds"].as_array().unwrap().len(), gd.somersloops.len());
+        assert_eq!(
+            c["mercerSpheres"]["remainingIds"].as_array().unwrap().len(),
+            gd.mercer_spheres.len()
+        );
+        assert_eq!(c["slugsBlue"]["remainingIds"].as_array().unwrap().len(), gd.power_slugs.blue.len());
+        for kind in ["slugsBlue", "slugsYellow", "slugsPurple", "somersloops", "mercerSpheres"] {
+            assert!(c[kind]["collectedIds"].as_array().unwrap().is_empty(), "{kind}");
+        }
+        assert_eq!(
+            p["hardDrives"]["hasDriveIds"].as_array().unwrap().len(),
+            gd.crash_sites.len()
+        );
+        let drops: usize = p["droppedItems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["ids"].as_array().unwrap().len())
+            .sum();
+        let catalog: usize = gd.free_dropped_items.values().map(Vec::len).sum();
+        assert_eq!(drops, catalog);
+    }
+
+    #[test]
+    fn static_world_present_save_only_steps_empty() {
+        let p = payload();
+        assert!(!p["spawners"].as_array().unwrap().is_empty());
+        assert!(!p["caves"]["polylines"].as_array().unwrap().is_empty());
+        assert!(!p["mapLimits"]["polylines"].as_array().unwrap().is_empty());
+        for key in ["buildingCategories", "creatures", "vehicles", "belts", "pipes", "vehiclePaths"] {
+            assert!(p[key].as_array().unwrap().is_empty(), "{key}");
+        }
+        assert!(p["players"]["ids"].as_array().unwrap().is_empty());
+        assert!(p["gameSettings"].as_object().unwrap().is_empty());
+        assert!(p.get("progression").is_none());
+        assert_eq!(p["sessionName"], json!(""));
+    }
+}
+
 /// Full load: payload + save index sharing one SaveScan (and its cached
 /// instance-slot table) -- the browser path.
 pub fn build_all_json(
