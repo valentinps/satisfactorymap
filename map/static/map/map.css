@@ -195,8 +195,10 @@ body {
   box-sizing: border-box;
   background: var(--surface-0);
   border-bottom: 1px solid var(--border);
-  /* Above both docks so the search suggestions drop over them. */
-  z-index: 10;
+  /* Above both docks (#sidebar / #toolDock, z-index 20) so everything that
+     drops out of the bar -- search suggestions, the Progression menu --
+     paints over them instead of vanishing behind an open dock. */
+  z-index: 30;
 }
 
 #topBarLeft, #topBarActions {
