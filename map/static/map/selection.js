@@ -661,6 +661,9 @@ var SelectionTool = {};
     if (window.NetworkTool) {
       NetworkTool.onSelectionChanged();
     }
+    if (window.Tools) {
+      Tools.refresh(); // The Copy & paste panel shows the selection count.
+    }
   }
 
   function finishSelection(start, end, additive) {

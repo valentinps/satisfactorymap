@@ -183,9 +183,9 @@ var FindItem = {};
     }
   }
 
-  // Map tools -- things the search bar can OPEN rather than find. They exist
-  // only here: a planning tool that most sessions never touch does not earn a
-  // permanent button, but typing its name should always reach it. Unlike
+  // Map tools -- things the search bar can OPEN rather than find. The app
+  // bar's Tools button lists the same tools (tools.js); typing a tool's name
+  // here is the shortcut to it. Unlike
   // every other entry these are not rebuilt per save (they describe no save
   // data), so they sit in the catalog from the first keystroke, with or
   // without a save loaded.
@@ -197,16 +197,34 @@ var FindItem = {};
     '</svg>'
   );
 
+  var COPY_PASTE_ICON_URL = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="26" height="26">' +
+    '<rect x="8" y="8" width="12" height="12" rx="2" fill="none" stroke="#ffb454" stroke-width="1.8"/>' +
+    '<path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" fill="none" stroke="#ffb454" ' +
+    'stroke-width="1.8" stroke-linecap="round"/></svg>'
+  );
+
+  // tools.js loads after this file, so resolve Tools at click time.
+  function openTool(id) {
+    return function() {
+      if (window.Tools) {
+        Tools.open(id);
+      }
+    };
+  }
+
   var TOOL_ENTRIES = [
     {
       kind: "tool",
       label: "Optimal network finder (EMST)",
       iconUrl: TOOL_ICON_URL,
-      open: function() {
-        if (window.NetworkTool) {
-          NetworkTool.open();
-        }
-      },
+      open: openTool("network"),
+    },
+    {
+      kind: "tool",
+      label: "Copy & paste",
+      iconUrl: COPY_PASTE_ICON_URL,
+      open: openTool("copyPaste"),
     },
   ];
 

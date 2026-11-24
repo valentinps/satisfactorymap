@@ -9,6 +9,7 @@
 //   - dragging its width (persisted in localStorage)
 //   - the left dock's two-pane push navigation (categories -> one category)
 //   - the right tool dock: which tool panel is in it, and whether it is open
+//     (the Tools tab that picks a tool lives in tools.js)
 //   - the "Progression" dropdown, and the desktop app's update pill
 (function() {
   "use strict";
@@ -148,6 +149,30 @@
   // tools cannot end up drawn on the same pixels, which is exactly what the
   // free-floating versions did (both were anchored top-right).
   var currentTool = null;
+  // panel id -> teardown, run whenever that panel LEAVES the dock -- closed
+  // directly or swapped out by another tool opening. Without it a swapped-out
+  // tool kept its live state (the network finder its map-click handler, the
+  // paste flow its ghost) behind a panel nobody could see any more. A
+  // teardown may call back into Panels.closeTool for its own panel; by then
+  // it is no longer current, so that call only re-hides it.
+  var toolTeardowns = {};
+  var toolChangeListeners = [];
+
+  Panels.registerTool = function(el, onClose) {
+    if (el && onClose) {
+      toolTeardowns[el.id] = onClose;
+    }
+  };
+
+  // listener(currentPanelElementOrNull) after every open/close/swap -- the
+  // app bar's Tools button tracks the dock through this.
+  Panels.onToolChange = function(listener) {
+    toolChangeListeners.push(listener);
+  };
+
+  function notifyToolChange() {
+    toolChangeListeners.forEach(function(listener) { listener(currentTool); });
+  }
 
   Panels.openTool = function(el) {
     if (!el) {
@@ -160,9 +185,13 @@
       toolPanels.appendChild(el);
     }
     el.style.display = "";
+    var changed = currentTool !== el;
     currentTool = el;
     body.classList.add("tool-open");
-    Analytics.toolOpened(el.id);
+    if (changed) {
+      Analytics.toolOpened(el.id);
+      notifyToolChange();
+    }
   };
 
   Panels.closeTool = function(el) {
@@ -170,11 +199,23 @@
       el.style.display = "none"; // A tool that was already swapped out; the dock did not change.
       return;
     }
+    var closing = currentTool;
     if (currentTool) {
       currentTool.style.display = "none";
       currentTool = null;
     }
     body.classList.remove("tool-open");
+    if (closing) {
+      var teardown = toolTeardowns[closing.id];
+      if (teardown) {
+        teardown();
+      }
+      notifyToolChange();
+    }
+  };
+
+  Panels.currentTool = function() {
+    return currentTool;
   };
 
   Panels.isToolOpen = function(el) {
@@ -183,7 +224,7 @@
 
   // Pre-adopt the panels so their first open does not reparent (and reset)
   // live form state.
-  ["pastePanel", "networkPanel"].forEach(function(id) {
+  ["toolsPanel", "copyPastePanel", "pastePanel", "networkPanel"].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) {
       el.style.display = "none";

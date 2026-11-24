@@ -73,6 +73,25 @@ var EditorTool = (function() {
   // in native clipboard slots instead.
   var heldBlob = null;
 
+  // The Copy & paste tool panel (tools.js) mirrors the clipboard and the
+  // save state; tell it whenever either changes.
+  function notifyTools() {
+    if (window.Tools) {
+      Tools.refresh();
+    }
+  }
+
+  // How many objects a paste would bring, as far as this tab knows: the
+  // in-session clipboard, else this tab's held blob. 0 does not mean the
+  // paste is empty -- another tab may have put a blob on the OS clipboard,
+  // which only resolvePaste can read (asynchronously, maybe behind a prompt).
+  function clipboardCount() {
+    if (clipboard) {
+      return clipboard.actorNames.length + clipboard.lightweight.length;
+    }
+    return heldBlob ? heldBlob.count : 0;
+  }
+
   // ---- Targets ---------------------------------------------------------------
 
   var LIGHTWEIGHT_ID_PREFIX = "LightweightBuildable:";
@@ -537,6 +556,7 @@ var EditorTool = (function() {
       // copy the user just watched happen.
       clipboard = null;
       heldBlob = null;
+      notifyTools();
       SaveLoadFlow.setStatus("Copy refused: " + label + " is more than the browser can handle ("
         + COPY_MAX_OBJECTS.toLocaleString() + " max) — nothing was copied. "
         + "The desktop app copies selections of any size.");
@@ -544,6 +564,7 @@ var EditorTool = (function() {
     }
     clipboard = targets;
     heldBlob = null; // a new copy replaces whatever an older one held
+    notifyTools();
     SaveLoadFlow.setStatus("Copied " + label + " — Ctrl+V or right-click to paste.");
     // Extract the portable blob (raw object bytes + version metadata): the
     // desktop app writes it to a native clipboard slot; the browser keeps
@@ -568,7 +589,7 @@ var EditorTool = (function() {
             return " — paste with Ctrl+V here or in another tab.";
           });
         }
-        heldBlob = { json: json, at: Date.now() };
+        heldBlob = { json: json, at: Date.now(), count: n };
         if (n > CROSS_TAB_MAX_OBJECTS) {
           return " — paste with Ctrl+V here, or load another save in this tab and paste it "
             + "there. (Copies this big stay out of the OS clipboard, so other tabs can't see "
@@ -1108,6 +1129,9 @@ var EditorTool = (function() {
     offsetCancel.addEventListener("click", closeOffsetDialog);
     pastePanelApplyBtn.addEventListener("click", applyPastePanel);
     pastePanelCancelBtn.addEventListener("click", cancelPlacement);
+    // Another tool taking the dock mid-paste (see Panels.registerTool) ends
+    // the placement too, rather than stranding its ghost on the map.
+    Panels.registerTool(pastePanel, cancelPlacement);
     pastePosOriginal.addEventListener("change", onPastePosModeChange);
     pastePosCustom.addEventListener("change", onPastePosModeChange);
     pasteX.addEventListener("input", onPasteXYInput);
@@ -1204,6 +1228,7 @@ var EditorTool = (function() {
       closeOffsetDialog();
       downloadBtn.style.display = "";
       updateToolbar();
+      notifyTools();
     },
     // Called by data.js's clearSave: the save (and its worker session) is
     // going away entirely -- same reset as a load, but the editor chrome
@@ -1218,6 +1243,7 @@ var EditorTool = (function() {
       closePastePanel();
       downloadBtn.style.display = "none";
       updateToolbar();
+      notifyTools();
     },
     startMove: startMove,
     openOffsetDialog: openOffsetDialog,
@@ -1227,6 +1253,7 @@ var EditorTool = (function() {
     pasteAt: pasteAt,
     deleteTargets: deleteTargets,
     hasClipboard: function() { return clipboard !== null; },
+    clipboardCount: clipboardCount,
     undo: undo,
     redo: redo,
     opCount: function() { return actions.length; },

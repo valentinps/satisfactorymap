@@ -144,6 +144,7 @@ var NetworkTool = {};
     dom = {
       panel: document.getElementById("networkPanel"),
       close: document.getElementById("networkPanelClose"),
+      back: document.getElementById("networkPanelBack"),
       modeStraight: document.getElementById("networkModeStraight"),
       modeAxis: document.getElementById("networkModeAxis"),
       modeHint: document.getElementById("networkModeHint"),
@@ -170,6 +171,15 @@ var NetworkTool = {};
     };
 
     dom.close.addEventListener("click", function() { NetworkTool.close(); });
+    // The dock swapping another tool in (the Tools tab, paste) closes this
+    // one properly -- map-click handler and drawn layers included.
+    Panels.registerTool(dom.panel, function() { NetworkTool.close(); });
+    dom.back.addEventListener("click", function() {
+      NetworkTool.close();
+      if (window.Tools) {
+        Tools.openLauncher();
+      }
+    });
     dom.modeStraight.addEventListener("click", function() { setMode("euclidean"); });
     dom.modeAxis.addEventListener("click", function() { setMode("rectilinear"); });
     dom.pickBtn.addEventListener("click", function() { setPicking(!picking); });

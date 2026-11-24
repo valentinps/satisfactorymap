@@ -82,6 +82,14 @@
        tiles: the game icons alone were unreadable, the labels do the work.
        Row ids are load-bearing -- progression.js/finditem.js bind by id. -->
   <div id="topBarActions">
+  <!-- Opens the Tools tab in the right tool dock (tools.js), which lists
+       every map tool; clicking it again while a tool is up closes the dock. -->
+  <button id="toolsButton" class="topPillButton" type="button" title="Map tools: copy &amp; paste, network finder" aria-pressed="false" aria-controls="toolPanels">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+      </svg>
+    <span>Tools</span>
+  </button>
   <!-- Depot is an inventory view, not progression -- its own pill next to
        the dropdown, same style. -->
   <button id="depotIconButton" class="topPillButton" title="Dimensional Depot contents">
@@ -525,12 +533,77 @@
   </div>
 </div>
 
-<!-- "Optimal network finder (EMST)" (network.js) -- reachable only by typing
-     its name in the search bar, so a planning tool costs no permanent UI.
-     Shares the right tool dock with #pastePanel (panels.js moves it there);
+<!-- The Tools tab (tools.js): the app bar's Tools button opens it in the right
+     tool dock, and it is where every tool panel's back button returns to.
+     Rows are built from tools.js's TOOLS list, so adding a tool is one entry
+     there plus its own panel. -->
+<div id="toolsPanel" class="toolPanel" style="display:none">
+  <div class="toolPanelHeader">
+    <span class="toolPanelHeaderIcon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+      </svg></span>
+    <div class="toolPanelHeadings">
+      <span class="toolPanelTitle">Tools</span>
+      <span class="toolPanelSubtitle">Pick a tool to open it here</span>
+    </div>
+    <button id="toolsPanelClose" class="btn btn-ghost btn-icon" type="button" title="Close" aria-label="Close tools">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+        <path d="M6 6 18 18M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    </button>
+  </div>
+  <div id="toolsList" class="toolPanelBody" role="list"></div>
+</div>
+
+<!-- Copy & paste (tools.js): a guided front end for the editor's existing
+     select -> copy -> paste flow (selection.js / editor.js). Paste hands over
+     to #pastePanel for placement, exactly as Ctrl+V does. -->
+<div id="copyPastePanel" class="toolPanel" style="display:none">
+  <div class="toolPanelHeader">
+    <button id="copyPastePanelBack" class="btn btn-ghost btn-icon toolPanelBack" type="button" title="All tools" aria-label="Back to all tools">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+        <polyline points="15 6 9 12 15 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <span class="toolPanelHeaderIcon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+      <rect x="8" y="8" width="12" height="12" rx="2" fill="none" stroke="#ffb454" stroke-width="1.8"/>
+      <path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" fill="none" stroke="#ffb454" stroke-width="1.8" stroke-linecap="round"/>
+    </svg></span>
+    <div class="toolPanelHeadings">
+      <span class="toolPanelTitle">Copy &amp; paste</span>
+      <span class="toolPanelSubtitle">Duplicate part of your factory</span>
+    </div>
+    <button id="copyPastePanelClose" class="btn btn-ghost btn-icon" type="button" title="Close" aria-label="Close copy and paste">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+        <path d="M6 6 18 18M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    </button>
+  </div>
+  <div class="toolPanelBody">
+    <div id="copyPasteNoSave" class="toolNote">Load a save to copy and paste buildings.</div>
+    <div class="kicker">1 &middot; Select</div>
+    <p class="toolHint">Right-click and drag on the map to box-select. Ctrl+click adds or removes single objects; Ctrl+drag adds a box.</p>
+    <div id="copyPasteSelection" class="toolStatus">Nothing selected</div>
+    <button id="copyPasteCopyBtn" class="btn btn-primary btn-block" type="button" disabled>Copy selection</button>
+    <div class="kicker">2 &middot; Paste</div>
+    <div id="copyPasteClipboard" class="toolStatus">Clipboard empty</div>
+    <button id="copyPastePasteBtn" class="btn btn-primary btn-block" type="button" disabled>Paste&hellip;</button>
+    <p class="toolHint">Paste shows a ghost of the copy: click the map or type a position, R rotates, Enter applies. Right-click the map &rarr; <em>Paste here</em> drops it straight at that spot.</p>
+    <p class="toolHint">Copies carry across saves (load another save, then paste) and across tabs. Shortcuts: Ctrl+C, Ctrl+V, Ctrl+Z to undo.</p>
+  </div>
+</div>
+
+<!-- "Optimal network finder (EMST)" (network.js) -- opened from the Tools
+     tab (tools.js) or by typing its name in the search bar. Shares the right
+     tool dock with the other tool panels (panels.js moves it there);
      non-modal, because clicking the map is how points get added. -->
 <div id="networkPanel" style="display:none">
   <div id="networkPanelHeader">
+    <button id="networkPanelBack" class="btn btn-ghost btn-icon toolPanelBack" type="button" title="All tools" aria-label="Back to all tools">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+        <polyline points="15 6 9 12 15 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
     <svg id="networkPanelIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20">
       <path d="M5 18 L12 6 L19 15" fill="none" stroke="#25e0ff" stroke-width="1.6" stroke-linejoin="round"/>
       <path d="M12 6 L6 9" fill="none" stroke="#25e0ff" stroke-width="1.6"/>
@@ -659,6 +732,7 @@
 <script src="editor.js"></script>
 <script src="emst.js"></script>
 <script src="network.js"></script>
+<script src="tools.js"></script>
 <script src="data.js"></script>
 </body>
 </html>
